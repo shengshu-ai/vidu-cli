@@ -1,6 +1,47 @@
 use crate::{client, validators};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+pub fn process_image_input(input: &str) -> String {
+    // 1. If already ssupload URI, return directly
+    if input.starts_with("ssupload:") {
+        return input.to_string();
+    }
+
+    // 2. If HTTP/HTTPS URL, download and upload
+    if input.starts_with("http://") || input.starts_with("https://") {
+        return download_and_upload(input);
+    }
+
+    // 3. Otherwise treat as local file path, upload
+    upload_local_file(input)
+}
+
+fn download_and_upload(url: &str) -> String {
+    let resp = reqwest::blocking::get(url);
+    match resp {
+        Ok(mut r) => {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let temp_path = temp_dir.path().join(format!("vidu_{}", uuid::Uuid::new_v4()));
+            let mut file = std::fs::File::create(&temp_path).unwrap();
+            std::io::copy(&mut r, &mut file).unwrap();
+
+            let uri = crate::commands::upload::upload_and_get_uri(temp_path.to_str().unwrap());
+            uri
+        }
+        Err(e) => {
+            client::fail("client_error", &format!("Failed to download image: {}", e), None, None, None);
+        }
+    }
+}
+
+fn upload_local_file(path: &str) -> String {
+    if !Path::new(path).exists() {
+        client::fail("client_error", &format!("Image file not found: {}", path), None, None, None);
+    }
+    crate::commands::upload::upload_and_get_uri(path)
+}
 
 pub fn submit(
     task_type: &str, prompt: &str, images: &[String], materials: &[String],
@@ -10,8 +51,10 @@ pub fn submit(
 ) {
     let mut prompts = vec![json!({"type": "text", "content": prompt})];
 
-    for img in images {
-        prompts.push(json!({"type": "image", "content": img}));
+    // Process images (auto-upload local files / URLs)
+    for img_input in images {
+        let ssupload_uri = process_image_input(img_input);
+        prompts.push(json!({"type": "image", "content": ssupload_uri}));
     }
 
     for mat in materials {

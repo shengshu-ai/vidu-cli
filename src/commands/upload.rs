@@ -54,6 +54,12 @@ fn compress_image_if_needed(path: &str) -> (Vec<u8>, u32, u32, String) {
 }
 
 pub fn run(image_path: &str) {
+    let uri = upload_and_get_uri(image_path);
+    let upload_id = uri.strip_prefix("ssupload:?id=").unwrap_or("");
+    client::ok(json!({"upload_id": upload_id, "ssupload_uri": uri}));
+}
+
+pub fn upload_and_get_uri(image_path: &str) -> String {
     let err = validators::validate_image_file(image_path);
     if !err.is_empty() {
         client::fail("client_error", &err, None, None, None);
@@ -95,7 +101,7 @@ pub fn run(image_path: &str) {
     let (etag,) = client::put_raw(put_url, image_bytes, &put_headers, Some("put_image"));
 
     // Step 3: Finish upload
-    let finish_body = json!({"etag": etag, "id": upload_id_str});
+    let finish_body = json!({"etag": etag, "id": upload_id_str.clone()});
     client::request_json(
         "PUT",
         &format!("{}/tools/v1/files/uploads/{}/finish", base, upload_id_str),
@@ -104,5 +110,5 @@ pub fn run(image_path: &str) {
         None,
     );
 
-    client::ok(json!({"upload_id": upload_id_str, "ssupload_uri": format!("ssupload:?id={}", upload_id_str)}));
+    format!("ssupload:?id={}", upload_id_str)
 }

@@ -162,9 +162,27 @@ pub fn request(method: &str, url: &str, step: Option<&str>, retries: bool, body:
 
 pub fn request_json(method: &str, url: &str, step: Option<&str>, body: Option<&Value>, params: Option<&HashMap<String, String>>) -> Value {
     let resp = request(method, url, step, true, body, params);
+    let trace_id = resp.headers()
+        .get("x-md-trace-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let text = resp.text().unwrap_or_default();
+
+    // Debug mode: print response body to stderr
+    if env::var("VIDU_DEBUG").is_ok() {
+        eprintln!("[DEBUG] Response body: {}", text);
+    }
+
     match serde_json::from_str::<Value>(&text) {
-        Ok(v) => v,
+        Ok(mut v) => {
+            if !trace_id.is_empty() {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("trace_id".to_string(), Value::String(trace_id));
+                }
+            }
+            v
+        }
         Err(_) => {
             let truncated: String = text.chars().take(200).collect();
             fail("parse_error", &format!("Response is not valid JSON: {truncated}"), None, None, step);

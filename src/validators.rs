@@ -26,7 +26,7 @@ fn resolution_support() -> HashMap<String, HashSet<String>> {
 }
 
 fn valid_aspect_ratios() -> HashSet<String> {
-    set(&["16:9", "9:16", "1:1"])
+    set(&["16:9", "9:16", "1:1", "4:3", "3:4"])
 }
 
 fn duration_ranges() -> HashMap<String, HashMap<String, (i64, i64)>> {
@@ -89,6 +89,21 @@ pub fn validate_task_body(body: &Value) -> String {
         Some(Value::Array(arr)) if !arr.is_empty() => {}
         Some(Value::Array(_)) => return "input.prompts is required and must not be empty".into(),
         _ => return "input.prompts is required and must not be empty".into(),
+    }
+
+    // Count images and materials
+    let prompts_arr = prompts.unwrap().as_array().unwrap();
+    let image_count = prompts_arr.iter().filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("image")).count();
+    let material_count = prompts_arr.iter().filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("material")).count();
+
+    // Validate counts by task type
+    match task_type {
+        "img2video" if image_count != 1 => return format!("img2video requires exactly 1 image, got {}", image_count),
+        "headtailimg2video" if image_count != 2 => return format!("headtailimg2video requires exactly 2 images, got {}", image_count),
+        "reference2image" | "character2video" if image_count + material_count > 7 => {
+            return format!("{} allows max 7 images+materials, got {}", task_type, image_count + material_count);
+        }
+        _ => {}
     }
 
     let settings = match body.get("settings") {
@@ -188,22 +203,6 @@ pub fn validate_element_preprocess(body: &Value) -> String {
     let main_count = components.iter().filter(|c| c.get("type").and_then(|v| v.as_str()) == Some("main")).count();
     if main_count != 1 {
         return "components must have exactly one item with type='main'".into();
-    }
-    String::new()
-}
-
-pub fn validate_element_create(body: &Value) -> String {
-    if !body.is_object() {
-        return "body must be an object".into();
-    }
-    if body.get("id").is_none() {
-        return "Missing required field: id (from preprocess response)".into();
-    }
-    if body.get("name").is_none() {
-        return "Missing required field: name".into();
-    }
-    if body.get("modality").is_none() {
-        return "Missing required field: modality".into();
     }
     String::new()
 }

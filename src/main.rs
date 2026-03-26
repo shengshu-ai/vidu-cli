@@ -29,25 +29,32 @@ enum Group {
 
 #[derive(Subcommand)]
 enum TaskAction {
-    /// Submit task
+    /// Submit task (see parameter constraints by type below)
+    ///
+    /// text2image: models 3.1/3.2_fast_m/3.2_pro_m, duration=0, resolution 1080p/2k/4k, aspect_ratio 4:3/3:4/1:1/9:16/16:9
+    /// text2video: models 3.0/3.1/3.2, duration 3.0:5s 3.1:2-8s 3.2:1-16s, resolution 1080p, aspect_ratio 16:9/9:16/1:1/4:3/3:4, transition 3.2:pro/speed
+    /// img2video: models 3.0/3.1/3.2, duration 3.0:5s 3.1:2-8s 3.2:1-16s, resolution 1080p, transition 3.0:creative/stable 3.1+:pro/speed, 1 image
+    /// headtailimg2video: models 3.0/3.1/3.2, duration 3.0:5s 3.1:2-8s 3.2:1-16s, resolution 1080p, transition 3.0:creative/stable 3.1+:pro/speed, 2 images
+    /// reference2image: models 3.1/3.2_fast_m/3.2_pro_m, duration=0, resolution 1080p/2k/4k, aspect_ratio 4:3/3:4/1:1/9:16/16:9, image+material≤7
+    /// character2video: models 3.0/3.1/3.1_pro/3.2, duration 3.0:5s 3.1:2-8s 3.1_pro:-1/2-8s 3.2:1-16s, resolution 1080p, aspect_ratio 16:9/9:16/1:1/4:3/3:4, image+material≤7
     Submit {
         #[arg(long = "type", value_name = "TYPE")]
         task_type: String,
         #[arg(long)]
         prompt: String,
-        #[arg(long = "image", action = clap::ArgAction::Append)]
+        #[arg(long = "image", action = clap::ArgAction::Append, help = "Image input (local path, URL, or ssupload:?id=xxx). Repeatable.")]
         images: Vec<String>,
-        #[arg(long = "material", action = clap::ArgAction::Append)]
+        #[arg(long = "material", action = clap::ArgAction::Append, help = "Material reference (format: name:id:version). Repeatable.")]
         materials: Vec<String>,
-        #[arg(long)]
+        #[arg(long, help = "Duration in seconds. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16). Use 0 for images.")]
         duration: i64,
-        #[arg(long)]
+        #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m")]
         model_version: String,
-        #[arg(long)]
+        #[arg(long, help = "Aspect ratio: 16:9, 9:16, 1:1, 4:3, 3:4 (not for img2video/headtailimg2video)")]
         aspect_ratio: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Transition style. For img2video 3.0: creative/stable. For 3.1+: pro/speed. For text2video 3.2 only.")]
         transition: Option<String>,
-        #[arg(long)]
+        #[arg(long, help = "Resolution: 1080p (all), 2k/4k (text2image/reference2image only)")]
         resolution: String,
         #[arg(long, default_value = "1")]
         sample_count: i64,
@@ -66,6 +73,11 @@ enum TaskAction {
 
 #[derive(Subcommand)]
 enum ElementAction {
+    /// Check if element name exists
+    Check {
+        #[arg(long)]
+        name: String,
+    },
     /// Pre-process element
     Preprocess {
         #[arg(long)]
@@ -77,8 +89,6 @@ enum ElementAction {
     },
     /// Create element
     Create {
-        #[arg(long = "id")]
-        elem_id: String,
         #[arg(long)]
         name: String,
         #[arg(long, default_value = "image")]
@@ -87,10 +97,10 @@ enum ElementAction {
         elem_type: String,
         #[arg(long = "image", action = clap::ArgAction::Append)]
         images: Vec<String>,
-        #[arg(long, default_value = "0")]
-        version: String,
         #[arg(long)]
-        description: String,
+        description: Option<String>,
+        #[arg(long)]
+        style: Option<String>,
     },
     /// List personal elements
     List {
@@ -137,11 +147,14 @@ fn main() {
             TaskAction::Sse { task_id } => commands::tasks::sse(&task_id),
         },
         Group::Element { action } => match action {
+            ElementAction::Check { name } => {
+                commands::elements::check(&name);
+            }
             ElementAction::Preprocess { name, elem_type, images } => {
                 commands::elements::preprocess(&name, &elem_type, &images);
             }
-            ElementAction::Create { elem_id, name, modality, elem_type, images, version, description } => {
-                commands::elements::create(&elem_id, &name, &modality, &elem_type, &images, &version, &description);
+            ElementAction::Create { name, modality, elem_type, images, description, style } => {
+                commands::elements::create(&name, &modality, &elem_type, &images, description.as_deref(), style.as_deref());
             }
             ElementAction::List { keyword, page, pagesz } => {
                 commands::elements::list_elements(keyword.as_deref(), page, pagesz);
