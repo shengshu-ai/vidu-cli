@@ -4,8 +4,10 @@ mod validators;
 
 use clap::{Parser, Subcommand};
 
+const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Parser)]
-#[command(name = "vidu-cli", about = "Vidu API CLI")]
+#[command(name = "vidu-cli", about = "Vidu API CLI", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     group: Group,
