@@ -31,14 +31,48 @@ enum Group {
 enum TaskAction {
     /// Submit task (see parameter constraints by type below)
     ///
-    /// text2image: models 3.1/3.2_fast_m/3.2_pro_m, duration=0, resolution 1080p/2k/4k, aspect_ratio 4:3/3:4/1:1/9:16/16:9
-    /// text2video: models 3.0/3.1/3.2, duration 3.0:5s 3.1:2-8s 3.2:1-16s, resolution 1080p, aspect_ratio 16:9/9:16/1:1/4:3/3:4, transition 3.2:pro/speed
-    /// img2video: models 3.0/3.1/3.2, duration 3.0:5s 3.1:2-8s 3.2:1-16s, resolution 1080p, transition 3.0:creative/stable 3.1+:pro/speed, 1 image
-    /// headtailimg2video: models 3.0/3.1/3.2, duration 3.0:5s 3.1:2-8s 3.2:1-16s, resolution 1080p, transition 3.0:creative/stable 3.1+:pro/speed, 2 images
-    /// reference2image: models 3.1/3.2_fast_m/3.2_pro_m, duration=0, resolution 1080p/2k/4k, aspect_ratio 4:3/3:4/1:1/9:16/16:9, image+material≤7
-    /// character2video: models 3.0/3.1/3.1_pro/3.2, duration 3.0:5s 3.1:2-8s 3.1_pro:-1/2-8s 3.2:1-16s, resolution 1080p, aspect_ratio 16:9/9:16/1:1/4:3/3:4, image+material≤7
+    /// TYPE: text2image
+    ///   Models: 3.1, 3.2_fast_m, 3.2_pro_m
+    ///   Duration: 0 (image generation)
+    ///   Resolution: 1080p, 2k, 4k
+    ///   Aspect Ratio: 4:3, 3:4, 1:1, 9:16, 16:9
+    ///
+    /// TYPE: text2video
+    ///   Models: 3.0, 3.1, 3.2
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s
+    ///   Resolution: 1080p
+    ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
+    ///   Transition: 3.2 only (pro/speed)
+    ///
+    /// TYPE: img2video
+    ///   Models: 3.0, 3.1, 3.2
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s
+    ///   Resolution: 1080p
+    ///   Transition: 3.0→creative/stable, 3.1+→pro/speed
+    ///   Images: 1 required
+    ///
+    /// TYPE: headtailimg2video
+    ///   Models: 3.0, 3.1, 3.2
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s
+    ///   Resolution: 1080p
+    ///   Transition: 3.0→creative/stable, 3.1+→pro/speed
+    ///   Images: 2 required (head + tail)
+    ///
+    /// TYPE: reference2image
+    ///   Models: 3.1, 3.2_fast_m, 3.2_pro_m
+    ///   Duration: 0 (image generation)
+    ///   Resolution: 1080p, 2k, 4k
+    ///   Aspect Ratio: 4:3, 3:4, 1:1, 9:16, 16:9
+    ///   Inputs: image + material ≤ 7
+    ///
+    /// TYPE: character2video
+    ///   Models: 3.0, 3.1, 3.1_pro, 3.2
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s
+    ///   Resolution: 1080p
+    ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
+    ///   Inputs: image + material ≤ 7
     Submit {
-        #[arg(long = "type", value_name = "TYPE")]
+        #[arg(long = "type", value_name = "TYPE", help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
         task_type: String,
         #[arg(long)]
         prompt: String,
