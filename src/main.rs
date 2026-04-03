@@ -54,7 +54,7 @@ enum TaskAction {
         model_version: String,
         #[arg(long, help = "Aspect ratio: 16:9, 9:16, 1:1, 4:3, 3:4 (not for img2video/headtailimg2video)")]
         aspect_ratio: Option<String>,
-        #[arg(long, help = "Transition style. For img2video 3.0: creative/stable. For 3.1+: pro/speed. For text2video 3.2 only.")]
+        #[arg(long, help = "Transition style. Required for character2video 3.2 (pro/speed). For img2video 3.0: creative/stable. For 3.1+: pro/speed. For text2video 3.2 only.")]
         transition: Option<String>,
         #[arg(long, help = "Resolution: 1080p (all), 2k/4k (text2image/reference2image only)")]
         resolution: String,
