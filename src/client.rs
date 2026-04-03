@@ -222,3 +222,36 @@ pub fn put_raw(url: &str, data: Vec<u8>, headers_map: &HashMap<String, String>, 
     }
     fail("network_error", &last_exc.unwrap_or_default(), None, None, step);
 }
+
+pub fn put_raw_large(url: &str, data: Vec<u8>, headers_map: &HashMap<String, String>, step: Option<&str>) -> (String,) {
+    let client = Client::new();
+    let headers = build_reqwest_headers(headers_map);
+    let mut last_exc: Option<String> = None;
+
+    for i in 0..MAX_RETRIES {
+        match client.put(url).headers(headers.clone()).body(data.clone()).timeout(Duration::from_secs(600)).send() {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                if status >= 500 && i < MAX_RETRIES - 1 {
+                    thread::sleep(Duration::from_secs(RETRY_DELAYS[i]));
+                    continue;
+                }
+                if status >= 400 {
+                    let text: String = resp.text().unwrap_or_default().chars().take(200).collect();
+                    fail("http_error", &format!("PUT failed: {text}"), Some(status), None, step);
+                }
+                let etag = resp.headers().get("ETag")
+                    .map(|v| v.to_str().unwrap_or("").to_string())
+                    .unwrap_or_default();
+                return (etag,);
+            }
+            Err(e) => {
+                last_exc = Some(if e.is_timeout() { "timeout".into() } else { e.to_string() });
+                if i < MAX_RETRIES - 1 {
+                    thread::sleep(Duration::from_secs(RETRY_DELAYS[i]));
+                }
+            }
+        }
+    }
+    fail("network_error", &last_exc.unwrap_or_default(), None, None, step);
+}
