@@ -112,3 +112,67 @@ pub fn upload_and_get_uri(image_path: &str) -> String {
 
     format!("ssupload:?id={}", upload_id_str)
 }
+
+pub fn upload_media_and_get_uri(path: &str) -> String {
+    upload_media_and_get_uri_with_metadata(path, None)
+}
+
+pub fn upload_media_and_get_uri_with_metadata(path: &str, metadata: Option<serde_json::Map<String, serde_json::Value>>) -> String {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => client::fail("client_error", &format!("Cannot read file: {}", e), None, None, None),
+    };
+
+    let mime = mime_guess::from_path(path).first_or_octet_stream().to_string();
+
+    // Step 1: Create upload
+    let mut body = json!({"scene": "vidu"});
+    if let Some(ref meta) = metadata {
+        body["metadata"] = json!(meta);
+    }
+    let base = client::base_url();
+    let data = client::request_json(
+        "POST",
+        &format!("{}/tools/v1/files/uploads", base),
+        Some("create_upload"),
+        Some(&body),
+        None,
+    );
+    let upload_id_str = data.get("id").map(|v| match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }).unwrap_or_default();
+    let put_url = data.get("put_url").and_then(|v| v.as_str()).unwrap_or("");
+    if upload_id_str.is_empty() || put_url.is_empty() {
+        client::fail("parse_error", &format!("Unexpected create_upload response: {}", data), None, None, Some("create_upload"));
+    }
+
+    // Step 2: PUT raw bytes (large file timeout)
+    let mut put_headers = HashMap::new();
+    put_headers.insert("Content-Type".into(), mime);
+    if let Some(meta) = &metadata {
+        for (key, value) in meta {
+            let header_key = format!("x-amz-meta-{}", key);
+            let header_value = match value {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                _ => value.to_string(),
+            };
+            put_headers.insert(header_key, header_value);
+        }
+    }
+    let (etag,) = client::put_raw_large(put_url, bytes, &put_headers, Some("put_media"));
+
+    // Step 3: Finish upload
+    let finish_body = json!({"etag": etag, "id": upload_id_str.clone()});
+    client::request_json(
+        "PUT",
+        &format!("{}/tools/v1/files/uploads/{}/finish", base, upload_id_str),
+        Some("finish_upload"),
+        Some(&finish_body),
+        None,
+    );
+
+    format!("ssupload:?id={}", upload_id_str)
+}

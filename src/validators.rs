@@ -228,3 +228,112 @@ pub fn validate_image_file(path: &str) -> String {
     }
     String::new()
 }
+
+pub fn validate_video_file(path: &str) -> String {
+    let p = Path::new(path);
+    if !p.is_file() {
+        return format!("Video file not found: {}", path);
+    }
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if !["mp4", "mov", "avi"].contains(&ext.as_str()) {
+        return format!("Invalid video format '{}'. Supported: mp4, mov, avi", ext);
+    }
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if size > 500 * 1024 * 1024 {
+        return format!("Video file too large ({:.1}MB). Max: 500MB", size as f64 / 1024.0 / 1024.0);
+    }
+    String::new()
+}
+
+pub fn validate_audio_file(path: &str) -> String {
+    let p = Path::new(path);
+    if !p.is_file() {
+        return format!("Audio file not found: {}", path);
+    }
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if !["mp3", "wav", "aac", "m4a"].contains(&ext.as_str()) {
+        return format!("Invalid audio format '{}'. Supported: mp3, wav, aac, m4a", ext);
+    }
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if size > 100 * 1024 * 1024 {
+        return format!("Audio file too large ({:.1}MB). Max: 100MB", size as f64 / 1024.0 / 1024.0);
+    }
+    String::new()
+}
+
+pub fn validate_lip_sync_text(text: &str) -> String {
+    if text.is_empty() {
+        return "Text content cannot be empty".into();
+    }
+    let has_cjk = text.chars().any(|c| {
+        ('\u{4E00}'..='\u{9FFF}').contains(&c)
+            || ('\u{3400}'..='\u{4DBF}').contains(&c)
+            || ('\u{F900}'..='\u{FAFF}').contains(&c)
+    });
+    let char_count = text.chars().count();
+    if has_cjk {
+        if char_count < 2 || char_count > 1000 {
+            return format!("Chinese text must be 2-1000 characters, got {}", char_count);
+        }
+    } else if char_count < 4 || char_count > 2000 {
+        return format!("English text must be 4-2000 characters, got {}", char_count);
+    }
+    String::new()
+}
+
+pub fn all_voice_ids() -> Vec<&'static str> {
+    [
+        "male-qn-qingse", "male-qn-jingying", "male-qn-badao", "male-qn-daxuesheng",
+        "female-shaonv", "female-yujie", "female-chengshu", "female-tianmei",
+        "male-qn-qingse-jingpin", "male-qn-jingying-jingpin", "male-qn-badao-jingpin",
+        "male-qn-daxuesheng-jingpin", "female-shaonv-jingpin", "female-yujie-jingpin",
+        "female-chengshu-jingpin", "female-tianmei-jingpin",
+        "clever_boy", "cute_boy", "lovely_girl", "cartoon_pig",
+        "bingjiao_didi", "junlang_nanyou", "chunzhen_xuedi", "lengdan_xiongzhang",
+        "badao_shaoye", "tianxin_xiaoling", "qiaopi_mengmei", "wumei_yujie",
+        "diadia_xuemei", "danya_xuejie",
+        "Chinese (Mandarin)_Reliable_Executive", "Chinese (Mandarin)_News_Anchor",
+        "Chinese (Mandarin)_Mature_Woman", "Chinese (Mandarin)_Unrestrained_Young_Man",
+        "Arrogant_Miss", "Robot_Armor",
+        "Chinese (Mandarin)_Kind-hearted_Antie", "Chinese (Mandarin)_HK_Flight_Attendant",
+        "Chinese (Mandarin)_Humorous_Elder", "Chinese (Mandarin)_Gentleman",
+        "Chinese (Mandarin)_Warm_Bestie", "Chinese (Mandarin)_Male_Announcer",
+        "Chinese (Mandarin)_Sweet_Lady", "Chinese (Mandarin)_Southern_Young_Man",
+        "Chinese (Mandarin)_Wise_Women", "Chinese (Mandarin)_Gentle_Youth",
+        "Chinese (Mandarin)_Warm_Girl", "Chinese (Mandarin)_Kind-hearted_Elder",
+        "Chinese (Mandarin)_Cute_Spirit", "Chinese (Mandarin)_Radio_Host",
+        "Chinese (Mandarin)_Lyrical_Voice", "Chinese (Mandarin)_Straightforward_Boy",
+        "Chinese (Mandarin)_Sincere_Adult", "Chinese (Mandarin)_Gentle_Senior",
+        "Chinese (Mandarin)_Stubborn_Friend", "Chinese (Mandarin)_Crisp_Girl",
+        "Chinese (Mandarin)_Pure-hearted_Boy", "Chinese (Mandarin)_Soft_Girl",
+        "Cantonese_ProfessionalHost（F)", "Cantonese_GentleLady",
+        "Cantonese_ProfessionalHost（M)", "Cantonese_PlayfulMan",
+        "Cantonese_CuteGirl", "Cantonese_KindWoman",
+        "Grinch", "Rudolph", "Arnold", "Charming_Santa", "Charming_Lady",
+        "Sweet_Girl", "Cute_Elf", "Attractive_Girl", "Serene_Woman",
+        "English_Trustworthy_Man", "English_Graceful_Lady", "English_Aussie_Bloke",
+        "English_Whispering_girl", "English_Diligent_Man", "English_Gentle-voiced_man",
+    ].to_vec()
+}
+
+pub fn validate_voice_id(voice_id: &str) -> String {
+    let valid: HashSet<String> = all_voice_ids().iter().map(|s| s.to_string()).collect();
+    if !valid.contains(voice_id) {
+        return format!("Invalid voice_id '{}'", voice_id);
+    }
+    String::new()
+}
+
+pub fn validate_lip_sync_speed(speed: f64) -> String {
+    if !(0.5..=2.0).contains(&speed) {
+        return format!("speed must be between 0.5 and 2.0, got {}", speed);
+    }
+    String::new()
+}
+
+pub fn validate_lip_sync_volume(volume: f64) -> String {
+    if !(0.1..=2.0).contains(&volume) {
+        return format!("volume must be between 0.1 and 2.0, got {}", volume);
+    }
+    String::new()
+}

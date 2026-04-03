@@ -4,8 +4,6 @@ mod validators;
 
 use clap::{Parser, Subcommand};
 
-const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 #[derive(Parser)]
 #[command(name = "vidu-cli", about = "Vidu API CLI", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
@@ -71,6 +69,32 @@ enum TaskAction {
     Get { task_id: String },
     /// Stream SSE task state
     Sse { task_id: String },
+    /// Lip sync: drive video mouth movement with text or audio
+    ///
+    /// Text mode:  --video <path> --text "hello" [--voice-id <id>] [--speed 1.0] [--volume 1.0]
+    /// Audio mode: --video <path> --audio <path>
+    /// Video: MP4/MOV/AVI, ≤500MB. Audio: MP3/WAV/AAC/M4A, ≤100MB.
+    /// voice-id default: English_Aussie_Bloke. speed range: [0.5,2]. volume range: [0.5,2] or 0 to omit.
+    LipSync {
+        #[arg(long)]
+        video: String,
+        #[arg(long, help = "Text for lip sync (mutually exclusive with --audio). Chinese: 2-1000 chars, English: 4-2000 chars.")]
+        text: Option<String>,
+        #[arg(long, help = "Audio file for lip sync (mutually exclusive with --text). MP3/WAV/AAC/M4A, ≤100MB.")]
+        audio: Option<String>,
+        #[arg(long, default_value = "English_Aussie_Bloke")]
+        voice_id: String,
+        #[arg(long, default_value = "1")]
+        speed: f64,
+        #[arg(long, default_value = "0", help = "Volume [0.5,2], or 0 to use server default")]
+        volume: f64,
+        #[arg(long, default_value = "true")]
+        enhance: bool,
+        #[arg(long, default_value = "h265")]
+        codec: String,
+    },
+    /// List available voice IDs for lip-sync
+    LipSyncVoices,
 }
 
 #[derive(Subcommand)]
@@ -147,6 +171,15 @@ fn main() {
             }
             TaskAction::Get { task_id } => commands::tasks::get(&task_id),
             TaskAction::Sse { task_id } => commands::tasks::sse(&task_id),
+            TaskAction::LipSync { video, text, audio, voice_id, speed, volume, enhance, codec } => {
+                commands::tasks::submit_lip_sync(
+                    &video, text.as_deref(), audio.as_deref(),
+                    &voice_id, speed, volume, enhance, &codec,
+                );
+            }
+            TaskAction::LipSyncVoices => {
+                commands::tasks::list_voices();
+            }
         },
         Group::Element { action } => match action {
             ElementAction::Check { name } => {

@@ -16,3 +16,4 @@ image = "0.25"
 mime_guess = "2"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
+lofty = "0.22"

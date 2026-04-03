@@ -1,4 +1,5 @@
 use crate::{client, validators};
+use lofty::prelude::AudioFile;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -172,4 +173,137 @@ pub fn sse(task_id: &str) {
             }
         }
     }
+}
+
+pub fn submit_lip_sync(
+    video: &str,
+    text: Option<&str>,
+    audio: Option<&str>,
+    voice_id: &str,
+    speed: f64,
+    volume: f64,
+    enhance: bool,
+    codec: &str,
+) {
+    match (text, audio) {
+        (Some(_), Some(_)) => client::fail("client_error", "--text and --audio are mutually exclusive", None, None, None),
+        (None, None) => client::fail("client_error", "Either --text or --audio is required", None, None, None),
+        _ => {}
+    }
+
+    let err = validators::validate_video_file(video);
+    if !err.is_empty() {
+        client::fail("client_error", &err, None, None, None);
+    }
+
+    let err = validators::validate_lip_sync_speed(speed);
+    if !err.is_empty() {
+        client::fail("client_error", &err, None, None, None);
+    }
+
+    if volume != 0.0 {
+        let err = validators::validate_lip_sync_volume(volume);
+        if !err.is_empty() {
+            client::fail("client_error", &err, None, None, None);
+        }
+    }
+
+    let video_uri = upload_media_file(video);
+    let video_name = Path::new(video).file_name().and_then(|n| n.to_str()).unwrap_or("video1");
+    let video_prompt = json!({"type": "video", "content": video_uri, "name": video_name});
+
+    let (prompts, settings) = if let Some(txt) = text {
+        let err = validators::validate_lip_sync_text(txt);
+        if !err.is_empty() {
+            client::fail("client_error", &err, None, None, None);
+        }
+        let err = validators::validate_voice_id(voice_id);
+        if !err.is_empty() {
+            client::fail("client_error", &err, None, None, None);
+        }
+        let duration = calculate_text_duration(txt);
+        if duration < 2 {
+            client::fail("client_error", "Text is too short, duration must be at least 2 seconds", None, None, None);
+        }
+        let prompts = vec![json!({"type": "text", "content": txt}), video_prompt];
+        let mut settings = json!({"speed": speed, "voice_id": voice_id, "duration": duration, "codec": codec});
+        if volume != 0.0 {
+            settings["volume"] = json!(volume);
+        }
+        (prompts, settings)
+    } else {
+        let audio_path = audio.unwrap();
+        let err = validators::validate_audio_file(audio_path);
+        if !err.is_empty() {
+            client::fail("client_error", &err, None, None, None);
+        }
+        let duration_f64 = read_audio_duration_f64(audio_path);
+        let duration = duration_f64.ceil() as i64;
+
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("duration".to_string(), json!(duration.to_string()));
+        let audio_uri = crate::commands::upload::upload_media_and_get_uri_with_metadata(audio_path, Some(metadata));
+
+        let audio_name = Path::new(audio_path).file_name().and_then(|n| n.to_str()).unwrap_or("audio1");
+        let prompts = vec![video_prompt, json!({"type": "audio", "content": audio_uri, "name": audio_name})];
+        let settings = json!({"codec": codec, "duration": duration});
+        (prompts, settings)
+    };
+
+    let body = json!({
+        "type": "lip_sync",
+        "input": {"prompts": prompts, "enhance": enhance},
+        "settings": settings,
+    });
+
+    let base = client::base_url();
+    let data = client::request_json("POST", &format!("{}/vidu/v1/tasks/tool", base), None, Some(&body), None);
+    let task_id = data.get("id").map(|v| match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }).unwrap_or_default();
+    if task_id.is_empty() {
+        client::fail("parse_error", &format!("No task id in response: {}", data), None, None, None);
+    }
+    client::ok(json!({"task_id": task_id}));
+}
+
+fn calculate_text_duration(text: &str) -> i64 {
+    let has_cjk = text.chars().any(|c| {
+        ('\u{4E00}'..='\u{9FFF}').contains(&c)
+            || ('\u{3400}'..='\u{4DBF}').contains(&c)
+            || ('\u{F900}'..='\u{FAFF}').contains(&c)
+    });
+    let char_count = text.chars().count() as i64;
+    if has_cjk {
+        (char_count + 4) / 5
+    } else {
+        (char_count + 9) / 10
+    }
+}
+
+fn read_audio_duration_f64(path: &str) -> f64 {
+    match lofty::read_from_path(path) {
+        Ok(tagged_file) => {
+            let secs = tagged_file.properties().duration().as_secs_f64();
+            secs.max(0.1)
+        }
+        Err(e) => client::fail("client_error", &format!("Cannot read audio duration: {}", e), None, None, None),
+    }
+}
+
+fn upload_media_file(path: &str) -> String {
+    if !Path::new(path).exists() {
+        client::fail("client_error", &format!("File not found: {}", path), None, None, None);
+    }
+    crate::commands::upload::upload_media_and_get_uri(path)
+}
+
+pub fn list_voices() {
+    let voices = validators::all_voice_ids();
+    let mut result = serde_json::Map::new();
+    result.insert("count".into(), json!(voices.len()));
+    result.insert("voice_ids".into(), json!(voices));
+    client::ok(serde_json::Value::Object(result));
 }
