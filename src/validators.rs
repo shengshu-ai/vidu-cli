@@ -153,7 +153,7 @@ pub fn validate_task_body(body: &Value) -> String {
     }
 
     if settings.get("transition").is_some() {
-        let no_trans = ["reference2image", "character2video", "text2image"];
+        let no_trans = ["reference2image", "text2image"];
         if no_trans.contains(&task_type) {
             return format!("{} should not include transition", task_type);
         }
@@ -170,6 +170,20 @@ pub fn validate_task_body(body: &Value) -> String {
             if !valid_trans.contains(transition) {
                 return format!("Invalid transition '{}' for {} {}. Valid: {}", transition, task_type, model_version, sorted_join(&valid_trans));
             }
+        }
+    }
+
+    if task_type == "character2video" {
+        if model_version == "3.2" {
+            match settings.get("transition").and_then(|v| v.as_str()) {
+                None => return "character2video with 3.2 requires transition parameter (speed or pro)".into(),
+                Some(trans) if trans != "speed" && trans != "pro" => {
+                    return format!("Invalid transition '{}' for character2video 3.2. Valid: pro, speed", trans);
+                }
+                _ => {}
+            }
+        } else if settings.get("transition").is_some() {
+            return format!("character2video with {} should not include transition (only 3.2 supports pro/speed)", model_version);
         }
     }
 
