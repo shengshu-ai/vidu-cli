@@ -14,7 +14,7 @@ Set the following environment variables before use:
 
 ```bash
 export VIDU_TOKEN=your_api_token
-export VIDU_BASE_URL=https://api.vidu.io  # optional, defaults to official endpoint
+export VIDU_BASE_URL=https://service.vidu.cn  # China: service.vidu.cn, Global: service.vidu.com
 ```
 
 ## Usage
