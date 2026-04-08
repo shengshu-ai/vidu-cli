@@ -1,0 +1,24 @@
+{
+  "name": "vidu-cli",
+  "version": "0.2.3",
+  "description": "Client for Vidu AI video generation",
+  "author": "saerdna",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shengshu-ai/vidu-cli"
+  },
+  "bin": {
+    "vidu-cli": "./bin/vidu-cli.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/",
+    "install.js"
+  ],
+  "engines": {
+    "node": ">=14"
+  }
+}
