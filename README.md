@@ -135,6 +135,41 @@ Supported video: MP4/MOV/AVI ≤500MB. Supported audio: MP3/WAV/AAC/M4A ≤100MB
 vidu-cli task lip-sync-voices
 ```
 
+#### TTS (Text-to-Speech)
+
+Convert text to speech audio:
+
+```bash
+# Basic usage
+vidu-cli task tts --prompt "Hello, this is a test." --voice-id English_Trustworth_Man
+
+# Full parameters
+vidu-cli task tts \
+  --prompt "你好，这是一个测试。" \
+  --voice-id "Chinese (Mandarin)_Reliable_Executive" \
+  --speed 1.2 \
+  --volume 80 \
+  --emotion "happy" \
+  --language-boost "Chinese"
+```
+
+**Parameters:**
+
+| Parameter | Required | Default | Range | Description |
+|-----------|----------|---------|-------|-------------|
+| `--prompt` | Yes | - | 1-2000 chars | Text content to convert to speech |
+| `--voice-id` | Yes | - | See voice list | Voice ID for speech synthesis |
+| `--speed` | No | 1.0 | 0.5-2.0 | Speech speed multiplier |
+| `--volume` | No | 80 | 0-100 | Audio volume level |
+| `--emotion` | No | - | Any text | Emotion description (optional) |
+| `--language-boost` | No | - | Chinese, English, auto, etc. | Enhance recognition of specific languages/dialects |
+
+#### List available TTS voices
+
+```bash
+vidu-cli task tts-voices
+```
+
 ---
 
 ### Element (主体)

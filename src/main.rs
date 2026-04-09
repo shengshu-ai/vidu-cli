@@ -129,6 +129,31 @@ enum TaskAction {
     },
     /// List available voice IDs for lip-sync
     LipSyncVoices,
+    /// TTS: Convert text to speech
+    ///
+    /// Single segment: --prompt "text" [--emotion happy]
+    /// Multi segment:  --text "seg1" --emotion happy --text "seg2" --emotion sad --text "seg3"
+    ///
+    /// Required: --voice-id, and one of --prompt or --text
+    /// Optional: --speed, --volume, --emotion, --language-boost
+    Tts {
+        #[arg(long, help = "Single text segment (mutually exclusive with --text)", conflicts_with = "texts")]
+        prompt: Option<String>,
+        #[arg(long = "text", action = clap::ArgAction::Append, help = "Text segment, repeatable for multi-segment TTS (mutually exclusive with --prompt)", conflicts_with = "prompt")]
+        texts: Vec<String>,
+        #[arg(long, help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)")]
+        voice_id: String,
+        #[arg(long, default_value = "1.0", help = "Speech speed: 0.5-2.0")]
+        speed: f64,
+        #[arg(long, default_value = "80", help = "Volume: 0-100")]
+        volume: i32,
+        #[arg(long, action = clap::ArgAction::Append, help = "Emotion per segment (paired by order with --text), or global emotion for --prompt")]
+        emotion: Vec<String>,
+        #[arg(long, help = "Language boost for small languages/dialects: Chinese, English, auto, etc. (optional)")]
+        language_boost: Option<String>,
+    },
+    /// List available TTS voice IDs
+    TtsVoices,
 }
 
 #[derive(Subcommand)]
@@ -213,6 +238,12 @@ fn main() {
             }
             TaskAction::LipSyncVoices => {
                 commands::tasks::list_voices();
+            }
+            TaskAction::Tts { prompt, texts, voice_id, speed, volume, emotion, language_boost } => {
+                commands::tasks::submit_tts(prompt.as_deref(), &texts, &emotion, &voice_id, speed, volume, language_boost.as_deref());
+            }
+            TaskAction::TtsVoices => {
+                commands::tasks::list_tts_voices();
             }
         },
         Group::Element { action } => match action {

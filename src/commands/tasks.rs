@@ -307,3 +307,142 @@ pub fn list_voices() {
     result.insert("voice_ids".into(), json!(voices));
     client::ok(serde_json::Value::Object(result));
 }
+
+pub fn submit_tts(
+    prompt: Option<&str>,
+    texts: &[String],
+    emotions: &[String],
+    voice_id: &str,
+    speed: f64,
+    volume: i32,
+    language_boost: Option<&str>,
+) {
+    // 1. 构建 (content, Option<emotion>) 列表
+    let segments: Vec<(&str, Option<&str>)> = if let Some(p) = prompt {
+        if p.trim().is_empty() {
+            client::fail("client_error", "Prompt cannot be empty", None, None, None);
+        }
+        let emo = emotions.first().map(|s| s.as_str()).filter(|s| !s.trim().is_empty());
+        vec![(p, emo)]
+    } else if !texts.is_empty() {
+        if emotions.len() > texts.len() {
+            client::fail("client_error",
+                &format!("Too many --emotion values ({}): must not exceed number of --text segments ({})", emotions.len(), texts.len()),
+                None, None, None);
+        }
+        texts.iter().enumerate().map(|(i, t)| {
+            let emo = emotions.get(i).map(|s| s.as_str()).filter(|s| !s.trim().is_empty());
+            (t.as_str(), emo)
+        }).collect()
+    } else {
+        client::fail("client_error", "Either --prompt or at least one --text is required", None, None, None);
+    };
+
+    // 2. 校验段数
+    if segments.len() > 20 {
+        client::fail("client_error", &format!("Too many segments ({}). Maximum: 20", segments.len()), None, None, None);
+    }
+
+    // 3. 校验每段内容和 emotion
+    for (i, (content, emo)) in segments.iter().enumerate() {
+        if content.trim().is_empty() {
+            client::fail("client_error", &format!("Segment {} text cannot be empty", i + 1), None, None, None);
+        }
+        let char_count = content.chars().count();
+        if char_count > 2000 {
+            client::fail("client_error",
+                &format!("Segment {} text too long ({} characters). Maximum: 2000", i + 1, char_count),
+                None, None, None);
+        }
+        if let Some(e) = emo {
+            let err = validators::validate_tts_emotion(e);
+            if !err.is_empty() {
+                client::fail("client_error", &format!("Segment {}: {}", i + 1, err), None, None, None);
+            }
+        }
+    }
+
+    // 4. 校验公共参数
+    let err = validators::validate_tts_voice_id(voice_id);
+    if !err.is_empty() {
+        client::fail("client_error", &err, None, None, None);
+    }
+
+    let err = validators::validate_tts_speed(speed);
+    if !err.is_empty() {
+        client::fail("client_error", &err, None, None, None);
+    }
+
+    let err = validators::validate_tts_volume(volume);
+    if !err.is_empty() {
+        client::fail("client_error", &err, None, None, None);
+    }
+
+    // 5. 构建 prompts 数组
+    let prompts: Vec<serde_json::Value> = segments.iter().map(|(content, emo)| {
+        let mut p = json!({"type": "text", "content": content});
+        if let Some(e) = emo {
+            p["audio"] = json!({"emotion": e});
+        }
+        p
+    }).collect();
+
+    // 6. 构建 settings
+    let mut settings = json!({
+        "voice_id": voice_id,
+        "speed": speed,
+        "vol": volume,
+    });
+
+    if let Some(lb) = language_boost {
+        let lb_trimmed = lb.trim();
+        if !lb_trimmed.is_empty() {
+            let err = validators::validate_tts_language_boost(lb_trimmed);
+            if !err.is_empty() {
+                client::fail("client_error", &err, None, None, None);
+            }
+            settings["language_boost"] = json!(lb_trimmed);
+        }
+    }
+
+    let body = json!({
+        "type": "tts",
+        "input": {
+            "prompts": prompts,
+            "enhance": true
+        },
+        "settings": settings,
+    });
+
+    // 7. 发送请求
+    let base = client::base_url();
+    let data = client::request_json("POST", &format!("{}/vidu/v1/tasks", base), None, Some(&body), None);
+
+    let task_id = data.get("id").map(|v| match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }).unwrap_or_default();
+
+    if task_id.is_empty() {
+        client::fail("parse_error", &format!("No task id in response: {}", data), None, None, None);
+    }
+
+    client::ok(json!({"task_id": task_id}));
+}
+
+pub fn list_tts_voices() {
+    let grouped = validators::tts_voices_grouped();
+    let total: usize = grouped.iter().map(|(_, v)| v.len()).sum();
+    let languages: Vec<serde_json::Value> = grouped.into_iter().map(|(lang, voices)| {
+        json!({
+            "language": lang,
+            "count": voices.len(),
+            "voice_ids": voices,
+        })
+    }).collect();
+    client::ok(json!({
+        "total": total,
+        "languages": languages,
+    }));
+}
