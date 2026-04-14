@@ -1,7 +1,6 @@
 use crate::{client, validators};
 use lofty::prelude::AudioFile;
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 pub fn process_image_input(input: &str) -> String {
@@ -115,64 +114,67 @@ pub fn submit(
     client::ok(json!({"task_id": task_id}));
 }
 
-pub fn get(task_id: &str) {
+pub fn get(task_id: &str, output: Option<&str>) {
     let base = client::base_url();
     let data = client::request_json("GET", &format!("{}/vidu/v1/tasks/{}", base, task_id), None, None, None);
     let state = data.get("state").and_then(|v| v.as_str()).unwrap_or("");
-    let mut result = json!({"task_id": task_id, "state": state});
+    let task_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let model = data.get("input").and_then(|v| v.get("model_name")).and_then(|v| v.as_str()).unwrap_or("");
 
-    if state == "success" {
-        let urls: Vec<&str> = data.get("creations")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|c| c.get("nomark_uri").and_then(|u| u.as_str())).collect())
-            .unwrap_or_default();
-        result["media_urls"] = json!(urls);
-    } else if state == "failed" {
+    let mut result = json!({
+        "task_id": task_id,
+        "state": state,
+        "type": task_type,
+        "model": model,
+    });
+
+    if state == "failed" {
         result["err_code"] = json!(data.get("err_code").and_then(|v| v.as_str()).unwrap_or(""));
         result["err_msg"] = json!(data.get("err_msg").and_then(|v| v.as_str()).unwrap_or(""));
     }
 
-    client::ok(result);
-}
+    if let Some(out_dir) = output {
+        if state == "success" {
+            let urls: Vec<&str> = data.get("creations")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|c| c.get("nomark_uri").and_then(|u| u.as_str())).collect())
+                .unwrap_or_default();
 
-pub fn sse(task_id: &str) {
-    let base = client::base_url();
-    let url = format!("{}/vidu/v1/tasks/state?id={}", base, task_id);
-    let mut extra = std::collections::HashMap::new();
-    extra.insert("Accept".into(), "text/event-stream".into());
-    let headers_map = client::get_headers(Some(&extra));
+            std::fs::create_dir_all(out_dir).unwrap_or_else(|e| {
+                client::fail("client_error", &format!("Failed to create output directory: {}", e), None, None, None);
+            });
 
-    let http_client = reqwest::blocking::Client::new();
-    let mut builder = http_client.get(&url).timeout(std::time::Duration::from_secs(300));
-    for (k, v) in &headers_map {
-        builder = builder.header(k, v);
-    }
-
-    match builder.send() {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            if status >= 400 {
-                client::fail("http_error", &format!("SSE request failed with status {}", status), Some(status), None, None);
-            }
-            let reader = BufReader::new(resp);
-            for line in reader.lines() {
-                match line {
-                    Ok(l) if !l.is_empty() => println!("{}", l),
-                    Err(e) => {
-                        client::fail("network_error", &e.to_string(), None, None, None);
+            let http_client = reqwest::blocking::Client::new();
+            let mut downloaded: Vec<String> = Vec::new();
+            for (i, url) in urls.iter().enumerate() {
+                let filename = format!("{}_{}.mp4", task_id, i);
+                let filepath = Path::new(out_dir).join(&filename);
+                match http_client.get(*url).timeout(std::time::Duration::from_secs(60)).send() {
+                    Ok(mut resp) => {
+                        let status = resp.status().as_u16();
+                        if status >= 400 {
+                            client::fail("http_error", &format!("Download failed for {}: HTTP {}", url, status), Some(status), None, None);
+                        }
+                        let mut file = std::fs::File::create(&filepath).unwrap_or_else(|e| {
+                            client::fail("client_error", &format!("Failed to create file {}: {}", filepath.display(), e), None, None, None);
+                        });
+                        std::io::copy(&mut resp, &mut file).unwrap_or_else(|e| {
+                            client::fail("client_error", &format!("Failed to write file {}: {}", filepath.display(), e), None, None, None);
+                        });
+                        downloaded.push(filepath.to_string_lossy().to_string());
                     }
-                    _ => {}
+                    Err(e) => {
+                        client::fail("network_error", &format!("Failed to download {}: {}", url, e), None, None, None);
+                    }
                 }
             }
-        }
-        Err(e) => {
-            if e.is_timeout() {
-                client::fail("network_error", "timeout", None, None, None);
-            } else {
-                client::fail("network_error", &e.to_string(), None, None, None);
-            }
+            result["downloaded_files"] = json!(downloaded);
+        } else {
+            result["download_skipped"] = json!("task not ready");
         }
     }
+
+    client::ok(result);
 }
 
 pub fn submit_lip_sync(

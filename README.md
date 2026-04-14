@@ -10,7 +10,7 @@ cargo install vidu-cli
 
 ## Configuration
 
-Set the following environment variables before use:
+Set environment variables:
 
 ```bash
 export VIDU_TOKEN=your_api_token
@@ -106,14 +106,18 @@ vidu-cli task submit \
 #### Get task result
 
 ```bash
-vidu-cli task get <TASK_ID>
+vidu-cli task get <TASK_ID> [--output <DIR>]
 ```
 
-#### Stream task state (SSE)
+Returns: `task_id`, `state`, `type`, `model`, `err_code`, `err_msg`.
+
+Use `--output` / `-o` to download media files to a local directory when the task is complete:
 
 ```bash
-vidu-cli task sse <TASK_ID>
+vidu-cli task get <TASK_ID> --output ./results
 ```
+
+If the task state is not `success`, the download is skipped and the response includes `download_skipped: true`.
 
 #### Lip sync
 

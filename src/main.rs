@@ -100,9 +100,11 @@ enum TaskAction {
         schedule_mode: String,
     },
     /// Get task result
-    Get { task_id: String },
-    /// Stream SSE task state
-    Sse { task_id: String },
+    Get {
+        task_id: String,
+        #[arg(long, short = 'o', help = "Output directory for downloading media files")]
+        output: Option<String>,
+    },
     /// Lip sync: drive video mouth movement with text or audio
     ///
     /// Text mode:  --video <path> --text "hello" [--voice-id <id>] [--speed 1.0] [--volume 1.0]
@@ -228,8 +230,7 @@ fn main() {
                     &resolution, sample_count, &codec, &movement_amplitude, &schedule_mode,
                 );
             }
-            TaskAction::Get { task_id } => commands::tasks::get(&task_id),
-            TaskAction::Sse { task_id } => commands::tasks::sse(&task_id),
+            TaskAction::Get { task_id, output } => commands::tasks::get(&task_id, output.as_deref()),
             TaskAction::LipSync { video, text, audio, voice_id, speed, volume, enhance, codec } => {
                 commands::tasks::submit_lip_sync(
                     &video, text.as_deref(), audio.as_deref(),
