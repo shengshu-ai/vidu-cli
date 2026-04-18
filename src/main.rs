@@ -156,6 +156,21 @@ enum TaskAction {
     },
     /// List available TTS voice IDs
     TtsVoices,
+    /// Compose: 按时间线合成导出视频
+    ///
+    /// --timeline accepts a JSON file path or inline JSON string.
+    /// The timeline describes multi-track video/audio/subtitle/effect clips.
+    /// media_url in timeline supports: ssupload:?id=xxx,
+    /// http(s) URL, or local file path (auto-upload).
+    /// Returns task_id — query with `task get <task_id>`.
+    Compose {
+        #[arg(long, help = "Timeline JSON (file path or inline JSON string)")]
+        timeline: String,
+        #[arg(long, help = "Output width in pixels")]
+        width: Option<i32>,
+        #[arg(long, help = "Output height in pixels")]
+        height: Option<i32>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -245,6 +260,9 @@ fn main() {
             }
             TaskAction::TtsVoices => {
                 commands::tasks::list_tts_voices();
+            }
+            TaskAction::Compose { timeline, width, height } => {
+                commands::tasks::compose(&timeline, width, height);
             }
         },
         Group::Element { action } => match action {
