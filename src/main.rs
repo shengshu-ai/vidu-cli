@@ -5,10 +5,12 @@ mod validators;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "vidu-cli", about = "Vidu API CLI", version = env!("CARGO_PKG_VERSION"))]
+#[command(name = "vidu-cli", about = "Vidu API CLI", version = env!("VIDU_CLI_VERSION"), propagate_version = true)]
 struct Cli {
+    #[arg(short = 'v', long = "version")]
+    version: bool,
     #[command(subcommand)]
-    group: Group,
+    group: Option<Group>,
 }
 
 #[derive(Subcommand)]
@@ -156,6 +158,21 @@ enum TaskAction {
     },
     /// List available TTS voice IDs
     TtsVoices,
+    /// Compose: export video from multi-track timeline
+    ///
+    /// --timeline accepts a JSON file path or inline JSON string.
+    /// The timeline describes multi-track video/audio/subtitle/effect clips.
+    /// media_url in timeline supports: ssupload:?id=xxx,
+    /// http(s) URL, or local file path (auto-upload).
+    /// Returns task_id — query with `task get <task_id>`.
+    Compose {
+        #[arg(long, help = "Timeline JSON (file path or inline JSON string)")]
+        timeline: String,
+        #[arg(long, help = "Output width in pixels")]
+        width: Option<i32>,
+        #[arg(long, help = "Output height in pixels")]
+        height: Option<i32>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -214,7 +231,22 @@ enum ElementAction {
 fn main() {
     let cli = Cli::parse();
 
-    match cli.group {
+    if cli.version {
+        println!("vidu-cli {}", env!("VIDU_CLI_VERSION"));
+        return;
+    }
+
+    let group = match cli.group {
+        Some(g) => g,
+        None => {
+            use clap::CommandFactory;
+            Cli::command().print_help().unwrap();
+            println!();
+            return;
+        }
+    };
+
+    match group {
         Group::Upload { image_path } => {
             commands::upload::run(&image_path);
         }
@@ -245,6 +277,9 @@ fn main() {
             }
             TaskAction::TtsVoices => {
                 commands::tasks::list_tts_voices();
+            }
+            TaskAction::Compose { timeline, width, height } => {
+                commands::tasks::compose(&timeline, width, height);
             }
         },
         Group::Element { action } => match action {
