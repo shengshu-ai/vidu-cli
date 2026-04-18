@@ -68,6 +68,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   publish-npm:
     name: Publish to npm
@@ -92,7 +93,23 @@ jobs:
             fs.writeFileSync('npm/vidu-cli/package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
+      - name: Determine npm tag
+        id: npm-tag
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          if echo "$VERSION" | grep -qE '\-beta\.'; then
+            echo "tag=beta" >> $GITHUB_OUTPUT
+          elif echo "$VERSION" | grep -qE '\-canary\.'; then
+            echo "tag=canary" >> $GITHUB_OUTPUT
+          elif echo "$VERSION" | grep -qE '\-rc\.'; then
+            echo "tag=rc" >> $GITHUB_OUTPUT
+          elif echo "$VERSION" | grep -q '\-'; then
+            echo "tag=next" >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          fi
+
       - name: Publish
-        run: npm publish npm/vidu-cli/ --access public
+        run: npm publish npm/vidu-cli/ --access public --tag ${{ steps.npm-tag.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
