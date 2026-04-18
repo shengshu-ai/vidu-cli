@@ -448,3 +448,300 @@ pub fn list_tts_voices() {
         "languages": languages,
     }));
 }
+
+// --- Compose (视频合成) ---
+
+pub fn compose(
+    timeline_input: &str,
+    width: Option<i32>,
+    height: Option<i32>,
+) {
+    let mut timeline = parse_timeline(timeline_input);
+    normalize_timeline_urls(&mut timeline);
+    remove_media_ids(&mut timeline);
+    validate_track_limits(&timeline);
+
+    let mut output_media_config = serde_json::Map::new();
+    if let Some(w) = width {
+        output_media_config.insert("width".into(), json!(w));
+    }
+    if let Some(h) = height {
+        output_media_config.insert("height".into(), json!(h));
+    }
+
+    let mut body = json!({ "timeline": timeline });
+    if !output_media_config.is_empty() {
+        body["output_media_config"] = Value::Object(output_media_config);
+    }
+
+    let base = client::base_url();
+    let data = client::request_json(
+        "POST",
+        &format!("{}/vidu/v1/clip/compose", base),
+        None,
+        Some(&body),
+        None,
+    );
+
+    let task_id = data
+        .get("job")
+        .and_then(|j| j.get("task_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if task_id.is_empty() {
+        client::fail(
+            "parse_error",
+            &format!("No task_id in response: {}", data),
+            None,
+            None,
+            None,
+        );
+    }
+    client::ok(json!({"task_id": task_id}));
+}
+
+fn parse_timeline(input: &str) -> Value {
+    if Path::new(input).exists() {
+        let content = match std::fs::read_to_string(input) {
+            Ok(c) => c,
+            Err(e) => client::fail(
+                "client_error",
+                &format!("Failed to read timeline file: {}", e),
+                None, None, None,
+            ),
+        };
+        match serde_json::from_str(&content) {
+            Ok(v) => return v,
+            Err(e) => client::fail(
+                "client_error",
+                &format!("Invalid JSON in timeline file: {}", e),
+                None, None, None,
+            ),
+        }
+    }
+    match serde_json::from_str(input) {
+        Ok(v) => v,
+        Err(e) => client::fail(
+            "client_error",
+            &format!("Timeline is neither a valid file path nor valid JSON: {}", e),
+            None, None, None,
+        ),
+    }
+}
+fn normalize_timeline_urls(timeline: &mut Value) {
+    let track_clip_pairs = [
+        ("video_tracks", "video_track_clips", "media_url"),
+        ("audio_tracks", "audio_track_clips", "media_url"),
+        ("subtitle_tracks", "subtitle_track_clips", "file_url"),
+    ];
+
+    for (track_key, clip_key, url_key) in &track_clip_pairs {
+        if let Some(tracks) = timeline.get_mut(*track_key).and_then(|v| v.as_array_mut()) {
+            for track in tracks.iter_mut() {
+                if let Some(clips) = track.get_mut(*clip_key).and_then(|v| v.as_array_mut()) {
+                    for clip in clips.iter_mut() {
+                        if let Some(Value::String(url)) = clip.get_mut(*url_key) {
+                            if *url_key == "media_url" {
+                                *url = normalize_media_url(url);
+                            } else {
+                                *url = normalize_file_url(url);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn remove_media_ids(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("media_id");
+            for val in map.values_mut() {
+                remove_media_ids(val);
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                remove_media_ids(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+const MAX_TRACKS_PER_TYPE: usize = 100;
+
+fn validate_track_limits(timeline: &Value) {
+    let checks = [
+        ("video_tracks", "Video"),
+        ("audio_tracks", "Audio"),
+        ("subtitle_tracks", "Subtitle"),
+        ("effect_tracks", "Effect"),
+    ];
+    for (key, label) in &checks {
+        let count = timeline.get(key).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+        if count > MAX_TRACKS_PER_TYPE {
+            client::fail(
+                "client_error",
+                &format!("{} track count ({}) exceeds maximum of {}.", label, count, MAX_TRACKS_PER_TYPE),
+                None, None, None,
+            );
+        }
+    }
+}
+
+fn normalize_media_url(url: &str) -> String {
+    if url.starts_with("sscreation:") || url.starts_with("ssupload:") {
+        return url.to_string();
+    }
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return url.to_string();
+    }
+    if Path::new(url).exists() {
+        return upload_local_media(url);
+    }
+    // Bare ID — treat as creation id
+    if !url.contains('/') && !url.contains('\\') && !url.contains('.') && !url.is_empty() {
+        return format!("sscreation:?id={}", url);
+    }
+    client::fail(
+        "client_error",
+        &format!("Cannot resolve media_url: '{}'. Expected sscreation:?id=, ssupload:?id=, creation ID, URL, or local file path.", url),
+        None, None, None,
+    );
+}
+
+fn normalize_file_url(url: &str) -> String {
+    if url.starts_with("ssupload:") {
+        return url.to_string();
+    }
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return url.to_string();
+    }
+    if Path::new(url).exists() {
+        return upload_local_subtitle(url);
+    }
+    client::fail(
+        "client_error",
+        &format!("Cannot resolve file_url: '{}'. Expected ssupload:?id=, URL, or local file path.", url),
+        None, None, None,
+    );
+}
+
+fn upload_local_subtitle(path: &str) -> String {
+    if !Path::new(path).exists() {
+        client::fail("client_error", &format!("Subtitle file not found: {}", path), None, None, None);
+    }
+    crate::commands::upload::upload_media_and_get_uri(path)
+}
+
+const COMPOSE_MAX_IMAGE_SIZE: u64 = 50 * 1024 * 1024;
+const COMPOSE_MAX_VIDEO_SIZE: u64 = 500 * 1024 * 1024;
+
+fn validate_compose_media(path: &str) -> Option<(u32, u32)> {
+    let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
+    let ext = Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let is_image = matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "webp");
+    let is_video = matches!(ext.as_str(), "mp4" | "mov");
+
+    if is_image && file_size > COMPOSE_MAX_IMAGE_SIZE {
+        client::fail(
+            "client_error",
+            &format!("Image too large: {} ({:.1}MB). Maximum: 50MB.", path, file_size as f64 / 1024.0 / 1024.0),
+            None, None, None,
+        );
+    }
+    if is_video && file_size > COMPOSE_MAX_VIDEO_SIZE {
+        client::fail(
+            "client_error",
+            &format!("Video too large: {} ({:.1}MB). Maximum: 500MB.", path, file_size as f64 / 1024.0 / 1024.0),
+            None, None, None,
+        );
+    }
+
+    let dims = if is_image || is_video {
+        get_media_dimensions(path, &ext)
+    } else {
+        None
+    };
+
+    if let Some((w, h)) = dims {
+        let short = w.min(h);
+        if w < 128 || h < 128 {
+            client::fail("client_error",
+                &format!("Media dimensions too small: {}x{}. Minimum: 128x128.", w, h),
+                None, None, None);
+        }
+        if w > 4096 || h > 4096 {
+            client::fail("client_error",
+                &format!("Media dimensions too large: {}x{}. Maximum: 4096x4096.", w, h),
+                None, None, None);
+        }
+        if short > 2160 {
+            client::fail("client_error",
+                &format!("Short side too large: {}x{} (short side {}). Maximum short side: 2160.", w, h, short),
+                None, None, None);
+        }
+    }
+
+    dims
+}
+
+fn get_media_dimensions(path: &str, ext: &str) -> Option<(u32, u32)> {
+    match ext {
+        "jpg" | "jpeg" | "png" | "bmp" | "webp" => {
+            image::image_dimensions(path).ok()
+        }
+        "mp4" | "mov" => {
+            read_mp4_dimensions(path)
+        }
+        _ => None,
+    }
+}
+
+fn read_mp4_dimensions(path: &str) -> Option<(u32, u32)> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let ctx = mp4parse::read_mp4(&mut reader).ok()?;
+    for track in &ctx.tracks {
+        if track.track_type == mp4parse::TrackType::Video {
+            if let Some(ref stsd) = track.stsd {
+                if let Some(desc) = stsd.descriptions.first() {
+                    if let mp4parse::SampleEntry::Video(ref video) = desc {
+                        return Some((video.width as u32, video.height as u32));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn upload_local_media(path: &str) -> String {
+    if !Path::new(path).exists() {
+        client::fail(
+            "client_error",
+            &format!("Media file not found: {}", path),
+            None, None, None,
+        );
+    }
+    let dims = validate_compose_media(path);
+    upload_compose_media(path, dims)
+}
+
+fn upload_compose_media(path: &str, dims: Option<(u32, u32)>) -> String {
+    let metadata = dims.map(|(w, h)| {
+        let mut m = serde_json::Map::new();
+        m.insert("image-width".into(), json!(w.to_string()));
+        m.insert("image-height".into(), json!(h.to_string()));
+        m
+    });
+    crate::commands::upload::upload_media_and_get_uri_with_metadata(path, metadata)
+}
