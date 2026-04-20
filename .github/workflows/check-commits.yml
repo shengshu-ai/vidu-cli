@@ -1,0 +1,27 @@
+name: Check Commits
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-claude-coauthor:
+    name: Block Claude Co-Authored commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for Claude co-author in commits
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+
+          if git log "$BASE".."$HEAD" --format="%B" | grep -qi "Co-Authored-By: Claude"; then
+            echo "❌ Found Claude Code co-author in commit messages. This PR cannot be merged."
+            git log "$BASE".."$HEAD" --format="%H %s" | head -20
+            exit 1
+          fi
+
+          echo "✅ No Claude co-author found."
