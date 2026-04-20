@@ -147,18 +147,19 @@ pub fn get(task_id: &str, output: Option<&str>) {
             let http_client = reqwest::blocking::Client::new();
             let mut downloaded: Vec<String> = Vec::new();
             for (i, url) in urls.iter().enumerate() {
-                let filename = format!("{}_{}.mp4", task_id, i);
-                let filepath = Path::new(out_dir).join(&filename);
                 match http_client.get(*url).timeout(std::time::Duration::from_secs(60)).send() {
-                    Ok(mut resp) => {
+                    Ok(resp) => {
                         let status = resp.status().as_u16();
                         if status >= 400 {
                             client::fail("http_error", &format!("Download failed for {}: HTTP {}", url, status), Some(status), None, None);
                         }
-                        let mut file = std::fs::File::create(&filepath).unwrap_or_else(|e| {
-                            client::fail("client_error", &format!("Failed to create file {}: {}", filepath.display(), e), None, None, None);
+                        let bytes = resp.bytes().unwrap_or_else(|e| {
+                            client::fail("client_error", &format!("Failed to read response bytes: {}", e), None, None, None);
                         });
-                        std::io::copy(&mut resp, &mut file).unwrap_or_else(|e| {
+                        let ext = ext_from_bytes(&bytes);
+                        let filename = format!("{}_{}.{}", task_id, i, ext);
+                        let filepath = Path::new(out_dir).join(&filename);
+                        std::fs::write(&filepath, &bytes).unwrap_or_else(|e| {
                             client::fail("client_error", &format!("Failed to write file {}: {}", filepath.display(), e), None, None, None);
                         });
                         downloaded.push(filepath.to_string_lossy().to_string());
@@ -752,4 +753,44 @@ fn upload_compose_media(path: &str, dims: Option<(u32, u32)>) -> String {
         m
     });
     crate::commands::upload::upload_media_and_get_uri_with_metadata(path, metadata)
+}
+
+fn ext_from_bytes(bytes: &[u8]) -> &'static str {
+    if bytes.len() < 4 {
+        return "mp4";
+    }
+    // JPEG
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return "jpg";
+    }
+    // PNG
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        return "png";
+    }
+    // GIF
+    if bytes.starts_with(b"GIF8") {
+        return "gif";
+    }
+    // RIFF-based: WebP or WAV
+    if bytes.starts_with(b"RIFF") && bytes.len() >= 12 {
+        if &bytes[8..12] == b"WEBP" {
+            return "webp";
+        }
+        if &bytes[8..12] == b"WAVE" {
+            return "wav";
+        }
+    }
+    // MP3 (ID3 tag or sync bytes)
+    if bytes.starts_with(b"ID3") || bytes[0] == 0xFF && (bytes[1] & 0xE0 == 0xE0) {
+        return "mp3";
+    }
+    // AAC (ADTS)
+    if bytes[0] == 0xFF && bytes[1] == 0xF1 {
+        return "aac";
+    }
+    // MP4 / MOV (ftyp box at offset 4)
+    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
+        return "mp4";
+    }
+    "mp4"
 }
