@@ -191,6 +191,20 @@ pub fn validate_task_body(body: &Value) -> String {
         return "input.enhance is required (true or false)".into();
     }
 
+    if let Some(sm) = settings.get("schedule_mode").and_then(|v| v.as_str()) {
+        let err = validate_schedule_mode(sm);
+        if !err.is_empty() {
+            return err;
+        }
+    }
+
+    String::new()
+}
+
+pub fn validate_schedule_mode(mode: &str) -> String {
+    if mode != "normal" && mode != "claw_pass" {
+        return format!("Invalid schedule_mode '{}'. Valid: claw_pass, normal", mode);
+    }
     String::new()
 }
 

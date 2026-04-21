@@ -3,6 +3,20 @@ use lofty::prelude::AudioFile;
 use serde_json::{json, Value};
 use std::path::Path;
 
+fn resolve_schedule_mode(explicit: Option<&str>) -> String {
+    if let Some(mode) = explicit {
+        let err = validators::validate_schedule_mode(mode);
+        if !err.is_empty() {
+            client::fail("client_error", &err, None, None, None);
+        }
+        return mode.to_string();
+    }
+    let base = client::base_url();
+    let data = client::request_json("GET", &format!("{}/credit/v1/claw-pass/status", base), None, None, None);
+    let has_pass = data.get("has_pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    if has_pass { "claw_pass".to_string() } else { "normal".to_string() }
+}
+
 pub fn process_image_input(input: &str) -> String {
     // 1. If already ssupload URI, return directly
     if input.starts_with("ssupload:") {
@@ -47,8 +61,9 @@ pub fn submit(
     task_type: &str, prompt: &str, images: &[String], materials: &[String],
     duration: i64, model_version: &str, aspect_ratio: Option<&str>,
     transition: Option<&str>, resolution: &str, sample_count: i64,
-    codec: &str, movement_amplitude: &str, schedule_mode: &str,
+    codec: &str, movement_amplitude: &str, schedule_mode: Option<&str>,
 ) {
+    let schedule_mode = resolve_schedule_mode(schedule_mode);
     let mut prompts = vec![json!({"type": "text", "content": prompt})];
 
     // Process images (auto-upload local files / URLs)
@@ -187,12 +202,15 @@ pub fn submit_lip_sync(
     volume: f64,
     enhance: bool,
     codec: &str,
+    schedule_mode: Option<&str>,
 ) {
     match (text, audio) {
         (Some(_), Some(_)) => client::fail("client_error", "--text and --audio are mutually exclusive", None, None, None),
         (None, None) => client::fail("client_error", "Either --text or --audio is required", None, None, None),
         _ => {}
     }
+
+    let schedule_mode = resolve_schedule_mode(schedule_mode);
 
     let err = validators::validate_video_file(video);
     if !err.is_empty() {
@@ -229,7 +247,7 @@ pub fn submit_lip_sync(
             client::fail("client_error", "Text is too short, duration must be at least 2 seconds", None, None, None);
         }
         let prompts = vec![json!({"type": "text", "content": txt}), video_prompt];
-        let mut settings = json!({"speed": speed, "voice_id": voice_id, "duration": duration, "codec": codec});
+        let mut settings = json!({"speed": speed, "voice_id": voice_id, "duration": duration, "codec": codec, "schedule_mode": schedule_mode});
         if volume != 0.0 {
             settings["volume"] = json!(volume);
         }
@@ -249,7 +267,7 @@ pub fn submit_lip_sync(
 
         let audio_name = Path::new(audio_path).file_name().and_then(|n| n.to_str()).unwrap_or("audio1");
         let prompts = vec![video_prompt, json!({"type": "audio", "content": audio_uri, "name": audio_name})];
-        let settings = json!({"codec": codec, "duration": duration});
+        let settings = json!({"codec": codec, "duration": duration, "schedule_mode": schedule_mode});
         (prompts, settings)
     };
 
@@ -319,7 +337,9 @@ pub fn submit_tts(
     speed: f64,
     volume: i32,
     language_boost: Option<&str>,
+    schedule_mode: Option<&str>,
 ) {
+    let schedule_mode = resolve_schedule_mode(schedule_mode);
     // 1. 构建 (content, Option<emotion>) 列表
     let segments: Vec<(&str, Option<&str>)> = if let Some(p) = prompt {
         if p.trim().is_empty() {
@@ -395,6 +415,7 @@ pub fn submit_tts(
         "voice_id": voice_id,
         "speed": speed,
         "vol": volume,
+        "schedule_mode": schedule_mode,
     });
 
     if let Some(lb) = language_boost {
@@ -753,6 +774,47 @@ fn upload_compose_media(path: &str, dims: Option<(u32, u32)>) -> String {
         m
     });
     crate::commands::upload::upload_media_and_get_uri_with_metadata(path, metadata)
+}
+
+pub fn query_credits(
+    task_type: &str, model_version: &str, duration: i64, resolution: &str,
+    aspect_ratio: Option<&str>, transition: Option<&str>,
+    sample_count: i64, codec: &str, enhance: bool, schedule_mode: Option<&str>,
+) {
+    let schedule_mode = resolve_schedule_mode(schedule_mode);
+
+    let mut params = std::collections::HashMap::new();
+    params.insert("type".to_string(), task_type.to_string());
+    params.insert("settings.model_version".to_string(), model_version.to_string());
+    params.insert("settings.duration".to_string(), duration.to_string());
+    params.insert("settings.resolution".to_string(), resolution.to_string());
+    params.insert("settings.sample_count".to_string(), sample_count.to_string());
+    params.insert("settings.codec".to_string(), codec.to_string());
+    params.insert("settings.schedule_mode".to_string(), schedule_mode.to_string());
+    params.insert("input.enhance".to_string(), enhance.to_string());
+
+    if let Some(ar) = aspect_ratio {
+        params.insert("settings.aspect_ratio".to_string(), ar.to_string());
+    }
+    if let Some(tr) = transition {
+        params.insert("settings.transition".to_string(), tr.to_string());
+    }
+
+    let base = client::base_url();
+    let data = client::request_json("GET", &format!("{}/vidu/v1/tasks/credits", base), None, None, Some(&params));
+
+    let mut result = json!({
+        "cost_credits": data.get("cost_credits").and_then(|v| v.as_i64()).unwrap_or(0),
+        "can_submit": data.get("can_submit").and_then(|v| v.as_bool()).unwrap_or(false),
+        "current_credits": data.get("current_credits").and_then(|v| v.as_i64()).unwrap_or(0),
+        "original_cost_credits": data.get("original_cost_credits").and_then(|v| v.as_i64()).unwrap_or(0),
+    });
+
+    if let Some(claw) = data.get("claw_pass_quota") {
+        result["claw_pass_quota"] = crate::commands::quota::format_claw_pass_json(claw);
+    }
+
+    client::ok(result);
 }
 
 fn ext_from_bytes(bytes: &[u8]) -> &'static str {
