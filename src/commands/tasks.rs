@@ -187,6 +187,7 @@ pub fn submit_lip_sync(
     volume: f64,
     enhance: bool,
     codec: &str,
+    schedule_mode: &str,
 ) {
     match (text, audio) {
         (Some(_), Some(_)) => client::fail("client_error", "--text and --audio are mutually exclusive", None, None, None),
@@ -229,7 +230,7 @@ pub fn submit_lip_sync(
             client::fail("client_error", "Text is too short, duration must be at least 2 seconds", None, None, None);
         }
         let prompts = vec![json!({"type": "text", "content": txt}), video_prompt];
-        let mut settings = json!({"speed": speed, "voice_id": voice_id, "duration": duration, "codec": codec});
+        let mut settings = json!({"speed": speed, "voice_id": voice_id, "duration": duration, "codec": codec, "schedule_mode": schedule_mode});
         if volume != 0.0 {
             settings["volume"] = json!(volume);
         }
@@ -249,7 +250,7 @@ pub fn submit_lip_sync(
 
         let audio_name = Path::new(audio_path).file_name().and_then(|n| n.to_str()).unwrap_or("audio1");
         let prompts = vec![video_prompt, json!({"type": "audio", "content": audio_uri, "name": audio_name})];
-        let settings = json!({"codec": codec, "duration": duration});
+        let settings = json!({"codec": codec, "duration": duration, "schedule_mode": schedule_mode});
         (prompts, settings)
     };
 
@@ -319,6 +320,7 @@ pub fn submit_tts(
     speed: f64,
     volume: i32,
     language_boost: Option<&str>,
+    schedule_mode: &str,
 ) {
     // 1. 构建 (content, Option<emotion>) 列表
     let segments: Vec<(&str, Option<&str>)> = if let Some(p) = prompt {
@@ -395,6 +397,7 @@ pub fn submit_tts(
         "voice_id": voice_id,
         "speed": speed,
         "vol": volume,
+        "schedule_mode": schedule_mode,
     });
 
     if let Some(lb) = language_boost {
@@ -755,23 +758,73 @@ fn upload_compose_media(path: &str, dims: Option<(u32, u32)>) -> String {
     crate::commands::upload::upload_media_and_get_uri_with_metadata(path, metadata)
 }
 
+pub fn query_credits(
+    task_type: &str, model_version: &str, duration: i64, resolution: &str,
+    aspect_ratio: Option<&str>, transition: Option<&str>,
+    sample_count: i64, codec: &str, schedule_mode: &str,
+) {
+    let mut params = std::collections::HashMap::new();
+    params.insert("type".to_string(), task_type.to_string());
+    params.insert("settings.model_version".to_string(), model_version.to_string());
+    params.insert("settings.duration".to_string(), duration.to_string());
+    params.insert("settings.resolution".to_string(), resolution.to_string());
+    params.insert("settings.sample_count".to_string(), sample_count.to_string());
+    params.insert("settings.codec".to_string(), codec.to_string());
+    params.insert("settings.schedule_mode".to_string(), schedule_mode.to_string());
+    params.insert("input.enhance".to_string(), "true".to_string());
+
+    if let Some(ar) = aspect_ratio {
+        params.insert("settings.aspect_ratio".to_string(), ar.to_string());
+    }
+    if let Some(tr) = transition {
+        params.insert("settings.transition".to_string(), tr.to_string());
+    }
+
+    let base = client::base_url();
+    let data = client::request_json("GET", &format!("{}/vidu/v1/tasks/credits", base), None, None, Some(&params));
+
+    let mut result = json!({
+        "cost_credits": data.get("cost_credits").and_then(|v| v.as_i64()).unwrap_or(0),
+        "can_submit": data.get("can_submit").and_then(|v| v.as_bool()).unwrap_or(false),
+        "current_credits": data.get("current_credits").and_then(|v| v.as_i64()).unwrap_or(0),
+        "original_cost_credits": data.get("original_cost_credits").and_then(|v| v.as_i64()).unwrap_or(0),
+    });
+
+    if let Some(claw) = data.get("claw_pass_quote") {
+        result["claw_pass_quote"] = json!({
+            "eligible": claw.get("eligible").and_then(|v| v.as_bool()).unwrap_or(false),
+            "requested_schedule_mode": claw.get("requested_schedule_mode").and_then(|v| v.as_str()).unwrap_or(""),
+            "resolved_schedule_mode": claw.get("resolved_schedule_mode").and_then(|v| v.as_str()).unwrap_or(""),
+            "estimated_consume_seconds": claw.get("estimated_consume_seconds").and_then(|v| v.as_str()).unwrap_or(""),
+            "remain_seconds_before": claw.get("remain_seconds_before").and_then(|v| v.as_str()).unwrap_or(""),
+            "remain_seconds_after": claw.get("remain_seconds_after").and_then(|v| v.as_str()).unwrap_or(""),
+            "estimated_tokens": claw.get("estimated_tokens").and_then(|v| v.as_str()).unwrap_or(""),
+            "remain_tokens_before": claw.get("remain_tokens_before").and_then(|v| v.as_str()).unwrap_or(""),
+            "remain_tokens_after": claw.get("remain_tokens_after").and_then(|v| v.as_str()).unwrap_or(""),
+            "next_refresh_at": claw.get("next_refresh_at").and_then(|v| v.as_str()).unwrap_or(""),
+            "requires_user_confirmation": claw.get("requires_user_confirmation").and_then(|v| v.as_bool()).unwrap_or(false),
+            "fallback_credit_cost": claw.get("fallback_credit_cost").and_then(|v| v.as_i64()).unwrap_or(0),
+            "ineligible_reason_code": claw.get("ineligible_reason_code").and_then(|v| v.as_str()).unwrap_or(""),
+            "ineligible_reason": claw.get("ineligible_reason").and_then(|v| v.as_str()).unwrap_or(""),
+        });
+    }
+
+    client::ok(result);
+}
+
 fn ext_from_bytes(bytes: &[u8]) -> &'static str {
     if bytes.len() < 4 {
         return "mp4";
     }
-    // JPEG
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return "jpg";
     }
-    // PNG
     if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
         return "png";
     }
-    // GIF
     if bytes.starts_with(b"GIF8") {
         return "gif";
     }
-    // RIFF-based: WebP or WAV
     if bytes.starts_with(b"RIFF") && bytes.len() >= 12 {
         if &bytes[8..12] == b"WEBP" {
             return "webp";
@@ -780,15 +833,12 @@ fn ext_from_bytes(bytes: &[u8]) -> &'static str {
             return "wav";
         }
     }
-    // MP3 (ID3 tag or sync bytes)
     if bytes.starts_with(b"ID3") || bytes[0] == 0xFF && (bytes[1] & 0xE0 == 0xE0) {
         return "mp3";
     }
-    // AAC (ADTS)
     if bytes[0] == 0xFF && bytes[1] == 0xF1 {
         return "aac";
     }
-    // MP4 / MOV (ftyp box at offset 4)
     if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
         return "mp4";
     }

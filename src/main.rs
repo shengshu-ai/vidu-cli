@@ -27,6 +27,11 @@ enum Group {
         #[command(subcommand)]
         action: ElementAction,
     },
+    /// Quota / billing operations
+    Quota {
+        #[command(subcommand)]
+        action: QuotaAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -98,7 +103,7 @@ enum TaskAction {
         codec: String,
         #[arg(long, default_value = "auto")]
         movement_amplitude: String,
-        #[arg(long, default_value = "normal")]
+        #[arg(long, default_value = "claw_pass", help = "Schedule mode: claw_pass (use daily quota) or normal (use credits)")]
         schedule_mode: String,
     },
     /// Get task result
@@ -130,6 +135,8 @@ enum TaskAction {
         enhance: bool,
         #[arg(long, default_value = "h265")]
         codec: String,
+        #[arg(long, default_value = "claw_pass", help = "Schedule mode: claw_pass (use daily quota) or normal (use credits)")]
+        schedule_mode: String,
     },
     /// List available voice IDs for lip-sync
     LipSyncVoices,
@@ -155,6 +162,8 @@ enum TaskAction {
         emotion: Vec<String>,
         #[arg(long, help = "Language boost for small languages/dialects: Chinese, English, auto, etc. (optional)")]
         language_boost: Option<String>,
+        #[arg(long, default_value = "claw_pass", help = "Schedule mode: claw_pass (use daily quota) or normal (use credits)")]
+        schedule_mode: String,
     },
     /// List available TTS voice IDs
     TtsVoices,
@@ -172,6 +181,27 @@ enum TaskAction {
         width: Option<i32>,
         #[arg(long, help = "Output height in pixels")]
         height: Option<i32>,
+    },
+    /// Query credit cost for a task before submitting
+    Cost {
+        #[arg(long = "type", value_name = "TYPE", help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
+        task_type: String,
+        #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m")]
+        model_version: String,
+        #[arg(long, help = "Duration in seconds")]
+        duration: i64,
+        #[arg(long, default_value = "1080p")]
+        resolution: String,
+        #[arg(long)]
+        aspect_ratio: Option<String>,
+        #[arg(long)]
+        transition: Option<String>,
+        #[arg(long, default_value = "1")]
+        sample_count: i64,
+        #[arg(long, default_value = "h265")]
+        codec: String,
+        #[arg(long, default_value = "claw_pass", help = "Schedule mode: claw_pass (use daily quota) or normal (use credits)")]
+        schedule_mode: String,
     },
 }
 
@@ -228,6 +258,14 @@ enum ElementAction {
     },
 }
 
+#[derive(Subcommand)]
+enum QuotaAction {
+    /// Query claw-pass daily quota status
+    Pass,
+    /// Query user credit balance
+    Credit,
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -263,23 +301,33 @@ fn main() {
                 );
             }
             TaskAction::Get { task_id, output } => commands::tasks::get(&task_id, output.as_deref()),
-            TaskAction::LipSync { video, text, audio, voice_id, speed, volume, enhance, codec } => {
+            TaskAction::LipSync { video, text, audio, voice_id, speed, volume, enhance, codec, schedule_mode } => {
                 commands::tasks::submit_lip_sync(
                     &video, text.as_deref(), audio.as_deref(),
-                    &voice_id, speed, volume, enhance, &codec,
+                    &voice_id, speed, volume, enhance, &codec, &schedule_mode,
                 );
             }
             TaskAction::LipSyncVoices => {
                 commands::tasks::list_voices();
             }
-            TaskAction::Tts { prompt, texts, voice_id, speed, volume, emotion, language_boost } => {
-                commands::tasks::submit_tts(prompt.as_deref(), &texts, &emotion, &voice_id, speed, volume, language_boost.as_deref());
+            TaskAction::Tts { prompt, texts, voice_id, speed, volume, emotion, language_boost, schedule_mode } => {
+                commands::tasks::submit_tts(prompt.as_deref(), &texts, &emotion, &voice_id, speed, volume, language_boost.as_deref(), &schedule_mode);
             }
             TaskAction::TtsVoices => {
                 commands::tasks::list_tts_voices();
             }
             TaskAction::Compose { timeline, width, height } => {
                 commands::tasks::compose(&timeline, width, height);
+            }
+            TaskAction::Cost {
+                task_type, model_version, duration, resolution,
+                aspect_ratio, transition, sample_count, codec, schedule_mode,
+            } => {
+                commands::tasks::query_credits(
+                    &task_type, &model_version, duration, &resolution,
+                    aspect_ratio.as_deref(), transition.as_deref(),
+                    sample_count, &codec, &schedule_mode,
+                );
             }
         },
         Group::Element { action } => match action {
@@ -298,6 +346,10 @@ fn main() {
             ElementAction::Search { keyword, pagesz, sort_by, page_token } => {
                 commands::elements::search(&keyword, pagesz, &sort_by, &page_token);
             }
+        },
+        Group::Quota { action } => match action {
+            QuotaAction::Pass => commands::quota::claw_pass_status(),
+            QuotaAction::Credit => commands::quota::credit_status(),
         },
     }
 }
