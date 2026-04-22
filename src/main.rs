@@ -200,8 +200,36 @@ enum TaskAction {
         sample_count: i64,
         #[arg(long, default_value = "h265")]
         codec: String,
-        #[arg(long, default_value = "true")]
-        enhance: bool,
+        #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+        schedule_mode: Option<String>,
+    },
+    /// Query credit cost for a TTS task before submitting
+    TtsCost {
+        #[arg(long, help = "Text content (cost is calculated by character count)")]
+        text: String,
+        #[arg(long, help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)")]
+        voice_id: String,
+        #[arg(long, default_value = "1.0", help = "Speech speed: 0.5-2.0")]
+        speed: f64,
+        #[arg(long, default_value = "0", help = "Pitch adjustment")]
+        pitch: i32,
+        #[arg(long, default_value = "80", help = "Volume: 0-100")]
+        volume: i32,
+        #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+        schedule_mode: Option<String>,
+    },
+    /// Query credit cost for a lip-sync task before submitting
+    LipSyncCost {
+        #[arg(long, help = "Duration in seconds")]
+        duration: i64,
+        #[arg(long, default_value = "English_Aussie_Bloke", help = "Voice ID")]
+        voice_id: String,
+        #[arg(long, default_value = "1.0", help = "Speech speed: 0.5-2.0")]
+        speed: f64,
+        #[arg(long, default_value = "0", help = "Volume [0.5,2], or 0 for server default")]
+        volume: f64,
+        #[arg(long, default_value = "h265")]
+        codec: String,
         #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
         schedule_mode: Option<String>,
     },
@@ -323,12 +351,22 @@ fn main() {
             }
             TaskAction::Cost {
                 task_type, model_version, duration, resolution,
-                aspect_ratio, transition, sample_count, codec, enhance, schedule_mode,
+                aspect_ratio, transition, sample_count, codec, schedule_mode,
             } => {
                 commands::tasks::query_credits(
                     &task_type, &model_version, duration, &resolution,
                     aspect_ratio.as_deref(), transition.as_deref(),
-                    sample_count, &codec, enhance, schedule_mode.as_deref(),
+                    sample_count, &codec, schedule_mode.as_deref(),
+                );
+            }
+            TaskAction::TtsCost { text, voice_id, speed, pitch, volume, schedule_mode } => {
+                commands::tasks::query_tts_credits(
+                    &text, &voice_id, speed, pitch, volume, schedule_mode.as_deref(),
+                );
+            }
+            TaskAction::LipSyncCost { duration, voice_id, speed, volume, codec, schedule_mode } => {
+                commands::tasks::query_lip_sync_credits(
+                    duration, &voice_id, speed, volume, &codec, schedule_mode.as_deref(),
                 );
             }
         },
