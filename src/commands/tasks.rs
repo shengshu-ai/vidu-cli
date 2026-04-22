@@ -779,7 +779,7 @@ fn upload_compose_media(path: &str, dims: Option<(u32, u32)>) -> String {
 pub fn query_credits(
     task_type: &str, model_version: &str, duration: i64, resolution: &str,
     aspect_ratio: Option<&str>, transition: Option<&str>,
-    sample_count: i64, codec: &str, enhance: bool, schedule_mode: Option<&str>,
+    sample_count: i64, codec: &str, schedule_mode: Option<&str>,
 ) {
     let schedule_mode = resolve_schedule_mode(schedule_mode);
 
@@ -791,7 +791,6 @@ pub fn query_credits(
     params.insert("settings.sample_count".to_string(), sample_count.to_string());
     params.insert("settings.codec".to_string(), codec.to_string());
     params.insert("settings.schedule_mode".to_string(), schedule_mode.to_string());
-    params.insert("input.enhance".to_string(), enhance.to_string());
 
     if let Some(ar) = aspect_ratio {
         params.insert("settings.aspect_ratio".to_string(), ar.to_string());
@@ -802,7 +801,52 @@ pub fn query_credits(
 
     let base = client::base_url();
     let data = client::request_json("GET", &format!("{}/vidu/v1/tasks/credits", base), None, None, Some(&params));
+    output_credits_result(&data);
+}
 
+pub fn query_tts_credits(
+    text: &str, voice_id: &str, speed: f64, pitch: i32, volume: i32,
+    schedule_mode: Option<&str>,
+) {
+    let schedule_mode = resolve_schedule_mode(schedule_mode);
+
+    let mut params = std::collections::HashMap::new();
+    params.insert("type".to_string(), "tts".to_string());
+    params.insert("settings.voice_id".to_string(), voice_id.to_string());
+    params.insert("settings.speed".to_string(), speed.to_string());
+    params.insert("settings.pitch".to_string(), pitch.to_string());
+    params.insert("settings.volume".to_string(), volume.to_string());
+    params.insert("settings.schedule_mode".to_string(), schedule_mode.to_string());
+    params.insert("text".to_string(), text.to_string());
+
+    let base = client::base_url();
+    let data = client::request_json("GET", &format!("{}/vidu/v1/tasks/credits", base), None, None, Some(&params));
+    output_credits_result(&data);
+}
+
+pub fn query_lip_sync_credits(
+    duration: i64, voice_id: &str, speed: f64, volume: f64, codec: &str,
+    schedule_mode: Option<&str>,
+) {
+    let schedule_mode = resolve_schedule_mode(schedule_mode);
+
+    let mut params = std::collections::HashMap::new();
+    params.insert("type".to_string(), "lip_sync".to_string());
+    params.insert("settings.duration".to_string(), duration.to_string());
+    params.insert("settings.voice_id".to_string(), voice_id.to_string());
+    params.insert("settings.speed".to_string(), speed.to_string());
+    params.insert("settings.codec".to_string(), codec.to_string());
+    params.insert("settings.schedule_mode".to_string(), schedule_mode.to_string());
+    if volume != 0.0 {
+        params.insert("settings.volume".to_string(), volume.to_string());
+    }
+
+    let base = client::base_url();
+    let data = client::request_json("GET", &format!("{}/vidu/v1/tasks/credits", base), None, None, Some(&params));
+    output_credits_result(&data);
+}
+
+fn output_credits_result(data: &serde_json::Value) {
     let mut result = json!({
         "cost_credits": data.get("cost_credits").and_then(|v| v.as_i64()).unwrap_or(0),
         "can_submit": data.get("can_submit").and_then(|v| v.as_bool()).unwrap_or(false),
