@@ -477,7 +477,9 @@ pub fn compose(
     timeline_input: &str,
     width: Option<i32>,
     height: Option<i32>,
+    schedule_mode: Option<&str>,
 ) {
+    let schedule_mode = resolve_schedule_mode(schedule_mode);
     let mut timeline = parse_timeline(timeline_input);
     normalize_timeline_urls(&mut timeline);
     remove_media_ids(&mut timeline);
@@ -491,7 +493,7 @@ pub fn compose(
         output_media_config.insert("height".into(), json!(h));
     }
 
-    let mut body = json!({ "timeline": timeline });
+    let mut body = json!({ "timeline": timeline, "schedule_mode": schedule_mode });
     if !output_media_config.is_empty() {
         body["output_media_config"] = Value::Object(output_media_config);
     }
