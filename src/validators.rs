@@ -11,7 +11,7 @@ fn valid_task_types() -> HashSet<String> {
 }
 
 fn valid_model_versions() -> HashSet<String> {
-    set(&["3.0", "3.1", "3.2", "3.2_fast_m", "3.2_pro_m"])
+    set(&["3.0", "3.1", "3.2", "3.2_fast_m", "3.2_pro_m", "3.2_image_2"])
 }
 
 fn resolution_support() -> HashMap<String, HashSet<String>> {
@@ -48,6 +48,7 @@ fn duration_ranges() -> HashMap<String, HashMap<String, (i64, i64)>> {
     ri.insert("3.1".into(), (0, 0));
     ri.insert("3.2_fast_m".into(), (0, 0));
     ri.insert("3.2_pro_m".into(), (0, 0));
+    ri.insert("3.2_image_2".into(), (0, 0));
     m.insert("reference2image".into(), ri.clone());
     m.insert("text2image".into(), ri);
     m
@@ -55,11 +56,11 @@ fn duration_ranges() -> HashMap<String, HashMap<String, (i64, i64)>> {
 
 fn model_support() -> HashMap<String, HashSet<String>> {
     let mut m = HashMap::new();
-    m.insert("text2image".into(), set(&["3.1", "3.2_fast_m", "3.2_pro_m"]));
+    m.insert("text2image".into(), set(&["3.1", "3.2_fast_m", "3.2_pro_m", "3.2_image_2"]));
     m.insert("text2video".into(), set(&["3.0", "3.1", "3.2"]));
     m.insert("img2video".into(), set(&["3.0", "3.1", "3.2"]));
     m.insert("headtailimg2video".into(), set(&["3.0", "3.1", "3.2"]));
-    m.insert("reference2image".into(), set(&["3.1", "3.2_fast_m", "3.2_pro_m"]));
+    m.insert("reference2image".into(), set(&["3.1", "3.2_fast_m", "3.2_pro_m", "3.2_image_2"]));
     m.insert("character2video".into(), set(&["3.0", "3.1", "3.1_pro", "3.2"]));
     m
 }

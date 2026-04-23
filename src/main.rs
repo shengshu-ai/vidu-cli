@@ -39,7 +39,7 @@ enum TaskAction {
     /// Submit task (see parameter constraints by type below)
     ///
     /// TYPE: text2image
-    ///   Models: 3.1, 3.2_fast_m, 3.2_pro_m
+    ///   Models: 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2
     ///   Duration: 0 (image generation)
     ///   Resolution: 1080p, 2k, 4k
     ///   Aspect Ratio: 4:3, 3:4, 1:1, 9:16, 16:9
@@ -66,7 +66,7 @@ enum TaskAction {
     ///   Images: 2 required (head + tail)
     ///
     /// TYPE: reference2image
-    ///   Models: 3.1, 3.2_fast_m, 3.2_pro_m
+    ///   Models: 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2
     ///   Duration: 0 (image generation)
     ///   Resolution: 1080p, 2k, 4k
     ///   Aspect Ratio: 4:3, 3:4, 1:1, 9:16, 16:9
@@ -89,7 +89,7 @@ enum TaskAction {
         materials: Vec<String>,
         #[arg(long, help = "Duration in seconds. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16). Use 0 for images.")]
         duration: i64,
-        #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m")]
+        #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m, 3.2_image_2")]
         model_version: String,
         #[arg(long, help = "Aspect ratio: 16:9, 9:16, 1:1, 4:3, 3:4 (not for img2video/headtailimg2video)")]
         aspect_ratio: Option<String>,
@@ -186,7 +186,7 @@ enum TaskAction {
     Cost {
         #[arg(long = "type", value_name = "TYPE", help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
         task_type: String,
-        #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m")]
+        #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m, 3.2_image_2")]
         model_version: String,
         #[arg(long, help = "Duration in seconds")]
         duration: i64,
