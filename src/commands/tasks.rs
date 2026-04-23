@@ -487,10 +487,12 @@ pub fn compose(
     timeline_input: &str,
     width: Option<i32>,
     height: Option<i32>,
+    schedule_mode: Option<&str>,
 ) {
+    let schedule_mode = resolve_schedule_mode(schedule_mode);
     let mut timeline = parse_timeline(timeline_input);
     normalize_timeline_urls(&mut timeline);
-    remove_media_ids(&mut timeline);
+    convert_ssupload_to_media_id(&mut timeline);
     validate_track_limits(&timeline);
 
     let mut output_media_config = serde_json::Map::new();
@@ -501,7 +503,7 @@ pub fn compose(
         output_media_config.insert("height".into(), json!(h));
     }
 
-    let mut body = json!({ "timeline": timeline });
+    let mut body = json!({ "timeline": timeline, "schedule_mode": schedule_mode });
     if !output_media_config.is_empty() {
         body["output_media_config"] = Value::Object(output_media_config);
     }
@@ -599,20 +601,43 @@ fn normalize_timeline_urls(timeline: &mut Value) {
     }
 }
 
-fn remove_media_ids(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            map.remove("media_id");
-            for val in map.values_mut() {
-                remove_media_ids(val);
+
+fn convert_ssupload_to_media_id(timeline: &mut Value) {
+    let track_clip_pairs = [
+        ("video_tracks", "video_track_clips"),
+        ("audio_tracks", "audio_track_clips"),
+    ];
+    for (track_key, clip_key) in &track_clip_pairs {
+        if let Some(tracks) = timeline.get_mut(*track_key).and_then(|v| v.as_array_mut()) {
+            for track in tracks.iter_mut() {
+                if let Some(clips) = track.get_mut(*clip_key).and_then(|v| v.as_array_mut()) {
+                    for clip in clips.iter_mut() {
+                        if let Some(map) = clip.as_object_mut() {
+                            let is_ssupload = map.get("media_url")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.starts_with("ssupload:"))
+                                .unwrap_or(false);
+                            if is_ssupload {
+                                if let Some(Value::String(url)) = map.remove("media_url") {
+                                    match url.strip_prefix("ssupload:?id=") {
+                                        Some(id) if !id.is_empty() => {
+                                            map.insert("media_id".to_string(), json!(id));
+                                        }
+                                        _ => {
+                                            client::fail(
+                                                "client_error",
+                                                &format!("Invalid ssupload URI: '{}'. Expected format: ssupload:?id=<id>", url),
+                                                None, None, None,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-        Value::Array(arr) => {
-            for item in arr.iter_mut() {
-                remove_media_ids(item);
-            }
-        }
-        _ => {}
     }
 }
 

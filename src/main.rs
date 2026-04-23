@@ -181,6 +181,8 @@ enum TaskAction {
         width: Option<i32>,
         #[arg(long, help = "Output height in pixels")]
         height: Option<i32>,
+        #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+        schedule_mode: Option<String>,
     },
     /// Query credit cost for a task before submitting
     Cost {
@@ -346,8 +348,8 @@ fn main() {
             TaskAction::TtsVoices => {
                 commands::tasks::list_tts_voices();
             }
-            TaskAction::Compose { timeline, width, height } => {
-                commands::tasks::compose(&timeline, width, height);
+            TaskAction::Compose { timeline, width, height, schedule_mode } => {
+                commands::tasks::compose(&timeline, width, height, schedule_mode.as_deref());
             }
             TaskAction::Cost {
                 task_type, model_version, duration, resolution,
