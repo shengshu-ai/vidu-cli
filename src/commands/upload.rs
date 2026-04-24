@@ -113,11 +113,98 @@ pub fn upload_and_get_uri(image_path: &str) -> String {
     format!("ssupload:?id={}", upload_id_str)
 }
 
+pub fn ffprobe_available() -> bool {
+    std::process::Command::new("ffprobe")
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn is_video_file(path: &str) -> bool {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    matches!(ext.as_str(), "mp4" | "mov" | "avi")
+}
+
+// Returns Some(true) if has valid color metadata, Some(false) if missing, None if ffprobe unavailable.
+fn check_color_metadata(path: &str) -> Option<bool> {
+    let output = std::process::Command::new("ffprobe")
+        .args(["-v", "quiet", "-show_streams", "-of", "json", path])
+        .output()
+        .ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let has = json.get("streams")
+        .and_then(|s| s.as_array())
+        .map(|streams| {
+            streams.iter().any(|s| {
+                s.get("codec_type").and_then(|v| v.as_str()) == Some("video")
+                    && matches!(
+                        s.get("color_primaries").and_then(|v| v.as_str()),
+                        Some(p) if p != "unknown"
+                    )
+            })
+        })
+        .unwrap_or(true);
+    Some(has)
+}
+
+// Returns a NamedTempFile with bt709 metadata injected; caller must keep it alive until upload completes.
+fn inject_color_metadata(path: &str) -> Option<tempfile::NamedTempFile> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("mp4")
+        .to_lowercase();
+    let tmp = tempfile::Builder::new()
+        .suffix(&format!(".{}", ext))
+        .tempfile()
+        .ok()?;
+    let status = std::process::Command::new("ffmpeg")
+        .args([
+            "-i", path,
+            "-c", "copy",
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
+            "-colorspace", "bt709",
+            "-y",
+            tmp.path().to_str()?,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    if status.success() { Some(tmp) } else { None }
+}
+
 pub fn upload_media_and_get_uri(path: &str) -> String {
     upload_media_and_get_uri_with_metadata(path, None)
 }
 
 pub fn upload_media_and_get_uri_with_metadata(path: &str, metadata: Option<serde_json::Map<String, serde_json::Value>>) -> String {
+    let _color_tmp = if is_video_file(path) {
+        match check_color_metadata(path) {
+            Some(true) => None,
+            Some(false) => {
+                match inject_color_metadata(path) {
+                    Some(tmp) => Some(tmp),
+                    None => client::fail("client_error", "Video is missing color metadata. Failed to inject it — ffmpeg may have encountered an error.", None, None, None),
+                }
+            }
+            None => None, // ffprobe unavailable, skip check — codec fallback handles this
+        }
+    } else {
+        None
+    };
+    let path = _color_tmp.as_ref()
+        .and_then(|t| t.path().to_str())
+        .unwrap_or(path);
+
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => client::fail("client_error", &format!("Cannot read file: {}", e), None, None, None),

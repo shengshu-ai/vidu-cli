@@ -64,6 +64,11 @@ pub fn submit(
     codec: &str, movement_amplitude: &str, schedule_mode: Option<&str>,
 ) {
     let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let codec = if codec == "h265" && !crate::commands::upload::ffprobe_available() {
+        "h264"
+    } else {
+        codec
+    };
     let mut prompts = vec![json!({"type": "text", "content": prompt})];
 
     // Process images (auto-upload local files / URLs)
@@ -211,6 +216,11 @@ pub fn submit_lip_sync(
     }
 
     let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let codec = if codec == "h265" && !crate::commands::upload::ffprobe_available() {
+        "h264"
+    } else {
+        codec
+    };
 
     let err = validators::validate_video_file(video);
     if !err.is_empty() {
