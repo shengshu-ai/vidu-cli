@@ -59,7 +59,7 @@ fn upload_local_file(path: &str) -> String {
 
 pub fn submit(
     task_type: &str, prompt: &str, images: &[String], materials: &[String],
-    duration: i64, model_version: &str, aspect_ratio: Option<&str>,
+    audios: &[String], duration: i64, model_version: &str, aspect_ratio: Option<&str>,
     transition: Option<&str>, resolution: &str, sample_count: i64,
     codec: &str, movement_amplitude: &str, schedule_mode: Option<&str>,
 ) {
@@ -87,6 +87,37 @@ pub fn submit(
             "name": parts[0],
             "material": {"id": parts[1], "version": parts[2]}
         }));
+    }
+
+    if !audios.is_empty() && !(model_version == "3.2_a" && task_type == "character2video") {
+        client::fail("client_error", &format!("Audio input is only supported for character2video with model_version 3.2_a"), None, None, None);
+    }
+    if audios.len() > 3 {
+        client::fail("client_error", &format!("Too many audio inputs: {}. Max: 3", audios.len()), None, None, None);
+    }
+    let mut total_audio_duration = 0.0f64;
+    for audio_input in audios {
+        let uri = if audio_input.starts_with("ssupload:") || audio_input.starts_with("http://") || audio_input.starts_with("https://") {
+            audio_input.clone()
+        } else {
+            let err = validators::validate_reference_audio_file(audio_input);
+            if !err.is_empty() {
+                client::fail("client_error", &err, None, None, None);
+            }
+            let dur = read_audio_duration_f64(audio_input);
+            if dur < 2.0 || dur > 15.0 {
+                client::fail("client_error", &format!("Audio duration {:.1}s out of range [2, 15]s", dur), None, None, None);
+            }
+            total_audio_duration += dur;
+            if total_audio_duration > 15.0 {
+                client::fail("client_error", &format!("Total audio duration {:.1}s exceeds 15s", total_audio_duration), None, None, None);
+            }
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("duration".to_string(), json!(dur.to_string()));
+            crate::commands::upload::upload_media_and_get_uri_with_metadata(audio_input, Some(metadata))
+        };
+        let name = Path::new(audio_input).file_name().and_then(|n| n.to_str()).unwrap_or("audio");
+        prompts.push(json!({"type": "audio", "content": uri, "name": name}));
     }
 
     let mut body = json!({
@@ -272,7 +303,7 @@ pub fn submit_lip_sync(
         let duration = duration_f64.ceil() as i64;
 
         let mut metadata = serde_json::Map::new();
-        metadata.insert("duration".to_string(), json!(duration.to_string()));
+        metadata.insert("duration".to_string(), json!(duration_f64.to_string()));
         let audio_uri = crate::commands::upload::upload_media_and_get_uri_with_metadata(audio_path, Some(metadata));
 
         let audio_name = Path::new(audio_path).file_name().and_then(|n| n.to_str()).unwrap_or("audio1");
@@ -328,7 +359,12 @@ fn upload_media_file(path: &str) -> String {
     if !Path::new(path).exists() {
         client::fail("client_error", &format!("File not found: {}", path), None, None, None);
     }
-    crate::commands::upload::upload_media_and_get_uri(path)
+    let metadata = read_video_duration_f64(path).map(|dur| {
+        let mut m = serde_json::Map::new();
+        m.insert("duration".to_string(), json!(dur.to_string()));
+        m
+    });
+    crate::commands::upload::upload_media_and_get_uri_with_metadata(path, metadata)
 }
 
 pub fn list_voices() {
@@ -764,6 +800,22 @@ fn read_mp4_dimensions(path: &str) -> Option<(u32, u32)> {
     None
 }
 
+fn read_video_duration_f64(path: &str) -> Option<f64> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let ctx = mp4parse::read_mp4(&mut reader).ok()?;
+    for track in &ctx.tracks {
+        if track.track_type == mp4parse::TrackType::Video {
+            let duration = track.duration?;
+            let timescale = track.timescale?;
+            if timescale.0 > 0 {
+                return Some(duration.0 as f64 / timescale.0 as f64);
+            }
+        }
+    }
+    None
+}
+
 fn upload_local_media(path: &str) -> String {
     if !Path::new(path).exists() {
         client::fail(
@@ -777,12 +829,16 @@ fn upload_local_media(path: &str) -> String {
 }
 
 fn upload_compose_media(path: &str, dims: Option<(u32, u32)>) -> String {
-    let metadata = dims.map(|(w, h)| {
+    let mut metadata = dims.map(|(w, h)| {
         let mut m = serde_json::Map::new();
         m.insert("image-width".into(), json!(w.to_string()));
         m.insert("image-height".into(), json!(h.to_string()));
         m
     });
+    if let Some(dur) = read_video_duration_f64(path) {
+        let m = metadata.get_or_insert_with(serde_json::Map::new);
+        m.insert("duration".to_string(), json!(dur.to_string()));
+    }
     crate::commands::upload::upload_media_and_get_uri_with_metadata(path, metadata)
 }
 
