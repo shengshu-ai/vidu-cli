@@ -11,7 +11,7 @@ fn valid_task_types() -> HashSet<String> {
 }
 
 fn valid_model_versions() -> HashSet<String> {
-    set(&["3.0", "3.1", "3.2", "3.2_fast_m", "3.2_pro_m", "3.2_image_2"])
+    set(&["3.0", "3.1", "3.2", "3.2_fast_m", "3.2_pro_m", "3.2_image_2", "3.2_a"])
 }
 
 fn resolution_support() -> HashMap<String, HashSet<String>> {
@@ -57,11 +57,11 @@ fn duration_ranges() -> HashMap<String, HashMap<String, (i64, i64)>> {
 fn model_support() -> HashMap<String, HashSet<String>> {
     let mut m = HashMap::new();
     m.insert("text2image".into(), set(&["3.1", "3.2_fast_m", "3.2_pro_m", "3.2_image_2"]));
-    m.insert("text2video".into(), set(&["3.0", "3.1", "3.2"]));
-    m.insert("img2video".into(), set(&["3.0", "3.1", "3.2"]));
-    m.insert("headtailimg2video".into(), set(&["3.0", "3.1", "3.2"]));
+    m.insert("text2video".into(), set(&["3.0", "3.1", "3.2", "3.2_a"]));
+    m.insert("img2video".into(), set(&["3.0", "3.1", "3.2", "3.2_a"]));
+    m.insert("headtailimg2video".into(), set(&["3.0", "3.1", "3.2", "3.2_a"]));
     m.insert("reference2image".into(), set(&["3.1", "3.2_fast_m", "3.2_pro_m", "3.2_image_2"]));
-    m.insert("character2video".into(), set(&["3.0", "3.1", "3.1_pro", "3.2"]));
+    m.insert("character2video".into(), set(&["3.0", "3.1", "3.1_pro", "3.2", "3.2_a"]));
     m
 }
 
@@ -124,12 +124,18 @@ pub fn validate_task_body(body: &Value) -> String {
         }
     }
 
-    let dr = duration_ranges();
-    if let Some(type_ranges) = dr.get(task_type) {
-        let duration = settings.get("duration").and_then(|v| v.as_i64()).unwrap_or(0);
-        if let Some(&(min_d, max_d)) = type_ranges.get(model_version) {
-            if min_d > 0 && (duration < min_d || duration > max_d) {
-                return format!("duration {} out of range [{}, {}] for {} with {}", duration, min_d, max_d, task_type, model_version);
+    let duration = settings.get("duration").and_then(|v| v.as_i64()).unwrap_or(0);
+    if model_version == "3.2_a" {
+        if duration != -1 && !(4..=15).contains(&duration) {
+            return format!("duration {} is invalid for 3.2_a: must be -1 (auto) or 4-15", duration);
+        }
+    } else {
+        let dr = duration_ranges();
+        if let Some(type_ranges) = dr.get(task_type) {
+            if let Some(&(min_d, max_d)) = type_ranges.get(model_version) {
+                if min_d > 0 && (duration < min_d || duration > max_d) {
+                    return format!("duration {} out of range [{}, {}] for {} with {}", duration, min_d, max_d, task_type, model_version);
+                }
             }
         }
     }
@@ -254,8 +260,8 @@ pub fn validate_video_file(path: &str) -> String {
         return format!("Invalid video format '{}'. Supported: mp4, mov, avi", ext);
     }
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    if size > 500 * 1024 * 1024 {
-        return format!("Video file too large ({:.1}MB). Max: 500MB", size as f64 / 1024.0 / 1024.0);
+    if size > 50 * 1024 * 1024 {
+        return format!("Video file too large ({:.1}MB). Max: 50MB", size as f64 / 1024.0 / 1024.0);
     }
     String::new()
 }
@@ -272,6 +278,22 @@ pub fn validate_audio_file(path: &str) -> String {
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size > 100 * 1024 * 1024 {
         return format!("Audio file too large ({:.1}MB). Max: 100MB", size as f64 / 1024.0 / 1024.0);
+    }
+    String::new()
+}
+
+pub fn validate_reference_audio_file(path: &str) -> String {
+    let p = Path::new(path);
+    if !p.is_file() {
+        return format!("Audio file not found: {}", path);
+    }
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if !["mp3", "wav"].contains(&ext.as_str()) {
+        return format!("Invalid audio format '{}'. Supported: mp3, wav", ext);
+    }
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if size > 15 * 1024 * 1024 {
+        return format!("Audio file too large ({:.1}MB). Max: 15MB", size as f64 / 1024.0 / 1024.0);
     }
     String::new()
 }

@@ -87,7 +87,9 @@ enum TaskAction {
         images: Vec<String>,
         #[arg(long = "material", action = clap::ArgAction::Append, help = "Material reference (format: name:id:version). Repeatable.")]
         materials: Vec<String>,
-        #[arg(long, help = "Duration in seconds. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16). Use 0 for images.")]
+        #[arg(long = "audio", action = clap::ArgAction::Append, help = "Audio input (local path, URL, or ssupload:?id=xxx). Repeatable. Max 3, total duration ≤15s.")]
+        audios: Vec<String>,
+        #[arg(long, allow_negative_numbers = true, help = "Duration in seconds. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(-1 or 4-15). Use 0 for images.")]
         duration: i64,
         #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m, 3.2_image_2")]
         model_version: String,
@@ -320,12 +322,12 @@ fn main() {
         }
         Group::Task { action } => match action {
             TaskAction::Submit {
-                task_type, prompt, images, materials, duration,
+                task_type, prompt, images, materials, audios, duration,
                 model_version, aspect_ratio, transition, resolution,
                 sample_count, codec, movement_amplitude, schedule_mode,
             } => {
                 commands::tasks::submit(
-                    &task_type, &prompt, &images, &materials, duration,
+                    &task_type, &prompt, &images, &materials, &audios, duration,
                     &model_version, aspect_ratio.as_deref(), transition.as_deref(),
                     &resolution, sample_count, &codec, &movement_amplitude, schedule_mode.as_deref(),
                 );
