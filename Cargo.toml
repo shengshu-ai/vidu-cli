@@ -2,7 +2,7 @@
 name = "vidu-cli"
 description = "client for vidu"
 authors = ["Saerdna <zhaodahao@gmail.com>"]
-version = "0.2.6"
+version = "0.2.7"
 repository = "https://github.com/Saerdna/vidu-cli"
 license = "MIT"
 edition = "2021"

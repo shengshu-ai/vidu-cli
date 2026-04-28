@@ -260,8 +260,8 @@ pub fn validate_video_file(path: &str) -> String {
         return format!("Invalid video format '{}'. Supported: mp4, mov, avi", ext);
     }
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    if size > 50 * 1024 * 1024 {
-        return format!("Video file too large ({:.1}MB). Max: 50MB", size as f64 / 1024.0 / 1024.0);
+    if size > 500 * 1024 * 1024 {
+        return format!("Video file too large ({:.1}MB). Max: 500MB", size as f64 / 1024.0 / 1024.0);
     }
     String::new()
 }
@@ -294,6 +294,22 @@ pub fn validate_reference_audio_file(path: &str) -> String {
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size > 15 * 1024 * 1024 {
         return format!("Audio file too large ({:.1}MB). Max: 15MB", size as f64 / 1024.0 / 1024.0);
+    }
+    String::new()
+}
+
+pub fn validate_reference_video_file(path: &str) -> String {
+    let p = Path::new(path);
+    if !p.is_file() {
+        return format!("Video file not found: {}", path);
+    }
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if !["mp4", "mov"].contains(&ext.as_str()) {
+        return format!("Invalid video format '{}'. Supported: mp4, mov", ext);
+    }
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if size > 50 * 1024 * 1024 {
+        return format!("Video file too large ({:.1}MB). Max: 50MB", size as f64 / 1024.0 / 1024.0);
     }
     String::new()
 }
@@ -601,4 +617,434 @@ pub fn validate_tts_language_boost(lang: &str) -> String {
         return format!("Invalid language_boost '{}'. Valid: {}", lang, list.join(", "));
     }
     String::new()
+}
+
+pub fn validate_timeline_clips(timeline: &Value) -> String {
+    let track_clip_pairs = [
+        ("video_tracks", "video_track_clips"),
+        ("audio_tracks", "audio_track_clips"),
+        ("subtitle_tracks", "subtitle_track_clips"),
+    ];
+
+    for (track_key, clip_key) in &track_clip_pairs {
+        if let Some(tracks) = timeline.get(*track_key).and_then(|v| v.as_array()) {
+            for (ti, track) in tracks.iter().enumerate() {
+                if let Some(clips) = track.get(*clip_key).and_then(|v| v.as_array()) {
+                    for (ci, clip) in clips.iter().enumerate() {
+                        if clip.get("timeline_in").map_or(true, |v| v.is_null()) {
+                            return format!("{}[{}].{}[{}]: missing required field 'timeline_in'", track_key, ti, clip_key, ci);
+                        }
+                        if clip.get("timeline_out").map_or(true, |v| v.is_null()) {
+                            return format!("{}[{}].{}[{}]: missing required field 'timeline_out'", track_key, ti, clip_key, ci);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(tracks) = timeline.get("effect_tracks").and_then(|v| v.as_array()) {
+        for (ti, track) in tracks.iter().enumerate() {
+            if let Some(items) = track.get("effect_track_items").and_then(|v| v.as_array()) {
+                for (ci, item) in items.iter().enumerate() {
+                    if item.get("timeline_in").map_or(true, |v| v.is_null()) {
+                        return format!("effect_tracks[{}].effect_track_items[{}]: missing required field 'timeline_in'", ti, ci);
+                    }
+                    if item.get("timeline_out").map_or(true, |v| v.is_null()) {
+                        return format!("effect_tracks[{}].effect_track_items[{}]: missing required field 'timeline_out'", ti, ci);
+                    }
+                }
+            }
+        }
+    }
+
+    String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_body(task_type: &str, model: &str, duration: i64, images: usize, materials: usize) -> Value {
+        let mut prompts: Vec<Value> = vec![json!({"type": "text", "content": "test"})];
+        for _ in 0..images {
+            prompts.push(json!({"type": "image", "content": "ssupload:?id=x"}));
+        }
+        for _ in 0..materials {
+            prompts.push(json!({"type": "material", "name": "m", "material": {"id": "1", "version": "1"}}));
+        }
+        json!({
+            "type": task_type,
+            "input": { "prompts": prompts, "enhance": true },
+            "settings": {
+                "duration": duration,
+                "model_version": model,
+                "resolution": "1080p",
+                "schedule_mode": "normal",
+            }
+        })
+    }
+
+    #[test]
+    fn task_body_missing_type() {
+        assert_eq!(validate_task_body(&json!({})), "Missing required field: type");
+    }
+
+    #[test]
+    fn task_body_invalid_type() {
+        assert!(validate_task_body(&json!({"type": "bad"})).contains("Invalid type"));
+    }
+
+    #[test]
+    fn task_body_missing_input() {
+        assert_eq!(validate_task_body(&json!({"type": "text2video"})), "input must be an object");
+    }
+
+    #[test]
+    fn task_body_empty_prompts() {
+        let body = json!({"type": "text2video", "input": {"prompts": []}});
+        assert!(validate_task_body(&body).contains("must not be empty"));
+    }
+
+    #[test]
+    fn task_body_valid_text2video() {
+        assert_eq!(validate_task_body(&make_body("text2video", "3.2", 8, 0, 0)), "");
+    }
+
+    #[test]
+    fn task_body_img2video_wrong_image_count() {
+        assert!(validate_task_body(&make_body("img2video", "3.1", 5, 0, 0)).contains("requires exactly 1 image"));
+    }
+
+    #[test]
+    fn task_body_img2video_correct() {
+        assert_eq!(validate_task_body(&make_body("img2video", "3.1", 5, 1, 0)), "");
+    }
+
+    #[test]
+    fn task_body_headtail_wrong_count() {
+        assert!(validate_task_body(&make_body("headtailimg2video", "3.1", 5, 1, 0)).contains("requires exactly 2 images"));
+    }
+
+    #[test]
+    fn task_body_character2video_too_many_refs() {
+        assert!(validate_task_body(&make_body("character2video", "3.1", 5, 4, 4)).contains("max 7"));
+    }
+
+    #[test]
+    fn task_body_invalid_model() {
+        assert!(validate_task_body(&make_body("text2video", "9.9", 5, 0, 0)).contains("Invalid model_version"));
+    }
+
+    #[test]
+    fn task_body_model_not_support_task() {
+        assert!(validate_task_body(&make_body("text2image", "3.0", 0, 0, 0)).contains("does not support"));
+    }
+
+    #[test]
+    fn task_body_3_2_a_duration_auto() {
+        assert_eq!(validate_task_body(&make_body("text2video", "3.2_a", -1, 0, 0)), "");
+    }
+
+    #[test]
+    fn task_body_3_2_a_duration_valid() {
+        assert_eq!(validate_task_body(&make_body("text2video", "3.2_a", 10, 0, 0)), "");
+    }
+
+    #[test]
+    fn task_body_3_2_a_duration_invalid() {
+        assert!(validate_task_body(&make_body("text2video", "3.2_a", 3, 0, 0)).contains("invalid for 3.2_a"));
+    }
+
+    #[test]
+    fn task_body_duration_out_of_range() {
+        assert!(validate_task_body(&make_body("text2video", "3.1", 20, 0, 0)).contains("out of range"));
+    }
+
+    #[test]
+    fn task_body_char2video_3_2_requires_transition() {
+        assert!(validate_task_body(&make_body("character2video", "3.2", 8, 1, 0)).contains("requires transition"));
+    }
+
+    #[test]
+    fn task_body_char2video_3_2_with_transition() {
+        let mut body = make_body("character2video", "3.2", 8, 1, 0);
+        body["settings"]["transition"] = json!("pro");
+        assert_eq!(validate_task_body(&body), "");
+    }
+
+    #[test]
+    fn task_body_char2video_non_3_2_rejects_transition() {
+        let mut body = make_body("character2video", "3.1", 5, 1, 0);
+        body["settings"]["transition"] = json!("pro");
+        assert!(validate_task_body(&body).contains("should not include transition"));
+    }
+
+    #[test]
+    fn schedule_mode_valid() {
+        assert_eq!(validate_schedule_mode("normal"), "");
+        assert_eq!(validate_schedule_mode("claw_pass"), "");
+    }
+
+    #[test]
+    fn schedule_mode_invalid() {
+        assert!(validate_schedule_mode("free").contains("Invalid schedule_mode"));
+    }
+
+    #[test]
+    fn lip_sync_text_empty() {
+        assert!(validate_lip_sync_text("").contains("cannot be empty"));
+    }
+
+    #[test]
+    fn lip_sync_text_chinese_range() {
+        assert!(validate_lip_sync_text("你").contains("2-1000"));
+        assert_eq!(validate_lip_sync_text("你好"), "");
+    }
+
+    #[test]
+    fn lip_sync_text_english_range() {
+        assert!(validate_lip_sync_text("hi").contains("4-2000"));
+        assert_eq!(validate_lip_sync_text("hello world"), "");
+    }
+
+    #[test]
+    fn lip_sync_speed_bounds() {
+        assert_eq!(validate_lip_sync_speed(0.5), "");
+        assert_eq!(validate_lip_sync_speed(2.0), "");
+        assert!(validate_lip_sync_speed(0.3).contains("must be between"));
+    }
+
+    #[test]
+    fn lip_sync_volume_bounds() {
+        assert_eq!(validate_lip_sync_volume(1.0), "");
+        assert!(validate_lip_sync_volume(0.05).contains("must be between"));
+    }
+
+    #[test]
+    fn element_preprocess_valid() {
+        let body = json!({"name": "t", "type": "subject", "components": [{"type": "main"}]});
+        assert_eq!(validate_element_preprocess(&body), "");
+    }
+
+    #[test]
+    fn element_preprocess_too_many() {
+        let body = json!({"name": "t", "type": "subject", "components": [
+            {"type": "main"}, {"type": "a"}, {"type": "a"}, {"type": "a"}
+        ]});
+        assert!(validate_element_preprocess(&body).contains("at most 3"));
+    }
+
+    #[test]
+    fn element_preprocess_no_main() {
+        let body = json!({"name": "t", "type": "subject", "components": [{"type": "aux"}]});
+        assert!(validate_element_preprocess(&body).contains("exactly one"));
+    }
+
+    #[test]
+    fn timeline_valid() {
+        let t = json!({
+            "video_tracks": [{"video_track_clips": [
+                {"timeline_in": 0, "timeline_out": 5}
+            ]}],
+            "audio_tracks": [{"audio_track_clips": [
+                {"timeline_in": 0, "timeline_out": 5}
+            ]}]
+        });
+        assert_eq!(validate_timeline_clips(&t), "");
+    }
+
+    #[test]
+    fn timeline_missing_in() {
+        let t = json!({"video_tracks": [{"video_track_clips": [{"timeline_out": 5}]}]});
+        assert!(validate_timeline_clips(&t).contains("missing required field 'timeline_in'"));
+    }
+
+    #[test]
+    fn timeline_missing_out() {
+        let t = json!({"audio_tracks": [{"audio_track_clips": [{"timeline_in": 0}]}]});
+        assert!(validate_timeline_clips(&t).contains("missing required field 'timeline_out'"));
+    }
+
+    #[test]
+    fn timeline_null_value() {
+        let t = json!({"video_tracks": [{"video_track_clips": [{"timeline_in": null, "timeline_out": 5}]}]});
+        assert!(validate_timeline_clips(&t).contains("missing required field 'timeline_in'"));
+    }
+
+    #[test]
+    fn timeline_subtitle_missing() {
+        let t = json!({"subtitle_tracks": [{"subtitle_track_clips": [{"type": "Text"}]}]});
+        assert!(validate_timeline_clips(&t).contains("subtitle_track_clips[0]"));
+    }
+
+    #[test]
+    fn timeline_effect_missing() {
+        let t = json!({"effect_tracks": [{"effect_track_items": [{"type": "VFX"}]}]});
+        assert!(validate_timeline_clips(&t).contains("effect_track_items[0]"));
+    }
+
+    #[test]
+    fn timeline_empty_tracks_ok() {
+        assert_eq!(validate_timeline_clips(&json!({"video_tracks": []})), "");
+    }
+
+    #[test]
+    fn timeline_error_has_indices() {
+        let t = json!({"video_tracks": [{"video_track_clips": [
+            {"timeline_in": 0, "timeline_out": 5},
+            {"timeline_in": 5}
+        ]}]});
+        assert!(validate_timeline_clips(&t).contains("video_tracks[0].video_track_clips[1]"));
+    }
+
+    // --- validate_voice_id ---
+
+    #[test]
+    fn voice_id_valid() {
+        assert_eq!(validate_voice_id("English_Aussie_Bloke"), "");
+    }
+
+    #[test]
+    fn voice_id_invalid() {
+        assert!(validate_voice_id("nonexistent_voice").contains("Invalid voice_id"));
+    }
+
+    // --- validate_tts_voice_id ---
+
+    #[test]
+    fn tts_voice_id_valid() {
+        assert_eq!(validate_tts_voice_id("English_expressive_narrator"), "");
+    }
+
+    #[test]
+    fn tts_voice_id_invalid() {
+        assert!(validate_tts_voice_id("fake_voice").contains("Invalid voice_id"));
+    }
+
+    // --- validate_tts_speed ---
+
+    #[test]
+    fn tts_speed_bounds() {
+        assert_eq!(validate_tts_speed(0.5), "");
+        assert_eq!(validate_tts_speed(2.0), "");
+        assert!(validate_tts_speed(0.1).contains("must be between"));
+        assert!(validate_tts_speed(3.0).contains("must be between"));
+    }
+
+    // --- validate_tts_volume ---
+
+    #[test]
+    fn tts_volume_bounds() {
+        assert_eq!(validate_tts_volume(0), "");
+        assert_eq!(validate_tts_volume(100), "");
+        assert!(validate_tts_volume(-1).contains("must be between"));
+        assert!(validate_tts_volume(101).contains("must be between"));
+    }
+
+    // --- validate_tts_emotion ---
+
+    #[test]
+    fn tts_emotion_valid() {
+        assert_eq!(validate_tts_emotion("happy"), "");
+    }
+
+    #[test]
+    fn tts_emotion_too_long() {
+        let long = "a".repeat(101);
+        assert!(validate_tts_emotion(&long).contains("too long"));
+    }
+
+    // --- validate_tts_language_boost ---
+
+    #[test]
+    fn tts_language_boost_valid() {
+        assert_eq!(validate_tts_language_boost("English"), "");
+        assert_eq!(validate_tts_language_boost("Chinese"), "");
+        assert_eq!(validate_tts_language_boost("auto"), "");
+    }
+
+    #[test]
+    fn tts_language_boost_invalid() {
+        assert!(validate_tts_language_boost("Klingon").contains("Invalid language_boost"));
+    }
+
+    // --- validate_task_body: resolution, aspect_ratio, transition branches ---
+
+    #[test]
+    fn task_body_invalid_resolution() {
+        let mut body = make_body("text2video", "3.2", 8, 0, 0);
+        body["settings"]["resolution"] = json!("8k");
+        assert!(validate_task_body(&body).contains("Invalid resolution"));
+    }
+
+    #[test]
+    fn task_body_invalid_aspect_ratio() {
+        let mut body = make_body("text2video", "3.2", 8, 0, 0);
+        body["settings"]["aspect_ratio"] = json!("21:9");
+        assert!(validate_task_body(&body).contains("Invalid aspect_ratio"));
+    }
+
+    #[test]
+    fn task_body_text2image_rejects_transition() {
+        let mut body = make_body("text2image", "3.1", 0, 0, 0);
+        body["settings"]["transition"] = json!("pro");
+        assert!(validate_task_body(&body).contains("should not include transition"));
+    }
+
+    #[test]
+    fn task_body_text2video_non_3_2_rejects_transition() {
+        let mut body = make_body("text2video", "3.1", 5, 0, 0);
+        body["settings"]["transition"] = json!("pro");
+        assert!(validate_task_body(&body).contains("should not include transition"));
+    }
+
+    #[test]
+    fn task_body_img2video_invalid_transition() {
+        let mut body = make_body("img2video", "3.1", 5, 1, 0);
+        body["settings"]["transition"] = json!("bad");
+        assert!(validate_task_body(&body).contains("Invalid transition"));
+    }
+
+    #[test]
+    fn task_body_img2video_valid_transition() {
+        let mut body = make_body("img2video", "3.1", 5, 1, 0);
+        body["settings"]["transition"] = json!("pro");
+        assert_eq!(validate_task_body(&body), "");
+    }
+
+    #[test]
+    fn task_body_missing_enhance() {
+        let body = json!({
+            "type": "text2video",
+            "input": { "prompts": [{"type": "text", "content": "test"}] },
+            "settings": { "duration": 5, "model_version": "3.2", "resolution": "1080p", "schedule_mode": "normal" }
+        });
+        assert!(validate_task_body(&body).contains("enhance is required"));
+    }
+
+    #[test]
+    fn task_body_missing_resolution() {
+        let body = json!({
+            "type": "text2video",
+            "input": { "prompts": [{"type": "text", "content": "test"}], "enhance": true },
+            "settings": { "duration": 5, "model_version": "3.2", "schedule_mode": "normal" }
+        });
+        assert!(validate_task_body(&body).contains("resolution is required"));
+    }
+
+    // --- all_voice_ids / tts_voices_grouped ---
+
+    #[test]
+    fn all_voice_ids_not_empty() {
+        assert!(!all_voice_ids().is_empty());
+    }
+
+    #[test]
+    fn tts_voices_grouped_not_empty() {
+        let groups = tts_voices_grouped();
+        assert!(!groups.is_empty());
+        assert!(all_tts_voice_ids().len() > 100);
+    }
 }

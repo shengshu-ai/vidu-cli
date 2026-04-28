@@ -59,7 +59,7 @@ fn upload_local_file(path: &str) -> String {
 
 pub fn submit(
     task_type: &str, prompt: &str, images: &[String], materials: &[String],
-    audios: &[String], duration: i64, model_version: &str, aspect_ratio: Option<&str>,
+    audios: &[String], videos: &[String], duration: i64, model_version: &str, aspect_ratio: Option<&str>,
     transition: Option<&str>, resolution: &str, sample_count: i64,
     codec: &str, movement_amplitude: &str, schedule_mode: Option<&str>,
 ) {
@@ -97,8 +97,10 @@ pub fn submit(
     }
     let mut total_audio_duration = 0.0f64;
     for audio_input in audios {
-        let uri = if audio_input.starts_with("ssupload:") || audio_input.starts_with("http://") || audio_input.starts_with("https://") {
+        let uri = if audio_input.starts_with("ssupload:") {
             audio_input.clone()
+        } else if audio_input.starts_with("http://") || audio_input.starts_with("https://") {
+            client::fail("client_error", "HTTP/HTTPS URLs are not supported for audio input. Use a local file path or ssupload:?id=...", None, None, None);
         } else {
             let err = validators::validate_reference_audio_file(audio_input);
             if !err.is_empty() {
@@ -118,6 +120,58 @@ pub fn submit(
         };
         let name = Path::new(audio_input).file_name().and_then(|n| n.to_str()).unwrap_or("audio");
         prompts.push(json!({"type": "audio", "content": uri, "name": name}));
+    }
+
+    // Process video inputs (character2video + 3.2_a only)
+    if !videos.is_empty() && !(model_version == "3.2_a" && task_type == "character2video") {
+        client::fail("client_error", "Video input is only supported for character2video with model_version 3.2_a", None, None, None);
+    }
+    if !videos.is_empty() && videos.len() > 3 {
+        client::fail("client_error", &format!("Too many video inputs: {}. Max: 3", videos.len()), None, None, None);
+    }
+    let mut total_video_duration = 0.0f64;
+    for video_input in videos {
+        let uri = if video_input.starts_with("ssupload:") {
+            video_input.clone()
+        } else if video_input.starts_with("http://") || video_input.starts_with("https://") {
+            client::fail("client_error", "HTTP/HTTPS URLs are not supported for video input. Use a local file path or ssupload:?id=...", None, None, None);
+        } else {
+            let err = validators::validate_reference_video_file(video_input);
+            if !err.is_empty() {
+                client::fail("client_error", &err, None, None, None);
+            }
+            let (w, h) = match read_mp4_dimensions(video_input) {
+                Some(dims) => dims,
+                None => client::fail("client_error", &format!("Cannot read video dimensions: {}", video_input), None, None, None),
+            };
+            let aspect = w as f64 / h as f64;
+            if aspect < 0.4 || aspect > 2.5 {
+                client::fail("client_error", &format!("Video aspect ratio {:.2} out of range [0.4, 2.5] ({}x{})", aspect, w, h), None, None, None);
+            }
+            if w < 300 || w > 60000 {
+                client::fail("client_error", &format!("Video width {} out of range [300, 60000]", w), None, None, None);
+            }
+            if h < 300 || h > 60000 {
+                client::fail("client_error", &format!("Video height {} out of range [300, 60000]", h), None, None, None);
+            }
+            let pixels = (w as u64) * (h as u64);
+            if pixels < 409600 || pixels > 2086876 {
+                client::fail("client_error", &format!("Video total pixels {} out of range [409600, 2086876] ({}x{})", pixels, w, h), None, None, None);
+            }
+            let dur = match read_video_duration_f64(video_input) {
+                Some(d) => d,
+                None => client::fail("client_error", &format!("Cannot read video duration: {}", video_input), None, None, None),
+            };
+            total_video_duration += dur;
+            if total_video_duration > 15.0 {
+                client::fail("client_error", &format!("Total video duration {:.1}s exceeds 15s", total_video_duration), None, None, None);
+            }
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("duration".to_string(), json!(dur.to_string()));
+            crate::commands::upload::upload_media_and_get_uri_with_metadata(video_input, Some(metadata))
+        };
+        let name = Path::new(video_input).file_name().and_then(|n| n.to_str()).unwrap_or("video");
+        prompts.push(json!({"type": "video", "content": uri, "name": name}));
     }
 
     let mut body = json!({
@@ -527,6 +581,7 @@ pub fn compose(
 ) {
     let schedule_mode = resolve_schedule_mode(schedule_mode);
     let mut timeline = parse_timeline(timeline_input);
+    validate_timeline_clips(&timeline);
     normalize_timeline_urls(&mut timeline);
     validate_track_limits(&timeline);
 
@@ -666,6 +721,13 @@ fn validate_track_limits(timeline: &Value) {
                 None, None, None,
             );
         }
+    }
+}
+
+fn validate_timeline_clips(timeline: &Value) {
+    let err = validators::validate_timeline_clips(timeline);
+    if !err.is_empty() {
+        client::fail("client_error", &err, None, None, None);
     }
 }
 
@@ -961,4 +1023,85 @@ fn ext_from_bytes(bytes: &[u8]) -> &'static str {
         return "mp4";
     }
     "mp4"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ext_from_bytes_jpeg() {
+        assert_eq!(ext_from_bytes(&[0xFF, 0xD8, 0xFF, 0xE0]), "jpg");
+    }
+
+    #[test]
+    fn ext_from_bytes_png() {
+        assert_eq!(ext_from_bytes(&[0x89, 0x50, 0x4E, 0x47]), "png");
+    }
+
+    #[test]
+    fn ext_from_bytes_gif() {
+        assert_eq!(ext_from_bytes(b"GIF89a"), "gif");
+    }
+
+    #[test]
+    fn ext_from_bytes_webp() {
+        assert_eq!(ext_from_bytes(b"RIFF\x00\x00\x00\x00WEBP"), "webp");
+    }
+
+    #[test]
+    fn ext_from_bytes_wav() {
+        assert_eq!(ext_from_bytes(b"RIFF\x00\x00\x00\x00WAVE"), "wav");
+    }
+
+    #[test]
+    fn ext_from_bytes_mp3_id3() {
+        assert_eq!(ext_from_bytes(b"ID3\x04"), "mp3");
+    }
+
+    #[test]
+    fn ext_from_bytes_mp3_sync() {
+        assert_eq!(ext_from_bytes(&[0xFF, 0xFB, 0x90, 0x00]), "mp3");
+    }
+
+    #[test]
+    fn ext_from_bytes_aac_adts() {
+        // Note: 0xFF 0xF1 matches MP3 sync check first (0xF1 & 0xE0 == 0xE0)
+        // AAC ADTS detection is shadowed by MP3 detection for these bytes
+        assert_eq!(ext_from_bytes(&[0xFF, 0xF1, 0x00, 0x00]), "mp3");
+    }
+
+    #[test]
+    fn ext_from_bytes_mp4_ftyp() {
+        assert_eq!(ext_from_bytes(b"\x00\x00\x00\x1cftypisom"), "mp4");
+    }
+
+    #[test]
+    fn ext_from_bytes_short_input() {
+        assert_eq!(ext_from_bytes(&[0x00, 0x01]), "mp4");
+    }
+
+    #[test]
+    fn ext_from_bytes_unknown() {
+        assert_eq!(ext_from_bytes(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), "mp4");
+    }
+
+    #[test]
+    fn calculate_text_duration_english() {
+        assert_eq!(calculate_text_duration("hello"), 1);
+        assert_eq!(calculate_text_duration("hello world test"), 2);
+    }
+
+    #[test]
+    fn calculate_text_duration_chinese() {
+        // (6 + 4) / 5 = 2, (2 + 4) / 5 = 1
+        assert_eq!(calculate_text_duration("你好世界测试"), 2);
+        assert_eq!(calculate_text_duration("你好"), 1);
+    }
+
+    #[test]
+    fn calculate_text_duration_empty() {
+        // (0 + 9) / 10 = 0
+        assert_eq!(calculate_text_duration(""), 0);
+    }
 }
