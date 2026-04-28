@@ -7,8 +7,6 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "vidu-cli", about = "Vidu API CLI", version = env!("VIDU_CLI_VERSION"), propagate_version = true)]
 struct Cli {
-    #[arg(short = 'v', long = "version")]
-    version: bool,
     #[command(subcommand)]
     group: Option<Group>,
 }
@@ -87,8 +85,10 @@ enum TaskAction {
         images: Vec<String>,
         #[arg(long = "material", action = clap::ArgAction::Append, help = "Material reference (format: name:id:version). Repeatable.")]
         materials: Vec<String>,
-        #[arg(long = "audio", action = clap::ArgAction::Append, help = "Audio input (local path, URL, or ssupload:?id=xxx). Repeatable. Max 3, total duration ≤15s.")]
+        #[arg(long = "audio", action = clap::ArgAction::Append, help = "Audio input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a only. Max 3, total duration ≤15s.")]
         audios: Vec<String>,
+        #[arg(long = "video", action = clap::ArgAction::Append, help = "Video input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a only. Max 3, total duration ≤15s.")]
+        videos: Vec<String>,
         #[arg(long, allow_negative_numbers = true, help = "Duration in seconds. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(-1 or 4-15). Use 0 for images.")]
         duration: i64,
         #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m, 3.2_image_2")]
@@ -303,11 +303,6 @@ enum QuotaAction {
 fn main() {
     let cli = Cli::parse();
 
-    if cli.version {
-        println!("vidu-cli {}", env!("VIDU_CLI_VERSION"));
-        return;
-    }
-
     let group = match cli.group {
         Some(g) => g,
         None => {
@@ -324,12 +319,12 @@ fn main() {
         }
         Group::Task { action } => match action {
             TaskAction::Submit {
-                task_type, prompt, images, materials, audios, duration,
+                task_type, prompt, images, materials, audios, videos, duration,
                 model_version, aspect_ratio, transition, resolution,
                 sample_count, codec, movement_amplitude, schedule_mode,
             } => {
                 commands::tasks::submit(
-                    &task_type, &prompt, &images, &materials, &audios, duration,
+                    &task_type, &prompt, &images, &materials, &audios, &videos, duration,
                     &model_version, aspect_ratio.as_deref(), transition.as_deref(),
                     &resolution, sample_count, &codec, &movement_amplitude, schedule_mode.as_deref(),
                 );
