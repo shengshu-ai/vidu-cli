@@ -59,11 +59,20 @@ fn upload_local_file(path: &str) -> String {
 
 pub fn submit(
     task_type: &str, prompt: &str, images: &[String], materials: &[String],
-    audios: &[String], videos: &[String], duration: i64, model_version: &str, aspect_ratio: Option<&str>,
+    audios: &[String], videos: &[String], duration: Option<i64>, model_version: &str, aspect_ratio: Option<&str>,
     transition: Option<&str>, resolution: &str, sample_count: i64,
     codec: &str, movement_amplitude: &str, schedule_mode: Option<&str>,
 ) {
     let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let is_image_type = task_type == "text2image" || task_type == "reference2image";
+    let duration = if is_image_type {
+        0
+    } else {
+        match duration {
+            Some(d) => d,
+            None => client::fail("client_error", "duration is required for this task type", None, None, None),
+        }
+    };
     let codec = if codec == "h265" && !crate::commands::upload::ffprobe_available() {
         "h264"
     } else {
@@ -901,11 +910,20 @@ fn upload_compose_media(path: &str, dims: Option<(u32, u32)>) -> String {
 }
 
 pub fn query_credits(
-    task_type: &str, model_version: &str, duration: i64, resolution: &str,
+    task_type: &str, model_version: &str, duration: Option<i64>, resolution: &str,
     aspect_ratio: Option<&str>, transition: Option<&str>,
     sample_count: i64, codec: &str, schedule_mode: Option<&str>,
 ) {
     let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let is_image_type = task_type == "text2image" || task_type == "reference2image";
+    let duration = if is_image_type {
+        0
+    } else {
+        match duration {
+            Some(d) => d,
+            None => client::fail("client_error", "duration is required for this task type", None, None, None),
+        }
+    };
 
     let mut params = std::collections::HashMap::new();
     params.insert("type".to_string(), task_type.to_string());
