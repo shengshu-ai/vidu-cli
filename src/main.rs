@@ -89,8 +89,8 @@ enum TaskAction {
         audios: Vec<String>,
         #[arg(long = "video", action = clap::ArgAction::Append, help = "Video input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a only. Max 3, total duration ≤15s.")]
         videos: Vec<String>,
-        #[arg(long, allow_negative_numbers = true, help = "Duration in seconds. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(-1 or 4-15). Use 0 for images.")]
-        duration: i64,
+        #[arg(long, allow_negative_numbers = true, help = "Duration in seconds. Required for video tasks. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(-1 or 4-15). Ignored for image tasks.")]
+        duration: Option<i64>,
         #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m, 3.2_image_2")]
         model_version: String,
         #[arg(long, help = "Aspect ratio: 16:9, 9:16, 1:1, 4:3, 3:4 (not for img2video/headtailimg2video)")]
@@ -192,8 +192,8 @@ enum TaskAction {
         task_type: String,
         #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m, 3.2_image_2")]
         model_version: String,
-        #[arg(long, help = "Duration in seconds")]
-        duration: i64,
+        #[arg(long, help = "Duration in seconds. Required for video tasks. Ignored for image tasks.")]
+        duration: Option<i64>,
         #[arg(long, default_value = "1080p")]
         resolution: String,
         #[arg(long)]
