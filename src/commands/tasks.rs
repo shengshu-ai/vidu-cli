@@ -251,7 +251,11 @@ pub fn get(task_id: &str, output: Option<&str>) {
         if state == "success" {
             let urls: Vec<&str> = data.get("creations")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|c| c.get("nomark_uri").and_then(|u| u.as_str())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(download_url_for_creation)
+                        .collect()
+                })
                 .unwrap_or_default();
 
             std::fs::create_dir_all(out_dir).unwrap_or_else(|e| {
@@ -290,6 +294,13 @@ pub fn get(task_id: &str, output: Option<&str>) {
     }
 
     client::ok(result);
+}
+
+fn download_url_for_creation(creation: &Value) -> Option<&str> {
+    ["nomark_uri", "download_uri", "uri"]
+        .iter()
+        .filter_map(|field| creation.get(*field).and_then(|u| u.as_str()))
+        .find(|uri| !uri.is_empty())
 }
 
 pub fn submit_lip_sync(
@@ -1102,6 +1113,34 @@ mod tests {
     #[test]
     fn ext_from_bytes_unknown() {
         assert_eq!(ext_from_bytes(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), "mp4");
+    }
+
+    #[test]
+    fn download_url_prefers_nomark_uri() {
+        let creation = json!({
+            "nomark_uri": "https://example.com/no-watermark.mp4",
+            "download_uri": "https://example.com/watermarked-download.mp4",
+            "uri": "https://example.com/watermarked.mp4",
+        });
+
+        assert_eq!(
+            download_url_for_creation(&creation),
+            Some("https://example.com/no-watermark.mp4")
+        );
+    }
+
+    #[test]
+    fn download_url_falls_back_when_nomark_uri_empty() {
+        let creation = json!({
+            "nomark_uri": "",
+            "download_uri": "https://example.com/watermarked-download.mp4",
+            "uri": "https://example.com/watermarked.mp4",
+        });
+
+        assert_eq!(
+            download_url_for_creation(&creation),
+            Some("https://example.com/watermarked-download.mp4")
+        );
     }
 
     #[test]
