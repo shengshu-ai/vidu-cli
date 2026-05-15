@@ -76,7 +76,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> --duration <DURATION> \
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--schedule-mode` | auto | `claw_pass`（每日配额）或 `normal`（积分），省略时自动检测 |
-| `--transition` | - | `creative`、`stable`、`pro` 或 `speed`（取决于模型/类型） |
+| `--transition` | - | `img2video` / `headtailimg2video`：`3.0` 使用 `creative` / `stable`，`3.1` / `3.2` 必须传 `pro` / `speed`；`character2video 3.2` 也必须传 `pro` / `speed`；`text2video` 仅 `3.2` 支持 |
 | `--sample-count` | 1 | 生成样本数 |
 | `--codec` | h265 | 输出视频编码 |
 | `--movement-amplitude` | auto | 视频运动幅度 |

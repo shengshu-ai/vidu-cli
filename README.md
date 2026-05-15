@@ -74,7 +74,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> --duration <DURATION> \
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--schedule-mode` | auto | `claw_pass` (daily quota) or `normal` (credits). Auto-detected if omitted |
-| `--transition` | - | `creative`, `stable`, `pro`, or `speed` (model/type dependent) |
+| `--transition` | - | For `img2video` / `headtailimg2video`: `3.0` uses `creative` / `stable`, `3.1` / `3.2` require `pro` / `speed`; `character2video 3.2` also requires `pro` / `speed`; `text2video` supports it only on `3.2` |
 | `--sample-count` | 1 | Number of samples to generate |
 | `--codec` | h265 | Output video codec |
 | `--movement-amplitude` | auto | Video motion intensity |

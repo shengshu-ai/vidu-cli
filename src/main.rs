@@ -53,14 +53,14 @@ enum TaskAction {
     ///   Models: 3.0, 3.1, 3.2
     ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s
     ///   Resolution: 1080p
-    ///   Transition: 3.0→creative/stable, 3.1+→pro/speed
+    ///   Transition: 3.0→creative/stable, 3.1/3.2→required pro/speed
     ///   Images: 1 required
     ///
     /// TYPE: headtailimg2video
     ///   Models: 3.0, 3.1, 3.2
     ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s
     ///   Resolution: 1080p
-    ///   Transition: 3.0→creative/stable, 3.1+→pro/speed
+    ///   Transition: 3.0→creative/stable, 3.1/3.2→required pro/speed
     ///   Images: 2 required (head + tail)
     ///
     /// TYPE: reference2image
@@ -95,7 +95,7 @@ enum TaskAction {
         model_version: String,
         #[arg(long, help = "Aspect ratio: 16:9, 9:16, 1:1, 4:3, 3:4 (not for img2video/headtailimg2video)")]
         aspect_ratio: Option<String>,
-        #[arg(long, help = "Transition style. Required for character2video 3.2 (pro/speed). For img2video 3.0: creative/stable. For 3.1+: pro/speed. For text2video 3.2 only.")]
+        #[arg(long, help = "Transition style. img2video/headtailimg2video: 3.0 uses creative/stable, 3.1/3.2 require pro/speed; character2video 3.2 requires pro/speed; text2video supports it only on 3.2.")]
         transition: Option<String>,
         #[arg(long, help = "Resolution: 1080p (all), 2k/4k (text2image/reference2image only)")]
         resolution: String,
