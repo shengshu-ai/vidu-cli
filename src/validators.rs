@@ -159,7 +159,9 @@ pub fn validate_task_body(body: &Value) -> String {
         }
     }
 
-    if settings.get("transition").is_some() {
+    let transition = settings.get("transition").and_then(|v| v.as_str());
+
+    if transition.is_some() {
         let no_trans = ["reference2image", "text2image"];
         if no_trans.contains(&task_type) {
             return format!("{} should not include transition", task_type);
@@ -167,29 +169,41 @@ pub fn validate_task_body(body: &Value) -> String {
         if task_type == "text2video" && model_version != "3.2" {
             return format!("text2video with {} should not include transition (only 3.2 supports pro/speed)", model_version);
         }
-        if task_type == "img2video" || task_type == "headtailimg2video" {
-            let transition = settings.get("transition").and_then(|v| v.as_str()).unwrap_or("");
+    }
+
+    if task_type == "img2video" || task_type == "headtailimg2video" {
+        if model_version == "3.1" || model_version == "3.2" {
+            match transition {
+                None => {
+                    return format!("{} with {} requires transition parameter (pro or speed)", task_type, model_version);
+                }
+                Some(trans) if trans != "pro" && trans != "speed" => {
+                    return format!("Invalid transition '{}' for {} {}. Valid: pro, speed", trans, task_type, model_version);
+                }
+                _ => {}
+            }
+        } else if let Some(trans) = transition {
             let valid_trans = if model_version == "3.0" {
                 set(&["creative", "stable"])
             } else {
                 set(&["pro", "speed"])
             };
-            if !valid_trans.contains(transition) {
-                return format!("Invalid transition '{}' for {} {}. Valid: {}", transition, task_type, model_version, sorted_join(&valid_trans));
+            if !valid_trans.contains(trans) {
+                return format!("Invalid transition '{}' for {} {}. Valid: {}", trans, task_type, model_version, sorted_join(&valid_trans));
             }
         }
     }
 
     if task_type == "character2video" {
         if model_version == "3.2" {
-            match settings.get("transition").and_then(|v| v.as_str()) {
+            match transition {
                 None => return "character2video with 3.2 requires transition parameter (speed or pro)".into(),
                 Some(trans) if trans != "speed" && trans != "pro" => {
                     return format!("Invalid transition '{}' for character2video 3.2. Valid: pro, speed", trans);
                 }
                 _ => {}
             }
-        } else if settings.get("transition").is_some() {
+        } else if transition.is_some() {
             return format!("character2video with {} should not include transition (only 3.2 supports pro/speed)", model_version);
         }
     }
@@ -1011,6 +1025,55 @@ mod tests {
     fn task_body_img2video_valid_transition() {
         let mut body = make_body("img2video", "3.1", 5, 1, 0);
         body["settings"]["transition"] = json!("pro");
+        assert_eq!(validate_task_body(&body), "");
+    }
+
+    #[test]
+    fn task_body_img2video_3_1_requires_transition() {
+        assert!(validate_task_body(&make_body("img2video", "3.1", 5, 1, 0)).contains("requires transition"));
+    }
+
+    #[test]
+    fn task_body_img2video_3_2_requires_transition() {
+        assert!(validate_task_body(&make_body("img2video", "3.2", 5, 1, 0)).contains("requires transition"));
+    }
+
+    #[test]
+    fn task_body_headtailimg2video_3_1_requires_transition() {
+        assert!(validate_task_body(&make_body("headtailimg2video", "3.1", 5, 2, 0)).contains("requires transition"));
+    }
+
+    #[test]
+    fn task_body_headtailimg2video_3_2_requires_transition() {
+        assert!(validate_task_body(&make_body("headtailimg2video", "3.2", 5, 2, 0)).contains("requires transition"));
+    }
+
+    #[test]
+    fn task_body_headtailimg2video_valid_transition() {
+        let mut body = make_body("headtailimg2video", "3.1", 5, 2, 0);
+        body["settings"]["transition"] = json!("speed");
+        assert_eq!(validate_task_body(&body), "");
+    }
+
+    #[test]
+    fn task_body_headtailimg2video_invalid_transition() {
+        let mut body = make_body("headtailimg2video", "3.2", 5, 2, 0);
+        body["settings"]["transition"] = json!("creative");
+        assert!(validate_task_body(&body).contains("Invalid transition"));
+    }
+
+    #[test]
+    fn task_body_img2video_3_0_still_accepts_creative() {
+        let mut body = make_body("img2video", "3.0", 5, 1, 0);
+        body["settings"]["transition"] = json!("creative");
+        assert_eq!(validate_task_body(&body), "");
+    }
+
+    #[test]
+    fn task_body_img2video_3_2_a_keeps_current_transition_behavior() {
+        assert_eq!(validate_task_body(&make_body("img2video", "3.2_a", 5, 1, 0)), "");
+        let mut body = make_body("img2video", "3.2_a", 5, 1, 0);
+        body["settings"]["transition"] = json!("speed");
         assert_eq!(validate_task_body(&body), "");
     }
 
