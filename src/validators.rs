@@ -675,6 +675,42 @@ pub fn validate_timeline_clips(timeline: &Value) -> String {
     String::new()
 }
 
+/// Read and validate a prompt file at `path`.
+///
+/// Files must exist, be UTF-8, and not exceed 1 MiB. A single trailing
+/// newline (`\n` or `\r\n`) is stripped so editors that auto-append one do
+/// not change the perceived prompt length.
+pub fn read_prompt_file(path: &str) -> Result<String, String> {
+    const MAX_PROMPT_FILE_BYTES: u64 = 1024 * 1024;
+
+    let p = Path::new(path);
+    if !p.is_file() {
+        return Err(format!("Prompt file not found: {}", path));
+    }
+    let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    if size > MAX_PROMPT_FILE_BYTES {
+        return Err(format!(
+            "Prompt file too large: {} ({:.1}MiB). Max: 1MiB",
+            path,
+            size as f64 / 1024.0 / 1024.0
+        ));
+    }
+    let bytes = match std::fs::read(p) {
+        Ok(b) => b,
+        Err(e) => return Err(format!("Failed to read prompt file {}: {}", path, e)),
+    };
+    let mut content = match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return Err(format!("Prompt file is not valid UTF-8: {}", path)),
+    };
+    if content.ends_with("\r\n") {
+        content.truncate(content.len() - 2);
+    } else if content.ends_with('\n') || content.ends_with('\r') {
+        content.truncate(content.len() - 1);
+    }
+    Ok(content)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1110,4 +1146,56 @@ mod tests {
         assert!(!groups.is_empty());
         assert!(all_tts_voice_ids().len() > 100);
     }
+
+    // --- read_prompt_file ---
+
+    fn write_temp_prompt(name: &str, contents: &[u8]) -> std::path::PathBuf {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let path = dir.join(name);
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn read_prompt_file_strips_trailing_lf() {
+        let path = write_temp_prompt("prompt.txt", b"hello from file\n");
+        let out = read_prompt_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(out, "hello from file");
+    }
+
+    #[test]
+    fn read_prompt_file_strips_trailing_crlf() {
+        let path = write_temp_prompt("prompt_crlf.txt", b"line one\r\n");
+        let out = read_prompt_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(out, "line one");
+    }
+
+    #[test]
+    fn read_prompt_file_preserves_internal_newlines() {
+        let path = write_temp_prompt("prompt_multi.txt", b"first\nsecond\n");
+        let out = read_prompt_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(out, "first\nsecond");
+    }
+
+    #[test]
+    fn read_prompt_file_missing_errors() {
+        let err = read_prompt_file("/definitely/not/here.txt").unwrap_err();
+        assert!(err.contains("Prompt file not found"), "got: {}", err);
+    }
+
+    #[test]
+    fn read_prompt_file_too_large_errors() {
+        let big = vec![b'a'; (1024 * 1024 + 1) as usize];
+        let path = write_temp_prompt("big.txt", &big);
+        let err = read_prompt_file(path.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("Prompt file too large"), "got: {}", err);
+    }
+
+    #[test]
+    fn read_prompt_file_invalid_utf8_errors() {
+        let path = write_temp_prompt("bad.bin", &[0xff, 0xfe, 0xfd]);
+        let err = read_prompt_file(path.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("not valid UTF-8"), "got: {}", err);
+    }
+
 }
