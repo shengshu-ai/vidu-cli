@@ -79,8 +79,10 @@ enum TaskAction {
     Submit {
         #[arg(long = "type", value_name = "TYPE", help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
         task_type: String,
-        #[arg(long)]
-        prompt: String,
+        #[arg(long, help = "Text prompt (mutually preferred over --prompt-path when both are given).")]
+        prompt: Option<String>,
+        #[arg(long = "prompt-path", value_name = "PATH", help = "Read the prompt from a UTF-8 file (≤1MiB). Ignored if --prompt is also set.")]
+        prompt_path: Option<String>,
         #[arg(long = "image", action = clap::ArgAction::Append, help = "Image input (local path, URL, or ssupload:?id=xxx). Repeatable.")]
         images: Vec<String>,
         #[arg(long = "material", action = clap::ArgAction::Append, help = "Material reference (format: name:id:version). Repeatable.")]
@@ -147,11 +149,13 @@ enum TaskAction {
     /// Single segment: --prompt "text" [--emotion happy]
     /// Multi segment:  --text "seg1" --emotion happy --text "seg2" --emotion sad --text "seg3"
     ///
-    /// Required: --voice-id, and one of --prompt or --text
+    /// Required: --voice-id, and one of --prompt, --prompt-path, or --text
     /// Optional: --speed, --volume, --emotion, --language-boost
     Tts {
-        #[arg(long, help = "Single text segment (mutually exclusive with --text)", conflicts_with = "texts")]
+        #[arg(long, help = "Single text segment (mutually exclusive with --text). Preferred over --prompt-path when both are given.", conflicts_with = "texts")]
         prompt: Option<String>,
+        #[arg(long = "prompt-path", value_name = "PATH", help = "Read the prompt from a UTF-8 file (≤1MiB). Ignored if --prompt is also set. Mutually exclusive with --text.", conflicts_with = "texts")]
+        prompt_path: Option<String>,
         #[arg(long = "text", action = clap::ArgAction::Append, help = "Text segment, repeatable for multi-segment TTS (mutually exclusive with --prompt)", conflicts_with = "prompt")]
         texts: Vec<String>,
         #[arg(long, help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)")]
@@ -319,12 +323,13 @@ fn main() {
         }
         Group::Task { action } => match action {
             TaskAction::Submit {
-                task_type, prompt, images, materials, audios, videos, duration,
+                task_type, prompt, prompt_path, images, materials, audios, videos, duration,
                 model_version, aspect_ratio, transition, resolution,
                 sample_count, codec, movement_amplitude, schedule_mode,
             } => {
                 commands::tasks::submit(
-                    &task_type, &prompt, &images, &materials, &audios, &videos, duration,
+                    &task_type, prompt.as_deref(), prompt_path.as_deref(),
+                    &images, &materials, &audios, &videos, duration,
                     &model_version, aspect_ratio.as_deref(), transition.as_deref(),
                     &resolution, sample_count, &codec, &movement_amplitude, schedule_mode.as_deref(),
                 );
@@ -339,8 +344,8 @@ fn main() {
             TaskAction::LipSyncVoices => {
                 commands::tasks::list_voices();
             }
-            TaskAction::Tts { prompt, texts, voice_id, speed, volume, emotion, language_boost, schedule_mode } => {
-                commands::tasks::submit_tts(prompt.as_deref(), &texts, &emotion, &voice_id, speed, volume, language_boost.as_deref(), schedule_mode.as_deref());
+            TaskAction::Tts { prompt, prompt_path, texts, voice_id, speed, volume, emotion, language_boost, schedule_mode } => {
+                commands::tasks::submit_tts(prompt.as_deref(), prompt_path.as_deref(), &texts, &emotion, &voice_id, speed, volume, language_boost.as_deref(), schedule_mode.as_deref());
             }
             TaskAction::TtsVoices => {
                 commands::tasks::list_tts_voices();

@@ -16,6 +16,24 @@ fn resolve_schedule_mode(explicit: Option<&str>) -> String {
     let has_pass = data.get("has_pass").and_then(|v| v.as_bool()).unwrap_or(false);
     if has_pass { "claw_pass".to_string() } else { "normal".to_string() }
 }
+/// Pick the effective prompt text from `--prompt` and `--prompt-path`.
+///
+/// `--prompt` wins when both are provided. When only `--prompt-path` is set we
+/// read the file via `validators::read_prompt_file`. Errors are reported
+/// through the standard `client::fail` JSON contract.
+fn resolve_prompt_inputs(prompt: Option<&str>, prompt_path: Option<&str>) -> Option<String> {
+    if let Some(text) = prompt {
+        return Some(text.to_string());
+    }
+    if let Some(path) = prompt_path {
+        match validators::read_prompt_file(path) {
+            Ok(s) => return Some(s),
+            Err(e) => client::fail("client_error", &e, None, None, None),
+        }
+    }
+    None
+}
+
 
 pub fn process_image_input(input: &str) -> String {
     // 1. If already ssupload URI, return directly
@@ -58,11 +76,19 @@ fn upload_local_file(path: &str) -> String {
 }
 
 pub fn submit(
-    task_type: &str, prompt: &str, images: &[String], materials: &[String],
+    task_type: &str, prompt: Option<&str>, prompt_path: Option<&str>,
+    images: &[String], materials: &[String],
     audios: &[String], videos: &[String], duration: Option<i64>, model_version: &str, aspect_ratio: Option<&str>,
     transition: Option<&str>, resolution: &str, sample_count: i64,
     codec: &str, movement_amplitude: &str, schedule_mode: Option<&str>,
 ) {
+    let prompt = resolve_prompt_inputs(prompt, prompt_path).unwrap_or_else(|| {
+        client::fail(
+            "client_error",
+            "Either --prompt or --prompt-path is required",
+            None, None, None,
+        )
+    });
     let schedule_mode = resolve_schedule_mode(schedule_mode);
     let is_image_type = task_type == "text2image" || task_type == "reference2image";
     let duration = if is_image_type {
@@ -451,6 +477,7 @@ pub fn list_voices() {
 
 pub fn submit_tts(
     prompt: Option<&str>,
+    prompt_path: Option<&str>,
     texts: &[String],
     emotions: &[String],
     voice_id: &str,
@@ -461,7 +488,10 @@ pub fn submit_tts(
 ) {
     let schedule_mode = resolve_schedule_mode(schedule_mode);
     // 1. 构建 (content, Option<emotion>) 列表
-    let segments: Vec<(&str, Option<&str>)> = if let Some(p) = prompt {
+    // --prompt wins over --prompt-path; the resolver yields an owned String so
+    // the borrows in `segments` stay valid.
+    let resolved_prompt: Option<String> = resolve_prompt_inputs(prompt, prompt_path);
+    let segments: Vec<(&str, Option<&str>)> = if let Some(p) = resolved_prompt.as_deref() {
         if p.trim().is_empty() {
             client::fail("client_error", "Prompt cannot be empty", None, None, None);
         }
@@ -478,7 +508,7 @@ pub fn submit_tts(
             (t.as_str(), emo)
         }).collect()
     } else {
-        client::fail("client_error", "Either --prompt or at least one --text is required", None, None, None);
+        client::fail("client_error", "Either --prompt, --prompt-path, or at least one --text is required", None, None, None);
     };
 
     // 2. 校验段数
@@ -1160,5 +1190,43 @@ mod tests {
     fn calculate_text_duration_empty() {
         // (0 + 9) / 10 = 0
         assert_eq!(calculate_text_duration(""), 0);
+    }
+
+    // --- resolve_prompt_inputs ---
+
+    fn write_tmp(name: &str, contents: &[u8]) -> std::path::PathBuf {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let path = dir.join(name);
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn resolve_prompt_inputs_uses_prompt_when_only_prompt_given() {
+        let out = resolve_prompt_inputs(Some("inline text"), None);
+        assert_eq!(out.as_deref(), Some("inline text"));
+    }
+
+    #[test]
+    fn resolve_prompt_inputs_reads_file_when_only_path_given() {
+        let path = write_tmp("only_path.txt", b"from file\n");
+        let out = resolve_prompt_inputs(None, Some(path.to_str().unwrap()));
+        assert_eq!(out.as_deref(), Some("from file"));
+    }
+
+    #[test]
+    fn resolve_prompt_inputs_prompt_wins_over_path() {
+        // Even an unreadable path must be ignored when --prompt is provided,
+        // proving the precedence is short-circuit and the file is never read.
+        let out = resolve_prompt_inputs(
+            Some("inline wins"),
+            Some("/definitely/does/not/exist.txt"),
+        );
+        assert_eq!(out.as_deref(), Some("inline wins"));
+    }
+
+    #[test]
+    fn resolve_prompt_inputs_returns_none_when_neither_given() {
+        assert!(resolve_prompt_inputs(None, None).is_none());
     }
 }
