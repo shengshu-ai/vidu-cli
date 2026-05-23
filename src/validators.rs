@@ -769,7 +769,9 @@ mod tests {
 
     #[test]
     fn task_body_img2video_correct() {
-        assert_eq!(validate_task_body(&make_body("img2video", "3.1", 5, 1, 0)), "");
+        let mut body = make_body("img2video", "3.1", 5, 1, 0);
+        body["settings"]["transition"] = json!("pro");
+        assert_eq!(validate_task_body(&body), "");
     }
 
     #[test]
