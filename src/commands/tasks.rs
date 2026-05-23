@@ -1,6 +1,6 @@
 use crate::{client, validators};
 use lofty::prelude::AudioFile;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::path::Path;
 
 fn resolve_schedule_mode(explicit: Option<&str>) -> String {
@@ -275,11 +275,19 @@ pub fn get(task_id: &str, output: Option<&str>) {
 
     if let Some(out_dir) = output {
         if state == "success" {
-            let urls: Vec<&str> = data.get("creations")
+            let media_urls: Vec<&str> = data.get("creations")
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
                         .filter_map(download_url_for_creation)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let subtitle_urls: Vec<&str> = data.get("creations")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(subtitle_url_for_creation)
                         .collect()
                 })
                 .unwrap_or_default();
@@ -290,8 +298,12 @@ pub fn get(task_id: &str, output: Option<&str>) {
 
             let http_client = reqwest::blocking::Client::new();
             let mut downloaded: Vec<String> = Vec::new();
-            for (i, url) in urls.iter().enumerate() {
-                match http_client.get(*url).timeout(std::time::Duration::from_secs(60)).send() {
+            let urls = media_urls.iter()
+                .enumerate()
+                .map(|(i, url)| (*url, None, i, false))
+                .chain(subtitle_urls.iter().map(|url| (*url, Some(subtitle_download_filename(task_id)), 0, true)));
+            for (url, filename, file_index, is_subtitle) in urls {
+                match http_client.get(url).timeout(std::time::Duration::from_secs(60)).send() {
                     Ok(resp) => {
                         let status = resp.status().as_u16();
                         if status >= 400 {
@@ -300,8 +312,12 @@ pub fn get(task_id: &str, output: Option<&str>) {
                         let bytes = resp.bytes().unwrap_or_else(|e| {
                             client::fail("client_error", &format!("Failed to read response bytes: {}", e), None, None, None);
                         });
-                        let ext = ext_from_bytes(&bytes);
-                        let filename = format!("{}_{}.{}", task_id, i, ext);
+                        let bytes = if is_subtitle {
+                            preprocess_subtitle_json(&bytes)
+                        } else {
+                            bytes.to_vec()
+                        };
+                        let filename = filename.unwrap_or_else(|| download_filename(task_id, file_index, &bytes));
                         let filepath = Path::new(out_dir).join(&filename);
                         std::fs::write(&filepath, &bytes).unwrap_or_else(|e| {
                             client::fail("client_error", &format!("Failed to write file {}: {}", filepath.display(), e), None, None, None);
@@ -327,6 +343,53 @@ fn download_url_for_creation(creation: &Value) -> Option<&str> {
         .iter()
         .filter_map(|field| creation.get(*field).and_then(|u| u.as_str()))
         .find(|uri| !uri.is_empty())
+}
+
+fn subtitle_url_for_creation(creation: &Value) -> Option<&str> {
+    creation
+        .get("subtitle_uri")
+        .and_then(|u| u.as_str())
+        .filter(|uri| !uri.is_empty())
+}
+
+fn download_filename(task_id: &str, creation_index: usize, bytes: &[u8]) -> String {
+    format!("{}_{}.{}", task_id, creation_index, ext_from_bytes(bytes))
+}
+
+fn subtitle_download_filename(task_id: &str) -> String {
+    format!("{}_subtitle.json", task_id)
+}
+
+fn preprocess_subtitle_json(bytes: &[u8]) -> Vec<u8> {
+    let value: Value = serde_json::from_slice(bytes).unwrap_or_else(|e| {
+        client::fail("client_error", &format!("Failed to parse subtitle JSON: {}", e), None, None, None);
+    });
+    let items = value.as_array().unwrap_or_else(|| {
+        client::fail("client_error", "Subtitle JSON must be an array", None, None, None);
+    });
+    let simplified: Vec<Value> = items
+        .iter()
+        .map(|item| {
+            let obj = item.as_object().unwrap_or_else(|| {
+                client::fail("client_error", "Subtitle JSON item must be an object", None, None, None);
+            });
+            let mut out = Map::new();
+            for field in ["text", "time_begin", "time_end"] {
+                let value = obj.get(field).unwrap_or_else(|| {
+                    client::fail("client_error", &format!("Subtitle JSON item missing field: {}", field), None, None, None);
+                });
+                out.insert(field.to_string(), value.clone());
+            }
+            Value::Object(out)
+        })
+        .collect();
+    serde_json::to_vec_pretty(&simplified).unwrap_or_else(|e| {
+        client::fail("client_error", &format!("Failed to serialize subtitle JSON: {}", e), None, None, None);
+    })
+}
+
+fn normalize_tts_text_arg(text: &str) -> String {
+    text.replace("\\n", "\n")
 }
 
 pub fn submit_lip_sync(
@@ -484,14 +547,19 @@ pub fn submit_tts(
     speed: f64,
     volume: i32,
     language_boost: Option<&str>,
+    subtitle_enable: bool,
     schedule_mode: Option<&str>,
 ) {
+    if subtitle_enable && !texts.is_empty() {
+        client::fail("client_error", "subtitle-enable currently supports only single --prompt", None, None, None);
+    }
+
     let schedule_mode = resolve_schedule_mode(schedule_mode);
     // 1. 构建 (content, Option<emotion>) 列表
     // --prompt wins over --prompt-path; the resolver yields an owned String so
     // the borrows in `segments` stay valid.
     let resolved_prompt: Option<String> = resolve_prompt_inputs(prompt, prompt_path);
-    let segments: Vec<(&str, Option<&str>)> = if let Some(p) = resolved_prompt.as_deref() {
+    let raw_segments: Vec<(&str, Option<&str>)> = if let Some(p) = resolved_prompt.as_deref() {
         if p.trim().is_empty() {
             client::fail("client_error", "Prompt cannot be empty", None, None, None);
         }
@@ -510,6 +578,10 @@ pub fn submit_tts(
     } else {
         client::fail("client_error", "Either --prompt, --prompt-path, or at least one --text is required", None, None, None);
     };
+    let segments: Vec<(String, Option<&str>)> = raw_segments
+        .into_iter()
+        .map(|(content, emo)| (normalize_tts_text_arg(content), emo))
+        .collect();
 
     // 2. 校验段数
     if segments.len() > 20 {
@@ -565,6 +637,7 @@ pub fn submit_tts(
         "voice_id": voice_id,
         "speed": speed,
         "vol": volume,
+        "subtitle_enable": subtitle_enable,
         "schedule_mode": schedule_mode,
     });
 
@@ -1170,6 +1243,91 @@ mod tests {
         assert_eq!(
             download_url_for_creation(&creation),
             Some("https://example.com/watermarked-download.mp4")
+        );
+    }
+
+    #[test]
+    fn download_url_ignores_subtitle_uri_for_primary_media() {
+        let creation = json!({
+            "subtitle_uri": "https://example.com/subtitle.json",
+            "uri": "https://example.com/watermarked.mp4",
+        });
+
+        assert_eq!(
+            download_url_for_creation(&creation),
+            Some("https://example.com/watermarked.mp4")
+        );
+    }
+
+    #[test]
+    fn subtitle_url_returns_subtitle_uri() {
+        let creation = json!({
+            "subtitle_uri": "https://example.com/subtitle.json",
+        });
+
+        assert_eq!(
+            subtitle_url_for_creation(&creation),
+            Some("https://example.com/subtitle.json")
+        );
+    }
+
+    #[test]
+    fn subtitle_url_ignores_empty_subtitle_uri() {
+        let creation = json!({
+            "subtitle_uri": "",
+        });
+
+        assert_eq!(subtitle_url_for_creation(&creation), None);
+    }
+
+    #[test]
+    fn subtitle_download_filename_uses_json_extension() {
+        assert_eq!(
+            subtitle_download_filename("task_123"),
+            "task_123_subtitle.json".to_string()
+        );
+    }
+
+    #[test]
+    fn preprocess_subtitle_json_keeps_only_public_fields() {
+        let input = r#"[
+            {
+                "text": "Vidu是生数科技推出的旗舰AI视频生成模型，",
+                "pronounce_text": "Vidu是生数科技推出的旗舰AI视频生成模型，",
+                "time_begin": 0,
+                "time_end": 3777.732426303855,
+                "text_begin": 0,
+                "text_end": 23
+            }
+        ]"#;
+
+        let output = preprocess_subtitle_json(input.as_bytes());
+        let value: Value = serde_json::from_slice(&output).expect("valid json");
+        assert_eq!(
+            value,
+            json!([
+                {
+                    "text": "Vidu是生数科技推出的旗舰AI视频生成模型，",
+                    "time_begin": 0,
+                    "time_end": 3777.732426303855
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn normalize_tts_text_arg_converts_escaped_newline() {
+        assert_eq!(
+            normalize_tts_text_arg("第一行\\n第二行"),
+            "第一行\n第二行".to_string()
+        );
+    }
+
+    #[test]
+    fn normalize_tts_text_arg_keeps_real_newline() {
+        assert_eq!(
+            normalize_tts_text_arg("第一行\n第二行"),
+            "第一行\n第二行".to_string()
         );
     }
 

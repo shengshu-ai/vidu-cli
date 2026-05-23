@@ -168,6 +168,8 @@ enum TaskAction {
         emotion: Vec<String>,
         #[arg(long, help = "Language boost for small languages/dialects: Chinese, English, auto, etc. (optional)")]
         language_boost: Option<String>,
+        #[arg(long, visible_alias = "subtitle-enabled", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true, value_parser = clap::value_parser!(bool), help = "Enable subtitle JSON output for single --prompt TTS")]
+        subtitle_enable: bool,
         #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
         schedule_mode: Option<String>,
     },
@@ -344,8 +346,8 @@ fn main() {
             TaskAction::LipSyncVoices => {
                 commands::tasks::list_voices();
             }
-            TaskAction::Tts { prompt, prompt_path, texts, voice_id, speed, volume, emotion, language_boost, schedule_mode } => {
-                commands::tasks::submit_tts(prompt.as_deref(), prompt_path.as_deref(), &texts, &emotion, &voice_id, speed, volume, language_boost.as_deref(), schedule_mode.as_deref());
+            TaskAction::Tts { prompt, prompt_path, texts, voice_id, speed, volume, emotion, language_boost, subtitle_enable, schedule_mode } => {
+                commands::tasks::submit_tts(prompt.as_deref(), prompt_path.as_deref(), &texts, &emotion, &voice_id, speed, volume, language_boost.as_deref(), subtitle_enable, schedule_mode.as_deref());
             }
             TaskAction::TtsVoices => {
                 commands::tasks::list_tts_voices();
@@ -395,5 +397,121 @@ fn main() {
             QuotaAction::Pass => commands::quota::claw_pass_status(),
             QuotaAction::Credit => commands::quota::credit_status(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn parse_tts(args: &[&str]) -> TaskAction {
+        let cli = Cli::try_parse_from(args).expect("parse cli");
+        match cli.group.expect("group") {
+            Group::Task { action } => action,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn tts_subtitle_enable_defaults_true() {
+        let action = parse_tts(&[
+            "vidu-cli",
+            "task",
+            "tts",
+            "--prompt",
+            "hello",
+            "--voice-id",
+            "English_expressive_narrator",
+        ]);
+
+        match action {
+            TaskAction::Tts { subtitle_enable, .. } => assert!(subtitle_enable),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn tts_subtitle_enable_flag_sets_true() {
+        let action = parse_tts(&[
+            "vidu-cli",
+            "task",
+            "tts",
+            "--prompt",
+            "hello",
+            "--voice-id",
+            "English_expressive_narrator",
+            "--subtitle-enable",
+        ]);
+
+        match action {
+            TaskAction::Tts { subtitle_enable, .. } => assert!(subtitle_enable),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn tts_subtitle_enable_explicit_true_sets_true() {
+        let action = parse_tts(&[
+            "vidu-cli",
+            "task",
+            "tts",
+            "--prompt",
+            "hello",
+            "--voice-id",
+            "English_expressive_narrator",
+            "--subtitle-enable",
+            "true",
+        ]);
+
+        match action {
+            TaskAction::Tts { subtitle_enable, .. } => assert!(subtitle_enable),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn tts_subtitle_enable_explicit_false_sets_false() {
+        let action = parse_tts(&[
+            "vidu-cli",
+            "task",
+            "tts",
+            "--prompt",
+            "hello",
+            "--voice-id",
+            "English_expressive_narrator",
+            "--subtitle-enable",
+            "false",
+        ]);
+
+        match action {
+            TaskAction::Tts { subtitle_enable, .. } => assert!(!subtitle_enable),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn tts_subtitle_enabled_alias_explicit_false_sets_false() {
+        let action = parse_tts(&[
+            "vidu-cli",
+            "task",
+            "tts",
+            "--prompt",
+            "hello",
+            "--voice-id",
+            "English_expressive_narrator",
+            "--subtitle-enabled",
+            "false",
+        ]);
+
+        match action {
+            TaskAction::Tts { subtitle_enable, .. } => assert!(!subtitle_enable),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn clap_definition_is_valid() {
+        Cli::command().debug_assert();
     }
 }
