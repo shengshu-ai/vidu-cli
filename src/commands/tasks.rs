@@ -463,7 +463,7 @@ pub fn submit_lip_sync(
             client::fail("client_error", &err, None, None, None);
         }
         let duration_f64 = read_audio_duration_f64(audio_path);
-        let duration = duration_f64.ceil() as i64;
+        let duration = round_media_duration(duration_f64);
 
         let mut metadata = serde_json::Map::new();
         metadata.insert("duration".to_string(), json!(duration_f64.to_string()));
@@ -506,6 +506,10 @@ fn calculate_text_duration(text: &str) -> i64 {
     } else {
         (char_count + 9) / 10
     }
+}
+
+fn round_media_duration(duration: f64) -> i64 {
+    duration.round() as i64
 }
 
 fn read_audio_duration_f64(path: &str) -> f64 {
@@ -1348,6 +1352,13 @@ mod tests {
     fn calculate_text_duration_empty() {
         // (0 + 9) / 10 = 0
         assert_eq!(calculate_text_duration(""), 0);
+    }
+
+    #[test]
+    fn round_media_duration_matches_upload_metadata() {
+        assert_eq!(round_media_duration(4.1), 4);
+        assert_eq!(round_media_duration(4.5), 5);
+        assert_eq!(round_media_duration(4.6), 5);
     }
 
     // --- resolve_prompt_inputs ---
