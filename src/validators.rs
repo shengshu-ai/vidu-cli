@@ -6,12 +6,102 @@ fn set(items: &[&str]) -> HashSet<String> {
     items.iter().map(|s| s.to_string()).collect()
 }
 
+// ---------------------------------------------------------------------------
+// Shared enum sets — kept as `pub const` so `main.rs` (clap PossibleValuesParser)
+// and the validators below use exactly the same source of truth. Adding a new
+// model / resolution / etc. should only require touching this file.
+// ---------------------------------------------------------------------------
+
+/// All accepted `--type` values for `task submit` and `task cost`.
+pub const TASK_TYPES: &[&str] = &[
+    "text2image",
+    "text2video",
+    "img2video",
+    "headtailimg2video",
+    "reference2image",
+    "character2video",
+];
+
+/// All accepted `--model-version` values across every task type
+/// (per-type compatibility is then enforced by `validate_task_body`).
+pub const MODEL_VERSIONS: &[&str] = &[
+    "3.0",
+    "3.1",
+    "3.1_pro",
+    "3.2",
+    "3.2_a",
+    "3.2_fast_m",
+    "3.2_pro_m",
+    "3.2_image_2",
+];
+
+/// All accepted `--resolution` values (1080p universal, 2k/4k for image tasks).
+pub const RESOLUTIONS: &[&str] = &["1080p", "2k", "4k"];
+
+/// All accepted `--aspect-ratio` values.
+pub const ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4"];
+
+/// All accepted `--transition` values across task types.
+pub const TRANSITIONS: &[&str] = &["creative", "stable", "pro", "speed"];
+
+/// All accepted `--schedule-mode` values.
+pub const SCHEDULE_MODES: &[&str] = &["claw_pass", "normal"];
+
+/// All accepted `--codec` values.
+pub const CODECS: &[&str] = &["h264", "h265"];
+
+/// All accepted `--language-boost` values for `task tts`.
+/// Sorted alphabetically to keep `--help` output stable.
+pub const LANGUAGE_BOOSTS: &[&str] = &[
+    "Afrikaans",
+    "Arabic",
+    "Bulgarian",
+    "Catalan",
+    "Chinese",
+    "Chinese,Yue",
+    "Croatian",
+    "Czech",
+    "Danish",
+    "Dutch",
+    "English",
+    "Filipino",
+    "Finnish",
+    "French",
+    "German",
+    "Greek",
+    "Hebrew",
+    "Hindi",
+    "Hungarian",
+    "Indonesian",
+    "Italian",
+    "Japanese",
+    "Korean",
+    "Malay",
+    "Norwegian",
+    "Nynorsk",
+    "Persian",
+    "Polish",
+    "Portuguese",
+    "Romanian",
+    "Russian",
+    "Slovak",
+    "Slovenian",
+    "Spanish",
+    "Swedish",
+    "Tamil",
+    "Thai",
+    "Turkish",
+    "Ukrainian",
+    "Vietnamese",
+    "auto",
+];
+
 fn valid_task_types() -> HashSet<String> {
-    set(&["text2image", "text2video", "img2video", "headtailimg2video", "reference2image", "character2video"])
+    set(TASK_TYPES)
 }
 
 fn valid_model_versions() -> HashSet<String> {
-    set(&["3.0", "3.1", "3.2", "3.2_fast_m", "3.2_pro_m", "3.2_image_2", "3.2_a"])
+    set(MODEL_VERSIONS)
 }
 
 fn resolution_support() -> HashMap<String, HashSet<String>> {
@@ -616,15 +706,7 @@ pub fn validate_tts_volume(vol: i32) -> String {
 }
 
 pub fn validate_tts_language_boost(lang: &str) -> String {
-    let valid = set(&[
-        "Chinese", "Chinese,Yue", "English", "Arabic", "Russian", "Spanish",
-        "French", "Portuguese", "German", "Turkish", "Dutch", "Ukrainian",
-        "Vietnamese", "Indonesian", "Japanese", "Italian", "Korean", "Thai",
-        "Polish", "Romanian", "Greek", "Czech", "Finnish", "Hindi", "Bulgarian",
-        "Danish", "Hebrew", "Malay", "Persian", "Slovak", "Swedish", "Croatian",
-        "Filipino", "Hungarian", "Norwegian", "Slovenian", "Catalan", "Nynorsk",
-        "Tamil", "Afrikaans", "auto",
-    ]);
+    let valid = set(LANGUAGE_BOOSTS);
     if !valid.contains(lang) {
         let mut list: Vec<&str> = valid.iter().map(|s| s.as_str()).collect();
         list.sort();

@@ -1,8 +1,11 @@
+mod cli_errors;
 mod client;
 mod commands;
 mod validators;
 
 use clap::{Parser, Subcommand};
+use clap::builder::PossibleValuesParser;
+use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(name = "vidu-cli", about = "Vidu API CLI", version = env!("VIDU_CLI_VERSION"), propagate_version = true)]
@@ -77,7 +80,9 @@ enum TaskAction {
     ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
     ///   Inputs: image + material ≤ 7
     Submit {
-        #[arg(long = "type", value_name = "TYPE", help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
+        #[arg(long = "type", value_name = "TYPE",
+            value_parser = PossibleValuesParser::new(validators::TASK_TYPES),
+            help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
         task_type: String,
         #[arg(long, help = "Text prompt (mutually preferred over --prompt-path when both are given).")]
         prompt: Option<String>,
@@ -93,21 +98,32 @@ enum TaskAction {
         videos: Vec<String>,
         #[arg(long, allow_negative_numbers = true, help = "Duration in seconds. Required for video tasks. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(-1 or 4-15). Ignored for image tasks.")]
         duration: Option<i64>,
-        #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m, 3.2_image_2")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
+            help = "Model version (per-type compatibility enforced after parse): 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.2_fast_m, 3.2_pro_m, 3.2_image_2")]
         model_version: String,
-        #[arg(long, help = "Aspect ratio: 16:9, 9:16, 1:1, 4:3, 3:4 (not for img2video/headtailimg2video)")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::ASPECT_RATIOS),
+            help = "Aspect ratio: 16:9, 9:16, 1:1, 4:3, 3:4 (not for img2video/headtailimg2video)")]
         aspect_ratio: Option<String>,
-        #[arg(long, help = "Transition style. img2video/headtailimg2video: 3.0 uses creative/stable, 3.1/3.2 require pro/speed; character2video 3.2 requires pro/speed; text2video supports it only on 3.2.")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::TRANSITIONS),
+            help = "Transition style. img2video/headtailimg2video: 3.0 uses creative/stable, 3.1/3.2 require pro/speed; character2video 3.2 requires pro/speed; text2video supports it only on 3.2.")]
         transition: Option<String>,
-        #[arg(long, help = "Resolution: 1080p (all), 2k/4k (text2image/reference2image only)")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::RESOLUTIONS),
+            help = "Resolution: 1080p (all), 2k/4k (text2image/reference2image only)")]
         resolution: String,
         #[arg(long, default_value = "1")]
         sample_count: i64,
-        #[arg(long, default_value = "h265")]
+        #[arg(long, default_value = "h265",
+            value_parser = PossibleValuesParser::new(validators::CODECS))]
         codec: String,
         #[arg(long, default_value = "auto")]
         movement_amplitude: String,
-        #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
+            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// Get task result
@@ -137,9 +153,12 @@ enum TaskAction {
         volume: f64,
         #[arg(long, default_value = "true")]
         enhance: bool,
-        #[arg(long, default_value = "h265")]
+        #[arg(long, default_value = "h265",
+            value_parser = PossibleValuesParser::new(validators::CODECS))]
         codec: String,
-        #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
+            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// List available voice IDs for lip-sync
@@ -166,11 +185,15 @@ enum TaskAction {
         volume: i32,
         #[arg(long, action = clap::ArgAction::Append, help = "Emotion per segment (paired by order with --text), or global emotion for --prompt")]
         emotion: Vec<String>,
-        #[arg(long, help = "Language boost for small languages/dialects: Chinese, English, auto, etc. (optional)")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::LANGUAGE_BOOSTS),
+            help = "Language boost for small languages/dialects: Chinese, English, auto, etc. (optional)")]
         language_boost: Option<String>,
         #[arg(long, visible_alias = "subtitle-enabled", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", default_value_t = true, value_parser = clap::value_parser!(bool), help = "Enable subtitle JSON output for single --prompt TTS")]
         subtitle_enable: bool,
-        #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
+            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// List available TTS voice IDs
@@ -189,28 +212,40 @@ enum TaskAction {
         width: Option<i32>,
         #[arg(long, help = "Output height in pixels")]
         height: Option<i32>,
-        #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
+            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// Query credit cost for a task before submitting
     Cost {
-        #[arg(long = "type", value_name = "TYPE", help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
+        #[arg(long = "type", value_name = "TYPE",
+            value_parser = PossibleValuesParser::new(validators::TASK_TYPES),
+            help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
         task_type: String,
-        #[arg(long, help = "Model version: 3.0, 3.1, 3.2, 3.2_fast_m, 3.2_pro_m, 3.2_image_2")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
+            help = "Model version (per-type compatibility enforced after parse)")]
         model_version: String,
         #[arg(long, help = "Duration in seconds. Required for video tasks. Ignored for image tasks.")]
         duration: Option<i64>,
-        #[arg(long, default_value = "1080p")]
+        #[arg(long, default_value = "1080p",
+            value_parser = PossibleValuesParser::new(validators::RESOLUTIONS))]
         resolution: String,
-        #[arg(long)]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::ASPECT_RATIOS))]
         aspect_ratio: Option<String>,
-        #[arg(long)]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::TRANSITIONS))]
         transition: Option<String>,
         #[arg(long, default_value = "1")]
         sample_count: i64,
-        #[arg(long, default_value = "h265")]
+        #[arg(long, default_value = "h265",
+            value_parser = PossibleValuesParser::new(validators::CODECS))]
         codec: String,
-        #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
+            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// Query credit cost for a TTS task before submitting
@@ -225,7 +260,9 @@ enum TaskAction {
         pitch: i32,
         #[arg(long, default_value = "80", help = "Volume: 0-100")]
         volume: i32,
-        #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
+            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// Query credit cost for a lip-sync task before submitting
@@ -238,9 +275,12 @@ enum TaskAction {
         speed: f64,
         #[arg(long, default_value = "0", help = "Volume [0.5,2], or 0 for server default")]
         volume: f64,
-        #[arg(long, default_value = "h265")]
+        #[arg(long, default_value = "h265",
+            value_parser = PossibleValuesParser::new(validators::CODECS))]
         codec: String,
-        #[arg(long, help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+        #[arg(long,
+            value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
+            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
         schedule_mode: Option<String>,
     },
 }
@@ -306,8 +346,11 @@ enum QuotaAction {
     Credit,
 }
 
-fn main() {
-    let cli = Cli::parse();
+fn main() -> ExitCode {
+    let cli = match cli_errors::parse_or_exit(Cli::try_parse) {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
 
     let group = match cli.group {
         Some(g) => g,
@@ -315,7 +358,7 @@ fn main() {
             use clap::CommandFactory;
             Cli::command().print_help().unwrap();
             println!();
-            return;
+            return ExitCode::from(0);
         }
     };
 
@@ -398,6 +441,7 @@ fn main() {
             QuotaAction::Credit => commands::quota::credit_status(),
         },
     }
+    ExitCode::from(0)
 }
 
 #[cfg(test)]
