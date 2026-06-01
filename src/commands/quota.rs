@@ -1,5 +1,5 @@
-use serde_json::{json, Value};
 use crate::client;
+use serde_json::{json, Value};
 
 pub fn format_claw_pass_json(data: &Value) -> Value {
     json!({
@@ -18,13 +18,25 @@ pub fn format_claw_pass_json(data: &Value) -> Value {
 
 pub fn claw_pass_status() {
     let base = client::base_url();
-    let data = client::request_json("GET", &format!("{}/credit/v1/claw-pass/status", base), None, None, None);
+    let data = client::request_json(
+        "GET",
+        &format!("{}/credit/v1/claw-pass/status", base),
+        None,
+        None,
+        None,
+    );
     client::ok(format_claw_pass_json(&data));
 }
 
 pub fn credit_status() {
     let base = client::base_url();
-    let data = client::request_json("GET", &format!("{}/credit/v1/credits/me", base), None, None, None);
+    let data = client::request_json(
+        "GET",
+        &format!("{}/credit/v1/credits/me", base),
+        None,
+        None,
+        None,
+    );
     client::ok(json!({
         "credits": data.get("credits").and_then(|v| v.as_i64()).unwrap_or(0),
         "credits_expire_today": data.get("credits_expire_today").and_then(|v| v.as_i64()).unwrap_or(0),
