@@ -1,7 +1,7 @@
 use crate::{client, validators};
 use lofty::prelude::AudioFile;
 use serde_json::{json, Map, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn resolve_schedule_mode(explicit: Option<&str>) -> String {
     if let Some(mode) = explicit {
@@ -273,7 +273,7 @@ pub fn get(task_id: &str, output: Option<&str>) {
         result["err_msg"] = json!(data.get("err_msg").and_then(|v| v.as_str()).unwrap_or(""));
     }
 
-    if let Some(out_dir) = output {
+    if let Some(output_path) = output {
         if state == "success" {
             let media_urls: Vec<&str> = data.get("creations")
                 .and_then(|v| v.as_array())
@@ -292,9 +292,8 @@ pub fn get(task_id: &str, output: Option<&str>) {
                 })
                 .unwrap_or_default();
 
-            std::fs::create_dir_all(out_dir).unwrap_or_else(|e| {
-                client::fail("client_error", &format!("Failed to create output directory: {}", e), None, None, None);
-            });
+            let artifact_count = media_urls.len() + subtitle_urls.len();
+            let output_target = resolve_download_output_target(output_path, artifact_count);
 
             let http_client = reqwest::blocking::Client::new();
             let mut downloaded: Vec<String> = Vec::new();
@@ -317,8 +316,13 @@ pub fn get(task_id: &str, output: Option<&str>) {
                         } else {
                             bytes.to_vec()
                         };
-                        let filename = filename.unwrap_or_else(|| download_filename(task_id, file_index, &bytes));
-                        let filepath = Path::new(out_dir).join(&filename);
+                        let filepath = match filename {
+                            Some(filename) => output_target.path_for_name(&filename),
+                            None => {
+                                let ext = ext_from_bytes(&bytes);
+                                output_target.path_for(task_id, file_index, &ext)
+                            }
+                        };
                         std::fs::write(&filepath, &bytes).unwrap_or_else(|e| {
                             client::fail("client_error", &format!("Failed to write file {}: {}", filepath.display(), e), None, None, None);
                         });
@@ -336,6 +340,61 @@ pub fn get(task_id: &str, output: Option<&str>) {
     }
 
     client::ok(result);
+}
+
+enum DownloadOutputTarget {
+    Directory(PathBuf),
+    File(PathBuf),
+}
+
+impl DownloadOutputTarget {
+    fn path_for(&self, task_id: &str, index: usize, ext: &str) -> PathBuf {
+        match self {
+            DownloadOutputTarget::Directory(dir) => dir.join(format!("{}_{}.{}", task_id, index, ext)),
+            DownloadOutputTarget::File(path) => path.clone(),
+        }
+    }
+
+    fn path_for_name(&self, filename: &str) -> PathBuf {
+        match self {
+            DownloadOutputTarget::Directory(dir) => dir.join(filename),
+            DownloadOutputTarget::File(path) => path.clone(),
+        }
+    }
+}
+
+fn resolve_download_output_target(output: &str, artifact_count: usize) -> DownloadOutputTarget {
+    let path = Path::new(output);
+    if path.exists() && path.is_dir() {
+        std::fs::create_dir_all(path).unwrap_or_else(|e| {
+            client::fail("client_error", &format!("Failed to create output directory: {}", e), None, None, None);
+        });
+        return DownloadOutputTarget::Directory(path.to_path_buf());
+    }
+
+    let looks_like_file = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| Path::new(name).extension().is_some())
+        .unwrap_or(false);
+    if looks_like_file {
+        if artifact_count > 1 {
+            client::fail("client_error", "-o/--output as a file path is only supported for single-artifact tasks", None, None, None);
+        }
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                    client::fail("client_error", &format!("Failed to create output parent directory: {}", e), None, None, None);
+                });
+            }
+        }
+        return DownloadOutputTarget::File(path.to_path_buf());
+    }
+
+    std::fs::create_dir_all(path).unwrap_or_else(|e| {
+        client::fail("client_error", &format!("Failed to create output directory: {}", e), None, None, None);
+    });
+    DownloadOutputTarget::Directory(path.to_path_buf())
 }
 
 fn download_url_for_creation(creation: &Value) -> Option<&str> {

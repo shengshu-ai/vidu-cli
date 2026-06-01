@@ -129,7 +129,7 @@ enum TaskAction {
     /// Get task result
     Get {
         task_id: String,
-        #[arg(long, short = 'o', help = "Output directory for downloading media files")]
+        #[arg(long, short = 'o', help = "Output path for downloading media files. Existing directories and paths without an extension are treated as directories; file paths are supported for single-artifact tasks.")]
         output: Option<String>,
     },
     /// Lip sync: drive video mouth movement with text or audio
