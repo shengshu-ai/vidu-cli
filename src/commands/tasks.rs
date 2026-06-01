@@ -12,22 +12,9 @@ fn resolve_schedule_mode(explicit: Option<&str>) -> String {
         return mode.to_string();
     }
     let base = client::base_url();
-    let data = client::request_json(
-        "GET",
-        &format!("{}/credit/v1/claw-pass/status", base),
-        None,
-        None,
-        None,
-    );
-    let has_pass = data
-        .get("has_pass")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if has_pass {
-        "claw_pass".to_string()
-    } else {
-        "normal".to_string()
-    }
+    let data = client::request_json("GET", &format!("{}/credit/v1/claw-pass/status", base), None, None, None);
+    let has_pass = data.get("has_pass").and_then(|v| v.as_bool()).unwrap_or(false);
+    if has_pass { "claw_pass".to_string() } else { "normal".to_string() }
 }
 /// Pick the effective prompt text from `--prompt` and `--prompt-path`.
 ///
@@ -46,6 +33,7 @@ fn resolve_prompt_inputs(prompt: Option<&str>, prompt_path: Option<&str>) -> Opt
     }
     None
 }
+
 
 pub fn process_image_input(input: &str) -> String {
     // 1. If already ssupload URI, return directly
@@ -67,9 +55,7 @@ fn download_and_upload(url: &str) -> String {
     match resp {
         Ok(mut r) => {
             let temp_dir = tempfile::tempdir().unwrap();
-            let temp_path = temp_dir
-                .path()
-                .join(format!("vidu_{}", uuid::Uuid::new_v4()));
+            let temp_path = temp_dir.path().join(format!("vidu_{}", uuid::Uuid::new_v4()));
             let mut file = std::fs::File::create(&temp_path).unwrap();
             std::io::copy(&mut r, &mut file).unwrap();
 
@@ -77,55 +63,30 @@ fn download_and_upload(url: &str) -> String {
             uri
         }
         Err(e) => {
-            client::fail(
-                "client_error",
-                &format!("Failed to download image: {}", e),
-                None,
-                None,
-                None,
-            );
+            client::fail("client_error", &format!("Failed to download image: {}", e), None, None, None);
         }
     }
 }
 
 fn upload_local_file(path: &str) -> String {
     if !Path::new(path).exists() {
-        client::fail(
-            "client_error",
-            &format!("Image file not found: {}", path),
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", &format!("Image file not found: {}", path), None, None, None);
     }
     crate::commands::upload::upload_and_get_uri(path)
 }
 
 pub fn submit(
-    task_type: &str,
-    prompt: Option<&str>,
-    prompt_path: Option<&str>,
-    images: &[String],
-    materials: &[String],
-    audios: &[String],
-    videos: &[String],
-    duration: Option<i64>,
-    model_version: &str,
-    aspect_ratio: Option<&str>,
-    transition: Option<&str>,
-    resolution: &str,
-    sample_count: i64,
-    codec: &str,
-    movement_amplitude: &str,
-    schedule_mode: Option<&str>,
+    task_type: &str, prompt: Option<&str>, prompt_path: Option<&str>,
+    images: &[String], materials: &[String],
+    audios: &[String], videos: &[String], duration: Option<i64>, model_version: &str, aspect_ratio: Option<&str>,
+    transition: Option<&str>, resolution: &str, sample_count: i64,
+    codec: &str, movement_amplitude: &str, schedule_mode: Option<&str>,
 ) {
     let prompt = resolve_prompt_inputs(prompt, prompt_path).unwrap_or_else(|| {
         client::fail(
             "client_error",
             "Either --prompt or --prompt-path is required",
-            None,
-            None,
-            None,
+            None, None, None,
         )
     });
     let schedule_mode = resolve_schedule_mode(schedule_mode);
@@ -135,13 +96,7 @@ pub fn submit(
     } else {
         match duration {
             Some(d) => d,
-            None => client::fail(
-                "client_error",
-                "duration is required for this task type",
-                None,
-                None,
-                None,
-            ),
+            None => client::fail("client_error", "duration is required for this task type", None, None, None),
         }
     };
     let codec = if codec == "h265" && !crate::commands::upload::ffprobe_available() {
@@ -160,16 +115,7 @@ pub fn submit(
     for mat in materials {
         let parts: Vec<&str> = mat.split(':').collect();
         if parts.len() != 3 {
-            client::fail(
-                "client_error",
-                &format!(
-                    "Invalid material format '{}'. Expected 'name:id:version'",
-                    mat
-                ),
-                None,
-                None,
-                None,
-            );
+            client::fail("client_error", &format!("Invalid material format '{}'. Expected 'name:id:version'", mat), None, None, None);
         }
         prompts.push(json!({
             "type": "material",
@@ -179,22 +125,10 @@ pub fn submit(
     }
 
     if !audios.is_empty() && !(model_version == "3.2_a" && task_type == "character2video") {
-        client::fail(
-            "client_error",
-            &format!("Audio input is only supported for character2video with model_version 3.2_a"),
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", &format!("Audio input is only supported for character2video with model_version 3.2_a"), None, None, None);
     }
     if audios.len() > 3 {
-        client::fail(
-            "client_error",
-            &format!("Too many audio inputs: {}. Max: 3", audios.len()),
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", &format!("Too many audio inputs: {}. Max: 3", audios.len()), None, None, None);
     }
     let mut total_audio_duration = 0.0f64;
     for audio_input in audios {
@@ -209,59 +143,26 @@ pub fn submit(
             }
             let dur = read_audio_duration_f64(audio_input);
             if dur < 2.0 || dur > 15.0 {
-                client::fail(
-                    "client_error",
-                    &format!("Audio duration {:.1}s out of range [2, 15]s", dur),
-                    None,
-                    None,
-                    None,
-                );
+                client::fail("client_error", &format!("Audio duration {:.1}s out of range [2, 15]s", dur), None, None, None);
             }
             total_audio_duration += dur;
             if total_audio_duration > 15.0 {
-                client::fail(
-                    "client_error",
-                    &format!(
-                        "Total audio duration {:.1}s exceeds 15s",
-                        total_audio_duration
-                    ),
-                    None,
-                    None,
-                    None,
-                );
+                client::fail("client_error", &format!("Total audio duration {:.1}s exceeds 15s", total_audio_duration), None, None, None);
             }
             let mut metadata = serde_json::Map::new();
             metadata.insert("duration".to_string(), json!(dur.to_string()));
-            crate::commands::upload::upload_media_and_get_uri_with_metadata(
-                audio_input,
-                Some(metadata),
-            )
+            crate::commands::upload::upload_media_and_get_uri_with_metadata(audio_input, Some(metadata))
         };
-        let name = Path::new(audio_input)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("audio");
+        let name = Path::new(audio_input).file_name().and_then(|n| n.to_str()).unwrap_or("audio");
         prompts.push(json!({"type": "audio", "content": uri, "name": name}));
     }
 
     // Process video inputs (character2video + 3.2_a only)
     if !videos.is_empty() && !(model_version == "3.2_a" && task_type == "character2video") {
-        client::fail(
-            "client_error",
-            "Video input is only supported for character2video with model_version 3.2_a",
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", "Video input is only supported for character2video with model_version 3.2_a", None, None, None);
     }
     if !videos.is_empty() && videos.len() > 3 {
-        client::fail(
-            "client_error",
-            &format!("Too many video inputs: {}. Max: 3", videos.len()),
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", &format!("Too many video inputs: {}. Max: 3", videos.len()), None, None, None);
     }
     let mut total_video_duration = 0.0f64;
     for video_input in videos {
@@ -276,92 +177,35 @@ pub fn submit(
             }
             let (w, h) = match read_mp4_dimensions(video_input) {
                 Some(dims) => dims,
-                None => client::fail(
-                    "client_error",
-                    &format!("Cannot read video dimensions: {}", video_input),
-                    None,
-                    None,
-                    None,
-                ),
+                None => client::fail("client_error", &format!("Cannot read video dimensions: {}", video_input), None, None, None),
             };
             let aspect = w as f64 / h as f64;
             if aspect < 0.4 || aspect > 2.5 {
-                client::fail(
-                    "client_error",
-                    &format!(
-                        "Video aspect ratio {:.2} out of range [0.4, 2.5] ({}x{})",
-                        aspect, w, h
-                    ),
-                    None,
-                    None,
-                    None,
-                );
+                client::fail("client_error", &format!("Video aspect ratio {:.2} out of range [0.4, 2.5] ({}x{})", aspect, w, h), None, None, None);
             }
             if w < 300 || w > 60000 {
-                client::fail(
-                    "client_error",
-                    &format!("Video width {} out of range [300, 60000]", w),
-                    None,
-                    None,
-                    None,
-                );
+                client::fail("client_error", &format!("Video width {} out of range [300, 60000]", w), None, None, None);
             }
             if h < 300 || h > 60000 {
-                client::fail(
-                    "client_error",
-                    &format!("Video height {} out of range [300, 60000]", h),
-                    None,
-                    None,
-                    None,
-                );
+                client::fail("client_error", &format!("Video height {} out of range [300, 60000]", h), None, None, None);
             }
             let pixels = (w as u64) * (h as u64);
             if pixels < 409600 || pixels > 2086876 {
-                client::fail(
-                    "client_error",
-                    &format!(
-                        "Video total pixels {} out of range [409600, 2086876] ({}x{})",
-                        pixels, w, h
-                    ),
-                    None,
-                    None,
-                    None,
-                );
+                client::fail("client_error", &format!("Video total pixels {} out of range [409600, 2086876] ({}x{})", pixels, w, h), None, None, None);
             }
             let dur = match read_video_duration_f64(video_input) {
                 Some(d) => d,
-                None => client::fail(
-                    "client_error",
-                    &format!("Cannot read video duration: {}", video_input),
-                    None,
-                    None,
-                    None,
-                ),
+                None => client::fail("client_error", &format!("Cannot read video duration: {}", video_input), None, None, None),
             };
             total_video_duration += dur;
             if total_video_duration > 15.0 {
-                client::fail(
-                    "client_error",
-                    &format!(
-                        "Total video duration {:.1}s exceeds 15s",
-                        total_video_duration
-                    ),
-                    None,
-                    None,
-                    None,
-                );
+                client::fail("client_error", &format!("Total video duration {:.1}s exceeds 15s", total_video_duration), None, None, None);
             }
             let mut metadata = serde_json::Map::new();
             metadata.insert("duration".to_string(), json!(dur.to_string()));
-            crate::commands::upload::upload_media_and_get_uri_with_metadata(
-                video_input,
-                Some(metadata),
-            )
+            crate::commands::upload::upload_media_and_get_uri_with_metadata(video_input, Some(metadata))
         };
-        let name = Path::new(video_input)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("video");
+        let name = Path::new(video_input).file_name().and_then(|n| n.to_str()).unwrap_or("video");
         prompts.push(json!({"type": "video", "content": uri, "name": name}));
     }
 
@@ -398,49 +242,24 @@ pub fn submit(
     }
 
     let base = client::base_url();
-    let data = client::request_json(
-        "POST",
-        &format!("{}/vidu/v1/tasks", base),
-        None,
-        Some(&body),
-        None,
-    );
-    let task_id = data
-        .get("id")
-        .map(|v| match v {
-            Value::String(s) => s.clone(),
-            Value::Number(n) => n.to_string(),
-            _ => String::new(),
-        })
-        .unwrap_or_default();
+    let data = client::request_json("POST", &format!("{}/vidu/v1/tasks", base), None, Some(&body), None);
+    let task_id = data.get("id").map(|v| match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }).unwrap_or_default();
     if task_id.is_empty() {
-        client::fail(
-            "parse_error",
-            &format!("No task id in response: {}", data),
-            None,
-            None,
-            None,
-        );
+        client::fail("parse_error", &format!("No task id in response: {}", data), None, None, None);
     }
     client::ok(json!({"task_id": task_id}));
 }
 
 pub fn get(task_id: &str, output: Option<&str>) {
     let base = client::base_url();
-    let data = client::request_json(
-        "GET",
-        &format!("{}/vidu/v1/tasks/{}", base, task_id),
-        None,
-        None,
-        None,
-    );
+    let data = client::request_json("GET", &format!("{}/vidu/v1/tasks/{}", base, task_id), None, None, None);
     let state = data.get("state").and_then(|v| v.as_str()).unwrap_or("");
     let task_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
-    let model = data
-        .get("input")
-        .and_then(|v| v.get("model_name"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let model = data.get("input").and_then(|v| v.get("model_name")).and_then(|v| v.as_str()).unwrap_or("");
 
     let mut result = json!({
         "task_id": task_id,
@@ -456,17 +275,20 @@ pub fn get(task_id: &str, output: Option<&str>) {
 
     if let Some(output_path) = output {
         if state == "success" {
-            let media_urls: Vec<&str> = data
-                .get("creations")
+            let media_urls: Vec<&str> = data.get("creations")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(download_url_for_creation).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(download_url_for_creation)
+                        .collect()
+                })
                 .unwrap_or_default();
             let subtitle_urls: Vec<&str> = data.get("creations")
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
                         .filter_map(subtitle_url_for_creation)
-                    .collect()
+                        .collect()
                 })
                 .unwrap_or_default();
 
@@ -475,43 +297,19 @@ pub fn get(task_id: &str, output: Option<&str>) {
 
             let http_client = reqwest::blocking::Client::new();
             let mut downloaded: Vec<String> = Vec::new();
-            let urls = media_urls
-                .iter()
+            let urls = media_urls.iter()
                 .enumerate()
                 .map(|(i, url)| (*url, None, i, false))
-                .chain(subtitle_urls.iter().map(|url| {
-                    (
-                        *url,
-                        Some(subtitle_download_filename(task_id)),
-                        0,
-                        true,
-                    )
-                }));
+                .chain(subtitle_urls.iter().map(|url| (*url, Some(subtitle_download_filename(task_id)), 0, true)));
             for (url, filename, file_index, is_subtitle) in urls {
-                match http_client
-                    .get(url)
-                    .timeout(std::time::Duration::from_secs(60))
-                    .send()
-                {
+                match http_client.get(url).timeout(std::time::Duration::from_secs(60)).send() {
                     Ok(resp) => {
                         let status = resp.status().as_u16();
                         if status >= 400 {
-                            client::fail(
-                                "http_error",
-                                &format!("Download failed for {}: HTTP {}", url, status),
-                                Some(status),
-                                None,
-                                None,
-                            );
+                            client::fail("http_error", &format!("Download failed for {}: HTTP {}", url, status), Some(status), None, None);
                         }
                         let bytes = resp.bytes().unwrap_or_else(|e| {
-                            client::fail(
-                                "client_error",
-                                &format!("Failed to read response bytes: {}", e),
-                                None,
-                                None,
-                                None,
-                            );
+                            client::fail("client_error", &format!("Failed to read response bytes: {}", e), None, None, None);
                         });
                         let bytes = if is_subtitle {
                             preprocess_subtitle_json(&bytes)
@@ -526,24 +324,12 @@ pub fn get(task_id: &str, output: Option<&str>) {
                             }
                         };
                         std::fs::write(&filepath, &bytes).unwrap_or_else(|e| {
-                            client::fail(
-                                "client_error",
-                                &format!("Failed to write file {}: {}", filepath.display(), e),
-                                None,
-                                None,
-                                None,
-                            );
+                            client::fail("client_error", &format!("Failed to write file {}: {}", filepath.display(), e), None, None, None);
                         });
                         downloaded.push(filepath.to_string_lossy().to_string());
                     }
                     Err(e) => {
-                        client::fail(
-                            "network_error",
-                            &format!("Failed to download {}: {}", url, e),
-                            None,
-                            None,
-                            None,
-                        );
+                        client::fail("network_error", &format!("Failed to download {}: {}", url, e), None, None, None);
                     }
                 }
             }
@@ -564,9 +350,7 @@ enum DownloadOutputTarget {
 impl DownloadOutputTarget {
     fn path_for(&self, task_id: &str, index: usize, ext: &str) -> PathBuf {
         match self {
-            DownloadOutputTarget::Directory(dir) => {
-                dir.join(format!("{}_{}.{}", task_id, index, ext))
-            }
+            DownloadOutputTarget::Directory(dir) => dir.join(format!("{}_{}.{}", task_id, index, ext)),
             DownloadOutputTarget::File(path) => path.clone(),
         }
     }
@@ -583,13 +367,7 @@ fn resolve_download_output_target(output: &str, artifact_count: usize) -> Downlo
     let path = Path::new(output);
     if path.exists() && path.is_dir() {
         std::fs::create_dir_all(path).unwrap_or_else(|e| {
-            client::fail(
-                "client_error",
-                &format!("Failed to create output directory: {}", e),
-                None,
-                None,
-                None,
-            );
+            client::fail("client_error", &format!("Failed to create output directory: {}", e), None, None, None);
         });
         return DownloadOutputTarget::Directory(path.to_path_buf());
     }
@@ -601,24 +379,12 @@ fn resolve_download_output_target(output: &str, artifact_count: usize) -> Downlo
         .unwrap_or(false);
     if looks_like_file {
         if artifact_count > 1 {
-            client::fail(
-                "client_error",
-                "-o/--output as a file path is only supported for single-artifact tasks",
-                None,
-                None,
-                None,
-            );
+            client::fail("client_error", "-o/--output as a file path is only supported for single-artifact tasks", None, None, None);
         }
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).unwrap_or_else(|e| {
-                    client::fail(
-                        "client_error",
-                        &format!("Failed to create output parent directory: {}", e),
-                        None,
-                        None,
-                        None,
-                    );
+                    client::fail("client_error", &format!("Failed to create output parent directory: {}", e), None, None, None);
                 });
             }
         }
@@ -626,13 +392,7 @@ fn resolve_download_output_target(output: &str, artifact_count: usize) -> Downlo
     }
 
     std::fs::create_dir_all(path).unwrap_or_else(|e| {
-        client::fail(
-            "client_error",
-            &format!("Failed to create output directory: {}", e),
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", &format!("Failed to create output directory: {}", e), None, None, None);
     });
     DownloadOutputTarget::Directory(path.to_path_buf())
 }
@@ -703,20 +463,8 @@ pub fn submit_lip_sync(
     schedule_mode: Option<&str>,
 ) {
     match (text, audio) {
-        (Some(_), Some(_)) => client::fail(
-            "client_error",
-            "--text and --audio are mutually exclusive",
-            None,
-            None,
-            None,
-        ),
-        (None, None) => client::fail(
-            "client_error",
-            "Either --text or --audio is required",
-            None,
-            None,
-            None,
-        ),
+        (Some(_), Some(_)) => client::fail("client_error", "--text and --audio are mutually exclusive", None, None, None),
+        (None, None) => client::fail("client_error", "Either --text or --audio is required", None, None, None),
         _ => {}
     }
 
@@ -745,10 +493,7 @@ pub fn submit_lip_sync(
     }
 
     let video_uri = upload_media_file(video);
-    let video_name = Path::new(video)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("video1");
+    let video_name = Path::new(video).file_name().and_then(|n| n.to_str()).unwrap_or("video1");
     let video_prompt = json!({"type": "video", "content": video_uri, "name": video_name});
 
     let (prompts, settings) = if let Some(txt) = text {
@@ -762,13 +507,7 @@ pub fn submit_lip_sync(
         }
         let duration = calculate_text_duration(txt);
         if duration < 2 {
-            client::fail(
-                "client_error",
-                "Text is too short, duration must be at least 2 seconds",
-                None,
-                None,
-                None,
-            );
+            client::fail("client_error", "Text is too short, duration must be at least 2 seconds", None, None, None);
         }
         let prompts = vec![json!({"type": "text", "content": txt}), video_prompt];
         let mut settings = json!({"speed": speed, "voice_id": voice_id, "duration": duration, "codec": codec, "schedule_mode": schedule_mode});
@@ -787,21 +526,11 @@ pub fn submit_lip_sync(
 
         let mut metadata = serde_json::Map::new();
         metadata.insert("duration".to_string(), json!(duration_f64.to_string()));
-        let audio_uri = crate::commands::upload::upload_media_and_get_uri_with_metadata(
-            audio_path,
-            Some(metadata),
-        );
+        let audio_uri = crate::commands::upload::upload_media_and_get_uri_with_metadata(audio_path, Some(metadata));
 
-        let audio_name = Path::new(audio_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("audio1");
-        let prompts = vec![
-            video_prompt,
-            json!({"type": "audio", "content": audio_uri, "name": audio_name}),
-        ];
-        let settings =
-            json!({"codec": codec, "duration": duration, "schedule_mode": schedule_mode});
+        let audio_name = Path::new(audio_path).file_name().and_then(|n| n.to_str()).unwrap_or("audio1");
+        let prompts = vec![video_prompt, json!({"type": "audio", "content": audio_uri, "name": audio_name})];
+        let settings = json!({"codec": codec, "duration": duration, "schedule_mode": schedule_mode});
         (prompts, settings)
     };
 
@@ -812,29 +541,14 @@ pub fn submit_lip_sync(
     });
 
     let base = client::base_url();
-    let data = client::request_json(
-        "POST",
-        &format!("{}/vidu/v1/tasks/tool", base),
-        None,
-        Some(&body),
-        None,
-    );
-    let task_id = data
-        .get("id")
-        .map(|v| match v {
-            Value::String(s) => s.clone(),
-            Value::Number(n) => n.to_string(),
-            _ => String::new(),
-        })
-        .unwrap_or_default();
+    let data = client::request_json("POST", &format!("{}/vidu/v1/tasks/tool", base), None, Some(&body), None);
+    let task_id = data.get("id").map(|v| match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }).unwrap_or_default();
     if task_id.is_empty() {
-        client::fail(
-            "parse_error",
-            &format!("No task id in response: {}", data),
-            None,
-            None,
-            None,
-        );
+        client::fail("parse_error", &format!("No task id in response: {}", data), None, None, None);
     }
     client::ok(json!({"task_id": task_id}));
 }
@@ -863,25 +577,13 @@ fn read_audio_duration_f64(path: &str) -> f64 {
             let secs = tagged_file.properties().duration().as_secs_f64();
             secs.max(0.1)
         }
-        Err(e) => client::fail(
-            "client_error",
-            &format!("Cannot read audio duration: {}", e),
-            None,
-            None,
-            None,
-        ),
+        Err(e) => client::fail("client_error", &format!("Cannot read audio duration: {}", e), None, None, None),
     }
 }
 
 fn upload_media_file(path: &str) -> String {
     if !Path::new(path).exists() {
-        client::fail(
-            "client_error",
-            &format!("File not found: {}", path),
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", &format!("File not found: {}", path), None, None, None);
     }
     let metadata = read_video_duration_f64(path).map(|dur| {
         let mut m = serde_json::Map::new();
@@ -924,10 +626,7 @@ pub fn submit_tts(
         if p.trim().is_empty() {
             client::fail("client_error", "Prompt cannot be empty", None, None, None);
         }
-        let emo = emotions
-            .first()
-            .map(|s| s.as_str())
-            .filter(|s| !s.trim().is_empty());
+        let emo = emotions.first().map(|s| s.as_str()).filter(|s| !s.trim().is_empty());
         vec![(p, emo)]
     } else if !texts.is_empty() {
         if emotions.len() > texts.len() {
@@ -935,25 +634,12 @@ pub fn submit_tts(
                 &format!("Too many --emotion values ({}): must not exceed number of --text segments ({})", emotions.len(), texts.len()),
                 None, None, None);
         }
-        texts
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let emo = emotions
-                    .get(i)
-                    .map(|s| s.as_str())
-                    .filter(|s| !s.trim().is_empty());
-                (t.as_str(), emo)
-            })
-            .collect()
+        texts.iter().enumerate().map(|(i, t)| {
+            let emo = emotions.get(i).map(|s| s.as_str()).filter(|s| !s.trim().is_empty());
+            (t.as_str(), emo)
+        }).collect()
     } else {
-        client::fail(
-            "client_error",
-            "Either --prompt, --prompt-path, or at least one --text is required",
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", "Either --prompt, --prompt-path, or at least one --text is required", None, None, None);
     };
     let segments: Vec<(String, Option<&str>)> = raw_segments
         .into_iter()
@@ -962,50 +648,24 @@ pub fn submit_tts(
 
     // 2. 校验段数
     if segments.len() > 20 {
-        client::fail(
-            "client_error",
-            &format!("Too many segments ({}). Maximum: 20", segments.len()),
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", &format!("Too many segments ({}). Maximum: 20", segments.len()), None, None, None);
     }
 
     // 3. 校验每段内容和 emotion
     for (i, (content, emo)) in segments.iter().enumerate() {
         if content.trim().is_empty() {
-            client::fail(
-                "client_error",
-                &format!("Segment {} text cannot be empty", i + 1),
-                None,
-                None,
-                None,
-            );
+            client::fail("client_error", &format!("Segment {} text cannot be empty", i + 1), None, None, None);
         }
         let char_count = content.chars().count();
         if char_count > 2000 {
-            client::fail(
-                "client_error",
-                &format!(
-                    "Segment {} text too long ({} characters). Maximum: 2000",
-                    i + 1,
-                    char_count
-                ),
-                None,
-                None,
-                None,
-            );
+            client::fail("client_error",
+                &format!("Segment {} text too long ({} characters). Maximum: 2000", i + 1, char_count),
+                None, None, None);
         }
         if let Some(e) = emo {
             let err = validators::validate_tts_emotion(e);
             if !err.is_empty() {
-                client::fail(
-                    "client_error",
-                    &format!("Segment {}: {}", i + 1, err),
-                    None,
-                    None,
-                    None,
-                );
+                client::fail("client_error", &format!("Segment {}: {}", i + 1, err), None, None, None);
             }
         }
     }
@@ -1027,16 +687,13 @@ pub fn submit_tts(
     }
 
     // 5. 构建 prompts 数组
-    let prompts: Vec<serde_json::Value> = segments
-        .iter()
-        .map(|(content, emo)| {
-            let mut p = json!({"type": "text", "content": content});
-            if let Some(e) = emo {
-                p["audio"] = json!({"emotion": e});
-            }
-            p
-        })
-        .collect();
+    let prompts: Vec<serde_json::Value> = segments.iter().map(|(content, emo)| {
+        let mut p = json!({"type": "text", "content": content});
+        if let Some(e) = emo {
+            p["audio"] = json!({"emotion": e});
+        }
+        p
+    }).collect();
 
     // 6. 构建 settings
     let mut settings = json!({
@@ -1069,31 +726,16 @@ pub fn submit_tts(
 
     // 7. 发送请求
     let base = client::base_url();
-    let data = client::request_json(
-        "POST",
-        &format!("{}/vidu/v1/tasks", base),
-        None,
-        Some(&body),
-        None,
-    );
+    let data = client::request_json("POST", &format!("{}/vidu/v1/tasks", base), None, Some(&body), None);
 
-    let task_id = data
-        .get("id")
-        .map(|v| match v {
-            Value::String(s) => s.clone(),
-            Value::Number(n) => n.to_string(),
-            _ => String::new(),
-        })
-        .unwrap_or_default();
+    let task_id = data.get("id").map(|v| match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }).unwrap_or_default();
 
     if task_id.is_empty() {
-        client::fail(
-            "parse_error",
-            &format!("No task id in response: {}", data),
-            None,
-            None,
-            None,
-        );
+        client::fail("parse_error", &format!("No task id in response: {}", data), None, None, None);
     }
 
     client::ok(json!({"task_id": task_id}));
@@ -1102,16 +744,13 @@ pub fn submit_tts(
 pub fn list_tts_voices() {
     let grouped = validators::tts_voices_grouped();
     let total: usize = grouped.iter().map(|(_, v)| v.len()).sum();
-    let languages: Vec<serde_json::Value> = grouped
-        .into_iter()
-        .map(|(lang, voices)| {
-            json!({
-                "language": lang,
-                "count": voices.len(),
-                "voice_ids": voices,
-            })
+    let languages: Vec<serde_json::Value> = grouped.into_iter().map(|(lang, voices)| {
+        json!({
+            "language": lang,
+            "count": voices.len(),
+            "voice_ids": voices,
         })
-        .collect();
+    }).collect();
     client::ok(json!({
         "total": total,
         "languages": languages,
@@ -1183,9 +822,7 @@ fn parse_timeline(input: &str) -> Value {
             client::fail(
                 "client_error",
                 &format!("Timeline file not found: {}", input),
-                None,
-                None,
-                None,
+                None, None, None,
             );
         }
         let content = match std::fs::read_to_string(input) {
@@ -1193,9 +830,7 @@ fn parse_timeline(input: &str) -> Value {
             Err(e) => client::fail(
                 "client_error",
                 &format!("Failed to read timeline file: {}", e),
-                None,
-                None,
-                None,
+                None, None, None,
             ),
         };
         match serde_json::from_str(&content) {
@@ -1203,9 +838,7 @@ fn parse_timeline(input: &str) -> Value {
             Err(e) => client::fail(
                 "client_error",
                 &format!("Invalid JSON in timeline file: {}", e),
-                None,
-                None,
-                None,
+                None, None, None,
             ),
         }
     }
@@ -1214,9 +847,7 @@ fn parse_timeline(input: &str) -> Value {
         Err(e) => client::fail(
             "client_error",
             &format!("Invalid timeline JSON: {}", e),
-            None,
-            None,
-            None,
+            None, None, None,
         ),
     }
 }
@@ -1237,8 +868,7 @@ fn normalize_timeline_urls(timeline: &mut Value) {
                                 if let Some(Value::String(url)) = map.get_mut("media_url") {
                                     *url = normalize_media_url(url);
                                 }
-                                let is_ssupload = map
-                                    .get("media_url")
+                                let is_ssupload = map.get("media_url")
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.starts_with("ssupload:"))
                                     .unwrap_or(false);
@@ -1258,6 +888,7 @@ fn normalize_timeline_urls(timeline: &mut Value) {
     }
 }
 
+
 const MAX_TRACKS_PER_TYPE: usize = 100;
 
 fn validate_track_limits(timeline: &Value) {
@@ -1268,21 +899,12 @@ fn validate_track_limits(timeline: &Value) {
         ("effect_tracks", "Effect"),
     ];
     for (key, label) in &checks {
-        let count = timeline
-            .get(key)
-            .and_then(|v| v.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
+        let count = timeline.get(key).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
         if count > MAX_TRACKS_PER_TYPE {
             client::fail(
                 "client_error",
-                &format!(
-                    "{} track count ({}) exceeds maximum of {}.",
-                    label, count, MAX_TRACKS_PER_TYPE
-                ),
-                None,
-                None,
-                None,
+                &format!("{} track count ({}) exceeds maximum of {}.", label, count, MAX_TRACKS_PER_TYPE),
+                None, None, None,
             );
         }
     }
@@ -1307,13 +929,8 @@ fn normalize_media_url(url: &str) -> String {
     }
     client::fail(
         "client_error",
-        &format!(
-            "Cannot resolve media_url: '{}'. Expected ssupload:?id=, URL, or local file path.",
-            url
-        ),
-        None,
-        None,
-        None,
+        &format!("Cannot resolve media_url: '{}'. Expected ssupload:?id=, URL, or local file path.", url),
+        None, None, None,
     );
 }
 
@@ -1329,25 +946,14 @@ fn normalize_file_url(url: &str) -> String {
     }
     client::fail(
         "client_error",
-        &format!(
-            "Cannot resolve file_url: '{}'. Expected ssupload:?id=, URL, or local file path.",
-            url
-        ),
-        None,
-        None,
-        None,
+        &format!("Cannot resolve file_url: '{}'. Expected ssupload:?id=, URL, or local file path.", url),
+        None, None, None,
     );
 }
 
 fn upload_local_subtitle(path: &str) -> String {
     if !Path::new(path).exists() {
-        client::fail(
-            "client_error",
-            &format!("Subtitle file not found: {}", path),
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", &format!("Subtitle file not found: {}", path), None, None, None);
     }
     crate::commands::upload::upload_media_and_get_uri(path)
 }
@@ -1368,27 +974,15 @@ fn validate_compose_media(path: &str) -> Option<(u32, u32)> {
     if is_image && file_size > COMPOSE_MAX_IMAGE_SIZE {
         client::fail(
             "client_error",
-            &format!(
-                "Image too large: {} ({:.1}MB). Maximum: 50MB.",
-                path,
-                file_size as f64 / 1024.0 / 1024.0
-            ),
-            None,
-            None,
-            None,
+            &format!("Image too large: {} ({:.1}MB). Maximum: 50MB.", path, file_size as f64 / 1024.0 / 1024.0),
+            None, None, None,
         );
     }
     if is_video && file_size > COMPOSE_MAX_VIDEO_SIZE {
         client::fail(
             "client_error",
-            &format!(
-                "Video too large: {} ({:.1}MB). Maximum: 500MB.",
-                path,
-                file_size as f64 / 1024.0 / 1024.0
-            ),
-            None,
-            None,
-            None,
+            &format!("Video too large: {} ({:.1}MB). Maximum: 500MB.", path, file_size as f64 / 1024.0 / 1024.0),
+            None, None, None,
         );
     }
 
@@ -1401,37 +995,19 @@ fn validate_compose_media(path: &str) -> Option<(u32, u32)> {
     if let Some((w, h)) = dims {
         let short = w.min(h);
         if w < 128 || h < 128 {
-            client::fail(
-                "client_error",
+            client::fail("client_error",
                 &format!("Media dimensions too small: {}x{}. Minimum: 128x128.", w, h),
-                None,
-                None,
-                None,
-            );
+                None, None, None);
         }
         if w > 4096 || h > 4096 {
-            client::fail(
-                "client_error",
-                &format!(
-                    "Media dimensions too large: {}x{}. Maximum: 4096x4096.",
-                    w, h
-                ),
-                None,
-                None,
-                None,
-            );
+            client::fail("client_error",
+                &format!("Media dimensions too large: {}x{}. Maximum: 4096x4096.", w, h),
+                None, None, None);
         }
         if short > 2160 {
-            client::fail(
-                "client_error",
-                &format!(
-                    "Short side too large: {}x{} (short side {}). Maximum short side: 2160.",
-                    w, h, short
-                ),
-                None,
-                None,
-                None,
-            );
+            client::fail("client_error",
+                &format!("Short side too large: {}x{} (short side {}). Maximum short side: 2160.", w, h, short),
+                None, None, None);
         }
     }
 
@@ -1440,8 +1016,12 @@ fn validate_compose_media(path: &str) -> Option<(u32, u32)> {
 
 fn get_media_dimensions(path: &str, ext: &str) -> Option<(u32, u32)> {
     match ext {
-        "jpg" | "jpeg" | "png" | "bmp" | "webp" => image::image_dimensions(path).ok(),
-        "mp4" | "mov" => read_mp4_dimensions(path),
+        "jpg" | "jpeg" | "png" | "bmp" | "webp" => {
+            image::image_dimensions(path).ok()
+        }
+        "mp4" | "mov" => {
+            read_mp4_dimensions(path)
+        }
         _ => None,
     }
 }
@@ -1485,9 +1065,7 @@ fn upload_local_media(path: &str) -> String {
         client::fail(
             "client_error",
             &format!("Media file not found: {}", path),
-            None,
-            None,
-            None,
+            None, None, None,
         );
     }
     let dims = validate_compose_media(path);
@@ -1509,15 +1087,9 @@ fn upload_compose_media(path: &str, dims: Option<(u32, u32)>) -> String {
 }
 
 pub fn query_credits(
-    task_type: &str,
-    model_version: &str,
-    duration: Option<i64>,
-    resolution: &str,
-    aspect_ratio: Option<&str>,
-    transition: Option<&str>,
-    sample_count: i64,
-    codec: &str,
-    schedule_mode: Option<&str>,
+    task_type: &str, model_version: &str, duration: Option<i64>, resolution: &str,
+    aspect_ratio: Option<&str>, transition: Option<&str>,
+    sample_count: i64, codec: &str, schedule_mode: Option<&str>,
 ) {
     let schedule_mode = resolve_schedule_mode(schedule_mode);
     let is_image_type = task_type == "text2image" || task_type == "reference2image";
@@ -1526,33 +1098,18 @@ pub fn query_credits(
     } else {
         match duration {
             Some(d) => d,
-            None => client::fail(
-                "client_error",
-                "duration is required for this task type",
-                None,
-                None,
-                None,
-            ),
+            None => client::fail("client_error", "duration is required for this task type", None, None, None),
         }
     };
 
     let mut params = std::collections::HashMap::new();
     params.insert("type".to_string(), task_type.to_string());
-    params.insert(
-        "settings.model_version".to_string(),
-        model_version.to_string(),
-    );
+    params.insert("settings.model_version".to_string(), model_version.to_string());
     params.insert("settings.duration".to_string(), duration.to_string());
     params.insert("settings.resolution".to_string(), resolution.to_string());
-    params.insert(
-        "settings.sample_count".to_string(),
-        sample_count.to_string(),
-    );
+    params.insert("settings.sample_count".to_string(), sample_count.to_string());
     params.insert("settings.codec".to_string(), codec.to_string());
-    params.insert(
-        "settings.schedule_mode".to_string(),
-        schedule_mode.to_string(),
-    );
+    params.insert("settings.schedule_mode".to_string(), schedule_mode.to_string());
 
     if let Some(ar) = aspect_ratio {
         params.insert("settings.aspect_ratio".to_string(), ar.to_string());
@@ -1562,22 +1119,12 @@ pub fn query_credits(
     }
 
     let base = client::base_url();
-    let data = client::request_json(
-        "GET",
-        &format!("{}/vidu/v1/tasks/credits", base),
-        None,
-        None,
-        Some(&params),
-    );
+    let data = client::request_json("GET", &format!("{}/vidu/v1/tasks/credits", base), None, None, Some(&params));
     output_credits_result(&data);
 }
 
 pub fn query_tts_credits(
-    text: &str,
-    voice_id: &str,
-    speed: f64,
-    pitch: i32,
-    volume: i32,
+    text: &str, voice_id: &str, speed: f64, pitch: i32, volume: i32,
     schedule_mode: Option<&str>,
 ) {
     let schedule_mode = resolve_schedule_mode(schedule_mode);
@@ -1588,29 +1135,16 @@ pub fn query_tts_credits(
     params.insert("settings.speed".to_string(), speed.to_string());
     params.insert("settings.pitch".to_string(), pitch.to_string());
     params.insert("settings.volume".to_string(), volume.to_string());
-    params.insert(
-        "settings.schedule_mode".to_string(),
-        schedule_mode.to_string(),
-    );
+    params.insert("settings.schedule_mode".to_string(), schedule_mode.to_string());
     params.insert("text".to_string(), text.to_string());
 
     let base = client::base_url();
-    let data = client::request_json(
-        "GET",
-        &format!("{}/vidu/v1/tasks/credits", base),
-        None,
-        None,
-        Some(&params),
-    );
+    let data = client::request_json("GET", &format!("{}/vidu/v1/tasks/credits", base), None, None, Some(&params));
     output_credits_result(&data);
 }
 
 pub fn query_lip_sync_credits(
-    duration: i64,
-    voice_id: &str,
-    speed: f64,
-    volume: f64,
-    codec: &str,
+    duration: i64, voice_id: &str, speed: f64, volume: f64, codec: &str,
     schedule_mode: Option<&str>,
 ) {
     let schedule_mode = resolve_schedule_mode(schedule_mode);
@@ -1621,22 +1155,13 @@ pub fn query_lip_sync_credits(
     params.insert("settings.voice_id".to_string(), voice_id.to_string());
     params.insert("settings.speed".to_string(), speed.to_string());
     params.insert("settings.codec".to_string(), codec.to_string());
-    params.insert(
-        "settings.schedule_mode".to_string(),
-        schedule_mode.to_string(),
-    );
+    params.insert("settings.schedule_mode".to_string(), schedule_mode.to_string());
     if volume != 0.0 {
         params.insert("settings.volume".to_string(), volume.to_string());
     }
 
     let base = client::base_url();
-    let data = client::request_json(
-        "GET",
-        &format!("{}/vidu/v1/tasks/credits", base),
-        None,
-        None,
-        Some(&params),
-    );
+    let data = client::request_json("GET", &format!("{}/vidu/v1/tasks/credits", base), None, None, Some(&params));
     output_credits_result(&data);
 }
 
@@ -1753,10 +1278,7 @@ mod tests {
 
     #[test]
     fn ext_from_bytes_unknown() {
-        assert_eq!(
-            ext_from_bytes(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
-            "mp4"
-        );
+        assert_eq!(ext_from_bytes(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]), "mp4");
     }
 
     #[test]
@@ -1924,8 +1446,10 @@ mod tests {
     fn resolve_prompt_inputs_prompt_wins_over_path() {
         // Even an unreadable path must be ignored when --prompt is provided,
         // proving the precedence is short-circuit and the file is never read.
-        let out =
-            resolve_prompt_inputs(Some("inline wins"), Some("/definitely/does/not/exist.txt"));
+        let out = resolve_prompt_inputs(
+            Some("inline wins"),
+            Some("/definitely/does/not/exist.txt"),
+        );
         assert_eq!(out.as_deref(), Some("inline wins"));
     }
 

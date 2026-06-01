@@ -146,24 +146,12 @@ fn duration_ranges() -> HashMap<String, HashMap<String, (i64, i64)>> {
 
 fn model_support() -> HashMap<String, HashSet<String>> {
     let mut m = HashMap::new();
-    m.insert(
-        "text2image".into(),
-        set(&["3.1", "3.2_fast_m", "3.2_pro_m", "3.2_image_2"]),
-    );
+    m.insert("text2image".into(), set(&["3.1", "3.2_fast_m", "3.2_pro_m", "3.2_image_2"]));
     m.insert("text2video".into(), set(&["3.0", "3.1", "3.2", "3.2_a"]));
     m.insert("img2video".into(), set(&["3.0", "3.1", "3.2", "3.2_a"]));
-    m.insert(
-        "headtailimg2video".into(),
-        set(&["3.0", "3.1", "3.2", "3.2_a"]),
-    );
-    m.insert(
-        "reference2image".into(),
-        set(&["3.1", "3.2_fast_m", "3.2_pro_m", "3.2_image_2"]),
-    );
-    m.insert(
-        "character2video".into(),
-        set(&["3.0", "3.1", "3.1_pro", "3.2", "3.2_a"]),
-    );
+    m.insert("headtailimg2video".into(), set(&["3.0", "3.1", "3.2", "3.2_a"]));
+    m.insert("reference2image".into(), set(&["3.1", "3.2_fast_m", "3.2_pro_m", "3.2_image_2"]));
+    m.insert("character2video".into(), set(&["3.0", "3.1", "3.1_pro", "3.2", "3.2_a"]));
     m
 }
 
@@ -179,11 +167,7 @@ pub fn validate_task_body(body: &Value) -> String {
         return "Missing required field: type".into();
     }
     if !valid_task_types().contains(task_type) {
-        return format!(
-            "Invalid type '{}'. Valid: {}",
-            task_type,
-            sorted_join(&valid_task_types())
-        );
+        return format!("Invalid type '{}'. Valid: {}", task_type, sorted_join(&valid_task_types()));
     }
 
     let input_obj = body.get("input");
@@ -200,32 +184,15 @@ pub fn validate_task_body(body: &Value) -> String {
 
     // Count images and materials
     let prompts_arr = prompts.unwrap().as_array().unwrap();
-    let image_count = prompts_arr
-        .iter()
-        .filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("image"))
-        .count();
-    let material_count = prompts_arr
-        .iter()
-        .filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("material"))
-        .count();
+    let image_count = prompts_arr.iter().filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("image")).count();
+    let material_count = prompts_arr.iter().filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("material")).count();
 
     // Validate counts by task type
     match task_type {
-        "img2video" if image_count != 1 => {
-            return format!("img2video requires exactly 1 image, got {}", image_count)
-        }
-        "headtailimg2video" if image_count != 2 => {
-            return format!(
-                "headtailimg2video requires exactly 2 images, got {}",
-                image_count
-            )
-        }
+        "img2video" if image_count != 1 => return format!("img2video requires exactly 1 image, got {}", image_count),
+        "headtailimg2video" if image_count != 2 => return format!("headtailimg2video requires exactly 2 images, got {}", image_count),
         "reference2image" | "character2video" if image_count + material_count > 7 => {
-            return format!(
-                "{} allows max 7 images+materials, got {}",
-                task_type,
-                image_count + material_count
-            );
+            return format!("{} allows max 7 images+materials, got {}", task_type, image_count + material_count);
         }
         _ => {}
     }
@@ -235,48 +202,29 @@ pub fn validate_task_body(body: &Value) -> String {
         _ => return "settings must be an object".into(),
     };
 
-    let model_version = settings
-        .get("model_version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("2.0");
+    let model_version = settings.get("model_version").and_then(|v| v.as_str()).unwrap_or("2.0");
     if !valid_model_versions().contains(model_version) {
-        return format!(
-            "Invalid model_version '{}'. Valid: {}",
-            model_version,
-            sorted_join(&valid_model_versions())
-        );
+        return format!("Invalid model_version '{}'. Valid: {}", model_version, sorted_join(&valid_model_versions()));
     }
 
     let ms = model_support();
     if let Some(supported) = ms.get(task_type) {
         if !supported.contains(model_version) {
-            return format!(
-                "model_version {} does not support {}",
-                model_version, task_type
-            );
+            return format!("model_version {} does not support {}", model_version, task_type);
         }
     }
 
-    let duration = settings
-        .get("duration")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let duration = settings.get("duration").and_then(|v| v.as_i64()).unwrap_or(0);
     if model_version == "3.2_a" {
         if duration != -1 && !(4..=15).contains(&duration) {
-            return format!(
-                "duration {} is invalid for 3.2_a: must be -1 (auto) or 4-15",
-                duration
-            );
+            return format!("duration {} is invalid for 3.2_a: must be -1 (auto) or 4-15", duration);
         }
     } else {
         let dr = duration_ranges();
         if let Some(type_ranges) = dr.get(task_type) {
             if let Some(&(min_d, max_d)) = type_ranges.get(model_version) {
                 if min_d > 0 && (duration < min_d || duration > max_d) {
-                    return format!(
-                        "duration {} out of range [{}, {}] for {} with {}",
-                        duration, min_d, max_d, task_type, model_version
-                    );
+                    return format!("duration {} out of range [{}, {}] for {} with {}", duration, min_d, max_d, task_type, model_version);
                 }
             }
         }
@@ -285,33 +233,18 @@ pub fn validate_task_body(body: &Value) -> String {
     if settings.get("resolution").is_none() {
         return format!("resolution is required for {}", task_type);
     }
-    let res = settings
-        .get("resolution")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let res = settings.get("resolution").and_then(|v| v.as_str()).unwrap_or("");
     let rs = resolution_support();
-    let valid_res = rs
-        .get(task_type)
-        .cloned()
-        .unwrap_or_else(|| set(&["1080p"]));
+    let valid_res = rs.get(task_type).cloned().unwrap_or_else(|| set(&["1080p"]));
     if !valid_res.contains(res) {
-        return format!(
-            "Invalid resolution '{}' for {}. Valid: {}",
-            res,
-            task_type,
-            sorted_join(&valid_res)
-        );
+        return format!("Invalid resolution '{}' for {}. Valid: {}", res, task_type, sorted_join(&valid_res));
     }
 
     let no_ar_types = ["img2video", "headtailimg2video", "text2image"];
     if !no_ar_types.contains(&task_type) {
         if let Some(ar_val) = settings.get("aspect_ratio").and_then(|v| v.as_str()) {
             if !valid_aspect_ratios().contains(ar_val) {
-                return format!(
-                    "Invalid aspect_ratio '{}'. Valid: {}",
-                    ar_val,
-                    sorted_join(&valid_aspect_ratios())
-                );
+                return format!("Invalid aspect_ratio '{}'. Valid: {}", ar_val, sorted_join(&valid_aspect_ratios()));
             }
         }
     }
@@ -324,10 +257,7 @@ pub fn validate_task_body(body: &Value) -> String {
             return format!("{} should not include transition", task_type);
         }
         if task_type == "text2video" && model_version != "3.2" {
-            return format!(
-                "text2video with {} should not include transition (only 3.2 supports pro/speed)",
-                model_version
-            );
+            return format!("text2video with {} should not include transition (only 3.2 supports pro/speed)", model_version);
         }
     }
 
@@ -335,16 +265,10 @@ pub fn validate_task_body(body: &Value) -> String {
         if model_version == "3.1" || model_version == "3.2" {
             match transition {
                 None => {
-                    return format!(
-                        "{} with {} requires transition parameter (pro or speed)",
-                        task_type, model_version
-                    );
+                    return format!("{} with {} requires transition parameter (pro or speed)", task_type, model_version);
                 }
                 Some(trans) if trans != "pro" && trans != "speed" => {
-                    return format!(
-                        "Invalid transition '{}' for {} {}. Valid: pro, speed",
-                        trans, task_type, model_version
-                    );
+                    return format!("Invalid transition '{}' for {} {}. Valid: pro, speed", trans, task_type, model_version);
                 }
                 _ => {}
             }
@@ -355,13 +279,7 @@ pub fn validate_task_body(body: &Value) -> String {
                 set(&["pro", "speed"])
             };
             if !valid_trans.contains(trans) {
-                return format!(
-                    "Invalid transition '{}' for {} {}. Valid: {}",
-                    trans,
-                    task_type,
-                    model_version,
-                    sorted_join(&valid_trans)
-                );
+                return format!("Invalid transition '{}' for {} {}. Valid: {}", trans, task_type, model_version, sorted_join(&valid_trans));
             }
         }
     }
@@ -369,15 +287,9 @@ pub fn validate_task_body(body: &Value) -> String {
     if task_type == "character2video" {
         if model_version == "3.2" {
             match transition {
-                None => {
-                    return "character2video with 3.2 requires transition parameter (speed or pro)"
-                        .into()
-                }
+                None => return "character2video with 3.2 requires transition parameter (speed or pro)".into(),
                 Some(trans) if trans != "speed" && trans != "pro" => {
-                    return format!(
-                        "Invalid transition '{}' for character2video 3.2. Valid: pro, speed",
-                        trans
-                    );
+                    return format!("Invalid transition '{}' for character2video 3.2. Valid: pro, speed", trans);
                 }
                 _ => {}
             }
@@ -427,10 +339,7 @@ pub fn validate_element_preprocess(body: &Value) -> String {
     if components.len() > 3 {
         return "components must have at most 3 items".into();
     }
-    let main_count = components
-        .iter()
-        .filter(|c| c.get("type").and_then(|v| v.as_str()) == Some("main"))
-        .count();
+    let main_count = components.iter().filter(|c| c.get("type").and_then(|v| v.as_str()) == Some("main")).count();
     if main_count != 1 {
         return "components must have exactly one item with type='main'".into();
     }
@@ -450,20 +359,13 @@ pub fn validate_video_file(path: &str) -> String {
     if !p.is_file() {
         return format!("Video file not found: {}", path);
     }
-    let ext = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     if !["mp4", "mov", "avi"].contains(&ext.as_str()) {
         return format!("Invalid video format '{}'. Supported: mp4, mov, avi", ext);
     }
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size > 500 * 1024 * 1024 {
-        return format!(
-            "Video file too large ({:.1}MB). Max: 500MB",
-            size as f64 / 1024.0 / 1024.0
-        );
+        return format!("Video file too large ({:.1}MB). Max: 500MB", size as f64 / 1024.0 / 1024.0);
     }
     String::new()
 }
@@ -473,23 +375,13 @@ pub fn validate_audio_file(path: &str) -> String {
     if !p.is_file() {
         return format!("Audio file not found: {}", path);
     }
-    let ext = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     if !["mp3", "wav", "aac", "m4a"].contains(&ext.as_str()) {
-        return format!(
-            "Invalid audio format '{}'. Supported: mp3, wav, aac, m4a",
-            ext
-        );
+        return format!("Invalid audio format '{}'. Supported: mp3, wav, aac, m4a", ext);
     }
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size > 100 * 1024 * 1024 {
-        return format!(
-            "Audio file too large ({:.1}MB). Max: 100MB",
-            size as f64 / 1024.0 / 1024.0
-        );
+        return format!("Audio file too large ({:.1}MB). Max: 100MB", size as f64 / 1024.0 / 1024.0);
     }
     String::new()
 }
@@ -499,20 +391,13 @@ pub fn validate_reference_audio_file(path: &str) -> String {
     if !p.is_file() {
         return format!("Audio file not found: {}", path);
     }
-    let ext = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     if !["mp3", "wav"].contains(&ext.as_str()) {
         return format!("Invalid audio format '{}'. Supported: mp3, wav", ext);
     }
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size > 15 * 1024 * 1024 {
-        return format!(
-            "Audio file too large ({:.1}MB). Max: 15MB",
-            size as f64 / 1024.0 / 1024.0
-        );
+        return format!("Audio file too large ({:.1}MB). Max: 15MB", size as f64 / 1024.0 / 1024.0);
     }
     String::new()
 }
@@ -522,20 +407,13 @@ pub fn validate_reference_video_file(path: &str) -> String {
     if !p.is_file() {
         return format!("Video file not found: {}", path);
     }
-    let ext = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     if !["mp4", "mov"].contains(&ext.as_str()) {
         return format!("Invalid video format '{}'. Supported: mp4, mov", ext);
     }
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size > 50 * 1024 * 1024 {
-        return format!(
-            "Video file too large ({:.1}MB). Max: 50MB",
-            size as f64 / 1024.0 / 1024.0
-        );
+        return format!("Video file too large ({:.1}MB). Max: 50MB", size as f64 / 1024.0 / 1024.0);
     }
     String::new()
 }
@@ -562,87 +440,37 @@ pub fn validate_lip_sync_text(text: &str) -> String {
 
 pub fn all_voice_ids() -> Vec<&'static str> {
     [
-        "male-qn-qingse",
-        "male-qn-jingying",
-        "male-qn-badao",
-        "male-qn-daxuesheng",
-        "female-shaonv",
-        "female-yujie",
-        "female-chengshu",
-        "female-tianmei",
-        "male-qn-qingse-jingpin",
-        "male-qn-jingying-jingpin",
-        "male-qn-badao-jingpin",
-        "male-qn-daxuesheng-jingpin",
-        "female-shaonv-jingpin",
-        "female-yujie-jingpin",
-        "female-chengshu-jingpin",
-        "female-tianmei-jingpin",
-        "clever_boy",
-        "cute_boy",
-        "lovely_girl",
-        "cartoon_pig",
-        "bingjiao_didi",
-        "junlang_nanyou",
-        "chunzhen_xuedi",
-        "lengdan_xiongzhang",
-        "badao_shaoye",
-        "tianxin_xiaoling",
-        "qiaopi_mengmei",
-        "wumei_yujie",
-        "diadia_xuemei",
-        "danya_xuejie",
-        "Chinese (Mandarin)_Reliable_Executive",
-        "Chinese (Mandarin)_News_Anchor",
-        "Chinese (Mandarin)_Mature_Woman",
-        "Chinese (Mandarin)_Unrestrained_Young_Man",
-        "Arrogant_Miss",
-        "Robot_Armor",
-        "Chinese (Mandarin)_Kind-hearted_Antie",
-        "Chinese (Mandarin)_HK_Flight_Attendant",
-        "Chinese (Mandarin)_Humorous_Elder",
-        "Chinese (Mandarin)_Gentleman",
-        "Chinese (Mandarin)_Warm_Bestie",
-        "Chinese (Mandarin)_Male_Announcer",
-        "Chinese (Mandarin)_Sweet_Lady",
-        "Chinese (Mandarin)_Southern_Young_Man",
-        "Chinese (Mandarin)_Wise_Women",
-        "Chinese (Mandarin)_Gentle_Youth",
-        "Chinese (Mandarin)_Warm_Girl",
-        "Chinese (Mandarin)_Kind-hearted_Elder",
-        "Chinese (Mandarin)_Cute_Spirit",
-        "Chinese (Mandarin)_Radio_Host",
-        "Chinese (Mandarin)_Lyrical_Voice",
-        "Chinese (Mandarin)_Straightforward_Boy",
-        "Chinese (Mandarin)_Sincere_Adult",
-        "Chinese (Mandarin)_Gentle_Senior",
-        "Chinese (Mandarin)_Stubborn_Friend",
-        "Chinese (Mandarin)_Crisp_Girl",
-        "Chinese (Mandarin)_Pure-hearted_Boy",
-        "Chinese (Mandarin)_Soft_Girl",
-        "Cantonese_ProfessionalHost（F)",
-        "Cantonese_GentleLady",
-        "Cantonese_ProfessionalHost（M)",
-        "Cantonese_PlayfulMan",
-        "Cantonese_CuteGirl",
-        "Cantonese_KindWoman",
-        "Grinch",
-        "Rudolph",
-        "Arnold",
-        "Charming_Santa",
-        "Charming_Lady",
-        "Sweet_Girl",
-        "Cute_Elf",
-        "Attractive_Girl",
-        "Serene_Woman",
-        "English_Trustworthy_Man",
-        "English_Graceful_Lady",
-        "English_Aussie_Bloke",
-        "English_Whispering_girl",
-        "English_Diligent_Man",
-        "English_Gentle-voiced_man",
-    ]
-    .to_vec()
+        "male-qn-qingse", "male-qn-jingying", "male-qn-badao", "male-qn-daxuesheng",
+        "female-shaonv", "female-yujie", "female-chengshu", "female-tianmei",
+        "male-qn-qingse-jingpin", "male-qn-jingying-jingpin", "male-qn-badao-jingpin",
+        "male-qn-daxuesheng-jingpin", "female-shaonv-jingpin", "female-yujie-jingpin",
+        "female-chengshu-jingpin", "female-tianmei-jingpin",
+        "clever_boy", "cute_boy", "lovely_girl", "cartoon_pig",
+        "bingjiao_didi", "junlang_nanyou", "chunzhen_xuedi", "lengdan_xiongzhang",
+        "badao_shaoye", "tianxin_xiaoling", "qiaopi_mengmei", "wumei_yujie",
+        "diadia_xuemei", "danya_xuejie",
+        "Chinese (Mandarin)_Reliable_Executive", "Chinese (Mandarin)_News_Anchor",
+        "Chinese (Mandarin)_Mature_Woman", "Chinese (Mandarin)_Unrestrained_Young_Man",
+        "Arrogant_Miss", "Robot_Armor",
+        "Chinese (Mandarin)_Kind-hearted_Antie", "Chinese (Mandarin)_HK_Flight_Attendant",
+        "Chinese (Mandarin)_Humorous_Elder", "Chinese (Mandarin)_Gentleman",
+        "Chinese (Mandarin)_Warm_Bestie", "Chinese (Mandarin)_Male_Announcer",
+        "Chinese (Mandarin)_Sweet_Lady", "Chinese (Mandarin)_Southern_Young_Man",
+        "Chinese (Mandarin)_Wise_Women", "Chinese (Mandarin)_Gentle_Youth",
+        "Chinese (Mandarin)_Warm_Girl", "Chinese (Mandarin)_Kind-hearted_Elder",
+        "Chinese (Mandarin)_Cute_Spirit", "Chinese (Mandarin)_Radio_Host",
+        "Chinese (Mandarin)_Lyrical_Voice", "Chinese (Mandarin)_Straightforward_Boy",
+        "Chinese (Mandarin)_Sincere_Adult", "Chinese (Mandarin)_Gentle_Senior",
+        "Chinese (Mandarin)_Stubborn_Friend", "Chinese (Mandarin)_Crisp_Girl",
+        "Chinese (Mandarin)_Pure-hearted_Boy", "Chinese (Mandarin)_Soft_Girl",
+        "Cantonese_ProfessionalHost（F)", "Cantonese_GentleLady",
+        "Cantonese_ProfessionalHost（M)", "Cantonese_PlayfulMan",
+        "Cantonese_CuteGirl", "Cantonese_KindWoman",
+        "Grinch", "Rudolph", "Arnold", "Charming_Santa", "Charming_Lady",
+        "Sweet_Girl", "Cute_Elf", "Attractive_Girl", "Serene_Woman",
+        "English_Trustworthy_Man", "English_Graceful_Lady", "English_Aussie_Bloke",
+        "English_Whispering_girl", "English_Diligent_Man", "English_Gentle-voiced_man",
+    ].to_vec()
 }
 
 pub fn validate_voice_id(voice_id: &str) -> String {
@@ -669,447 +497,189 @@ pub fn validate_lip_sync_volume(volume: f64) -> String {
 
 pub fn tts_voices_grouped() -> Vec<(&'static str, Vec<&'static str>)> {
     vec![
-        (
-            "English",
-            vec![
-                "English_expressive_narrator",
-                "English_radiant_girl",
-                "English_magnetic_voiced_man",
-                "English_compelling_lady1",
-                "English_Aussie_Bloke",
-                "English_captivating_female1",
-                "English_Upbeat_Woman",
-                "English_Trustworth_Man",
-                "English_CalmWoman",
-                "English_UpsetGirl",
-                "English_Gentle-voiced_man",
-                "English_Whispering_girl",
-                "English_Diligent_Man",
-                "English_Graceful_Lady",
-                "English_ReservedYoungMan",
-                "English_PlayfulGirl",
-                "English_ManWithDeepVoice",
-                "English_MaturePartner",
-                "English_FriendlyPerson",
-                "English_MatureBoss",
-                "English_Debator",
-                "English_LovelyGirl",
-                "English_Steadymentor",
-                "English_Deep-VoicedGentleman",
-                "English_Wiselady",
-                "English_CaptivatingStoryteller",
-                "English_DecentYoungMan",
-                "English_SentimentalLady",
-                "English_ImposingManner",
-                "English_SadTeen",
-                "English_PassionateWarrior",
-                "English_WiseScholar",
-                "English_Soft-spokenGirl",
-                "English_SereneWoman",
-                "English_ConfidentWoman",
-                "English_PatientMan",
-                "English_Comedian",
-                "English_BossyLeader",
-                "English_Strong-WilledBoy",
-                "English_StressedLady",
-                "English_AssertiveQueen",
-                "English_AnimeCharacter",
-                "English_Jovialman",
-                "English_WhimsicalGirl",
-                "English_Kind-heartedGirl",
-            ],
-        ),
-        (
-            "Chinese (Mandarin)",
-            vec![
-                "Chinese (Mandarin)_Reliable_Executive",
-                "Chinese (Mandarin)_News_Anchor",
-                "Chinese (Mandarin)_Unrestrained_Young_Man",
-                "Chinese (Mandarin)_Mature_Woman",
-                "Arrogant_Miss",
-                "Robot_Armor",
-                "Chinese (Mandarin)_Kind-hearted_Antie",
-                "Chinese (Mandarin)_HK_Flight_Attendant",
-                "Chinese (Mandarin)_Humorous_Elder",
-                "Chinese (Mandarin)_Gentleman",
-                "Chinese (Mandarin)_Warm_Bestie",
-                "Chinese (Mandarin)_Stubborn_Friend",
-                "Chinese (Mandarin)_Sweet_Lady",
-                "Chinese (Mandarin)_Southern_Young_Man",
-                "Chinese (Mandarin)_Wise_Women",
-                "Chinese (Mandarin)_Gentle_Youth",
-                "Chinese (Mandarin)_Warm_Girl",
-                "Chinese (Mandarin)_Male_Announcer",
-                "Chinese (Mandarin)_Kind-hearted_Elder",
-                "Chinese (Mandarin)_Cute_Spirit",
-                "Chinese (Mandarin)_Radio_Host",
-                "Chinese (Mandarin)_Lyrical_Voice",
-                "Chinese (Mandarin)_Straightforward_Boy",
-                "Chinese (Mandarin)_Sincere_Adult",
-                "Chinese (Mandarin)_Gentle_Senior",
-                "Chinese (Mandarin)_Crisp_Girl",
-                "Chinese (Mandarin)_Pure-hearted_Boy",
-                "Chinese (Mandarin)_Soft_Girl",
-                "Chinese (Mandarin)_IntellectualGirl",
-                "Chinese (Mandarin)_Warm_HeartedGirl",
-                "Chinese (Mandarin)_Laid_BackGirl",
-                "Chinese (Mandarin)_ExplorativeGirl",
-                "Chinese (Mandarin)_Warm-HeartedAunt",
-                "Chinese (Mandarin)_BashfulGirl",
-            ],
-        ),
-        (
-            "Japanese",
-            vec![
-                "Japanese_IntellectualSenior",
-                "Japanese_DecisivePrincess",
-                "Japanese_LoyalKnight",
-                "Japanese_DominantMan",
-                "Japanese_SeriousCommander",
-                "Japanese_ColdQueen",
-                "Japanese_DependableWoman",
-                "Japanese_GentleButler",
-                "Japanese_KindLady",
-                "Japanese_CalmLady",
-                "Japanese_OptimisticYouth",
-                "Japanese_GenerousIzakayaOwner",
-                "Japanese_SportyStudent",
-                "Japanese_InnocentBoy",
-                "Japanese_GracefulMaiden",
-            ],
-        ),
-        (
-            "Cantonese",
-            vec![
-                "Cantonese_ProfessionalHost (F)",
-                "Cantonese_GentleLady",
-                "Cantonese_ProfessionalHost (M)",
-                "Cantonese_PlayfulMan",
-                "Cantonese_CuteGirl",
-                "Cantonese_KindWoman",
-            ],
-        ),
-        (
-            "Korean",
-            vec![
-                "Korean_AirheadedGirl",
-                "Korean_AthleticGirl",
-                "Korean_AthleticStudent",
-                "Korean_BraveAdventurer",
-                "Korean_BraveFemaleWarrior",
-                "Korean_BraveYouth",
-                "Korean_CalmGentleman",
-                "Korean_CalmLady",
-                "Korean_CaringWoman",
-                "Korean_CharmingElderSister",
-                "Korean_CharmingSister",
-                "Korean_CheerfulBoyfriend",
-                "Korean_CheerfulCoolJunior",
-                "Korean_CheerfulLittleSister",
-                "Korean_ChildhoodFriendGirl",
-                "Korean_CockyGuy",
-                "Korean_ColdGirl",
-                "Korean_ColdYoungMan",
-                "Korean_ConfidentBoss",
-                "Korean_ConsiderateSenior",
-                "Korean_DecisiveQueen",
-                "Korean_DominantMan",
-                "Korean_ElegantPrincess",
-                "Korean_EnchantingSister",
-                "Korean_EnthusiasticTeen",
-                "Korean_FriendlyBigSister",
-                "Korean_GentleBoss",
-                "Korean_GentleWoman",
-                "Korean_HaughtyLady",
-                "Korean_InnocentBoy",
-                "Korean_IntellectualMan",
-                "Korean_IntellectualSenior",
-                "Korean_LonelyWarrior",
-                "Korean_MatureLady",
-                "Korean_MysteriousGirl",
-                "Korean_OptimisticYouth",
-                "Korean_PlayboyCharmer",
-                "Korean_PossessiveMan",
-                "Korean_QuirkyGirl",
-                "Korean_ReliableSister",
-                "Korean_ReliableYouth",
-                "Korean_SassyGirl",
-                "Korean_ShyGirl",
-                "Korean_SoothingLady",
-                "Korean_StrictBoss",
-                "Korean_SweetGirl",
-                "Korean_ThoughtfulWoman",
-                "Korean_WiseElf",
-                "Korean_WiseTeacher",
-            ],
-        ),
-        (
-            "Spanish",
-            vec![
-                "Spanish_SereneWoman",
-                "Spanish_MaturePartner",
-                "Spanish_CaptivatingStoryteller",
-                "Spanish_Narrator",
-                "Spanish_WiseScholar",
-                "Spanish_Kind-heartedGirl",
-                "Spanish_DeterminedManager",
-                "Spanish_BossyLeader",
-                "Spanish_ReservedYoungMan",
-                "Spanish_ConfidentWoman",
-                "Spanish_ThoughtfulMan",
-                "Spanish_Strong-WilledBoy",
-                "Spanish_SophisticatedLady",
-                "Spanish_RationalMan",
-                "Spanish_AnimeCharacter",
-                "Spanish_Deep-tonedMan",
-                "Spanish_Fussyhostess",
-                "Spanish_SincereTeen",
-                "Spanish_FrankLady",
-                "Spanish_Comedian",
-                "Spanish_Debator",
-                "Spanish_ToughBoss",
-                "Spanish_Wiselady",
-                "Spanish_Steadymentor",
-                "Spanish_Jovialman",
-                "Spanish_SantaClaus",
-                "Spanish_Rudolph",
-                "Spanish_Intonategirl",
-                "Spanish_Arnold",
-                "Spanish_Ghost",
-                "Spanish_HumorousElder",
-                "Spanish_EnergeticBoy",
-                "Spanish_WhimsicalGirl",
-                "Spanish_StrictBoss",
-                "Spanish_ReliableMan",
-                "Spanish_SereneElder",
-                "Spanish_AngryMan",
-                "Spanish_AssertiveQueen",
-                "Spanish_CaringGirlfriend",
-                "Spanish_PowerfulSoldier",
-                "Spanish_PassionateWarrior",
-                "Spanish_ChattyGirl",
-                "Spanish_RomanticHusband",
-                "Spanish_CompellingGirl",
-                "Spanish_PowerfulVeteran",
-                "Spanish_SensibleManager",
-                "Spanish_ThoughtfulLady",
-            ],
-        ),
-        (
-            "Portuguese",
-            vec![
-                "Portuguese_SentimentalLady",
-                "Portuguese_BossyLeader",
-                "Portuguese_Wiselady",
-                "Portuguese_Strong-WilledBoy",
-                "Portuguese_Deep-VoicedGentleman",
-                "Portuguese_UpsetGirl",
-                "Portuguese_PassionateWarrior",
-                "Portuguese_AnimeCharacter",
-                "Portuguese_ConfidentWoman",
-                "Portuguese_AngryMan",
-                "Portuguese_CaptivatingStoryteller",
-                "Portuguese_Godfather",
-                "Portuguese_ReservedYoungMan",
-                "Portuguese_SmartYoungGirl",
-                "Portuguese_Kind-heartedGirl",
-                "Portuguese_Pompouslady",
-                "Portuguese_Grinch",
-                "Portuguese_Debator",
-                "Portuguese_SweetGirl",
-                "Portuguese_AttractiveGirl",
-                "Portuguese_ThoughtfulMan",
-                "Portuguese_PlayfulGirl",
-                "Portuguese_GorgeousLady",
-                "Portuguese_LovelyLady",
-                "Portuguese_SereneWoman",
-                "Portuguese_SadTeen",
-                "Portuguese_MaturePartner",
-                "Portuguese_Comedian",
-                "Portuguese_NaughtySchoolgirl",
-                "Portuguese_Narrator",
-                "Portuguese_ToughBoss",
-                "Portuguese_Fussyhostess",
-                "Portuguese_Dramatist",
-                "Portuguese_Steadymentor",
-                "Portuguese_Jovialman",
-                "Portuguese_CharmingQueen",
-                "Portuguese_SantaClaus",
-                "Portuguese_Rudolph",
-                "Portuguese_Arnold",
-                "Portuguese_CharmingSanta",
-                "Portuguese_CharmingLady",
-                "Portuguese_Ghost",
-                "Portuguese_HumorousElder",
-                "Portuguese_CalmLeader",
-                "Portuguese_GentleTeacher",
-                "Portuguese_EnergeticBoy",
-                "Portuguese_ReliableMan",
-                "Portuguese_SereneElder",
-                "Portuguese_GrimReaper",
-                "Portuguese_AssertiveQueen",
-                "Portuguese_WhimsicalGirl",
-                "Portuguese_StressedLady",
-                "Portuguese_FriendlyNeighbor",
-                "Portuguese_CaringGirlfriend",
-                "Portuguese_PowerfulSoldier",
-                "Portuguese_FascinatingBoy",
-                "Portuguese_RomanticHusband",
-                "Portuguese_StrictBoss",
-                "Portuguese_InspiringLady",
-                "Portuguese_PlayfulSpirit",
-                "Portuguese_ElegantGirl",
-                "Portuguese_CompellingGirl",
-                "Portuguese_PowerfulVeteran",
-                "Portuguese_SensibleManager",
-                "Portuguese_ThoughtfulLady",
-                "Portuguese_TheatricalActor",
-                "Portuguese_FragileBoy",
-                "Portuguese_ChattyGirl",
-                "Portuguese_Conscientiousinstructor",
-                "Portuguese_RationalMan",
-                "Portuguese_WiseScholar",
-                "Portuguese_FrankLady",
-                "Portuguese_DeterminedManager",
-            ],
-        ),
-        (
-            "French",
-            vec![
-                "French_Male_Speech_New",
-                "French_Female_News Anchor",
-                "French_CasualMan",
-                "French_MovieLeadFemale",
-                "French_FemaleAnchor",
-                "French_MaleNarrator",
-            ],
-        ),
-        (
-            "Indonesian",
-            vec![
-                "Indonesian_SweetGirl",
-                "Indonesian_ReservedYoungMan",
-                "Indonesian_CharmingGirl",
-                "Indonesian_CalmWoman",
-                "Indonesian_ConfidentWoman",
-                "Indonesian_CaringMan",
-                "Indonesian_BossyLeader",
-                "Indonesian_DeterminedBoy",
-                "Indonesian_GentleGirl",
-            ],
-        ),
-        (
-            "German",
-            vec![
-                "German_FriendlyMan",
-                "German_SweetLady",
-                "German_PlayfulMan",
-            ],
-        ),
-        (
-            "Russian",
-            vec![
-                "Russian_HandsomeChildhoodFriend",
-                "Russian_BrightHeroine",
-                "Russian_AmbitiousWoman",
-                "Russian_ReliableMan",
-                "Russian_CrazyQueen",
-                "Russian_PessimisticGirl",
-                "Russian_AttractiveGuy",
-                "Russian_Bad-temperedBoy",
-            ],
-        ),
-        (
-            "Italian",
-            vec![
-                "Italian_BraveHeroine",
-                "Italian_Narrator",
-                "Italian_WanderingSorcerer",
-                "Italian_DiligentLeader",
-            ],
-        ),
-        (
-            "Dutch",
-            vec!["Dutch_kindhearted_girl", "Dutch_bossy_leader"],
-        ),
-        ("Vietnamese", vec!["Vietnamese_kindhearted_girl"]),
-        ("Arabic", vec!["Arabic_CalmWoman", "Arabic_FriendlyGuy"]),
-        (
-            "Turkish",
-            vec!["Turkish_CalmWoman", "Turkish_Trustworthyman"],
-        ),
-        (
-            "Ukrainian",
-            vec!["Ukrainian_CalmWoman", "Ukrainian_WiseScholar"],
-        ),
-        (
-            "Thai",
-            vec![
-                "Thai_male_1_sample8",
-                "Thai_male_2_sample2",
-                "Thai_female_1_sample1",
-                "Thai_female_2_sample2",
-            ],
-        ),
-        (
-            "Polish",
-            vec![
-                "Polish_male_1_sample4",
-                "Polish_male_2_sample3",
-                "Polish_female_1_sample1",
-                "Polish_female_2_sample3",
-            ],
-        ),
-        (
-            "Romanian",
-            vec![
-                "Romanian_male_1_sample2",
-                "Romanian_male_2_sample1",
-                "Romanian_female_1_sample4",
-                "Romanian_female_2_sample1",
-            ],
-        ),
-        (
-            "Greek",
-            vec![
-                "greek_male_1a_v1",
-                "Greek_female_1_sample1",
-                "Greek_female_2_sample3",
-            ],
-        ),
-        (
-            "Czech",
-            vec!["czech_male_1_v1", "czech_female_5_v7", "czech_female_2_v2"],
-        ),
-        (
-            "Finnish",
-            vec![
-                "finnish_male_3_v1",
-                "finnish_male_1_v2",
-                "finnish_female_4_v1",
-            ],
-        ),
-        (
-            "Hindi",
-            vec!["hindi_male_1_v2", "hindi_female_2_v1", "hindi_female_1_v2"],
-        ),
+        ("English", vec![
+            "English_expressive_narrator", "English_radiant_girl", "English_magnetic_voiced_man",
+            "English_compelling_lady1", "English_Aussie_Bloke", "English_captivating_female1",
+            "English_Upbeat_Woman", "English_Trustworth_Man", "English_CalmWoman",
+            "English_UpsetGirl", "English_Gentle-voiced_man", "English_Whispering_girl",
+            "English_Diligent_Man", "English_Graceful_Lady", "English_ReservedYoungMan",
+            "English_PlayfulGirl", "English_ManWithDeepVoice", "English_MaturePartner",
+            "English_FriendlyPerson", "English_MatureBoss", "English_Debator",
+            "English_LovelyGirl", "English_Steadymentor", "English_Deep-VoicedGentleman",
+            "English_Wiselady", "English_CaptivatingStoryteller", "English_DecentYoungMan",
+            "English_SentimentalLady", "English_ImposingManner", "English_SadTeen",
+            "English_PassionateWarrior", "English_WiseScholar", "English_Soft-spokenGirl",
+            "English_SereneWoman", "English_ConfidentWoman", "English_PatientMan",
+            "English_Comedian", "English_BossyLeader", "English_Strong-WilledBoy",
+            "English_StressedLady", "English_AssertiveQueen", "English_AnimeCharacter",
+            "English_Jovialman", "English_WhimsicalGirl", "English_Kind-heartedGirl",
+        ]),
+        ("Chinese (Mandarin)", vec![
+            "Chinese (Mandarin)_Reliable_Executive", "Chinese (Mandarin)_News_Anchor",
+            "Chinese (Mandarin)_Unrestrained_Young_Man", "Chinese (Mandarin)_Mature_Woman",
+            "Arrogant_Miss", "Robot_Armor", "Chinese (Mandarin)_Kind-hearted_Antie",
+            "Chinese (Mandarin)_HK_Flight_Attendant", "Chinese (Mandarin)_Humorous_Elder",
+            "Chinese (Mandarin)_Gentleman", "Chinese (Mandarin)_Warm_Bestie",
+            "Chinese (Mandarin)_Stubborn_Friend", "Chinese (Mandarin)_Sweet_Lady",
+            "Chinese (Mandarin)_Southern_Young_Man", "Chinese (Mandarin)_Wise_Women",
+            "Chinese (Mandarin)_Gentle_Youth", "Chinese (Mandarin)_Warm_Girl",
+            "Chinese (Mandarin)_Male_Announcer", "Chinese (Mandarin)_Kind-hearted_Elder",
+            "Chinese (Mandarin)_Cute_Spirit", "Chinese (Mandarin)_Radio_Host",
+            "Chinese (Mandarin)_Lyrical_Voice", "Chinese (Mandarin)_Straightforward_Boy",
+            "Chinese (Mandarin)_Sincere_Adult", "Chinese (Mandarin)_Gentle_Senior",
+            "Chinese (Mandarin)_Crisp_Girl", "Chinese (Mandarin)_Pure-hearted_Boy",
+            "Chinese (Mandarin)_Soft_Girl", "Chinese (Mandarin)_IntellectualGirl",
+            "Chinese (Mandarin)_Warm_HeartedGirl", "Chinese (Mandarin)_Laid_BackGirl",
+            "Chinese (Mandarin)_ExplorativeGirl", "Chinese (Mandarin)_Warm-HeartedAunt",
+            "Chinese (Mandarin)_BashfulGirl",
+        ]),
+        ("Japanese", vec![
+            "Japanese_IntellectualSenior", "Japanese_DecisivePrincess", "Japanese_LoyalKnight",
+            "Japanese_DominantMan", "Japanese_SeriousCommander", "Japanese_ColdQueen",
+            "Japanese_DependableWoman", "Japanese_GentleButler", "Japanese_KindLady",
+            "Japanese_CalmLady", "Japanese_OptimisticYouth", "Japanese_GenerousIzakayaOwner",
+            "Japanese_SportyStudent", "Japanese_InnocentBoy", "Japanese_GracefulMaiden",
+        ]),
+        ("Cantonese", vec![
+            "Cantonese_ProfessionalHost (F)", "Cantonese_GentleLady",
+            "Cantonese_ProfessionalHost (M)", "Cantonese_PlayfulMan",
+            "Cantonese_CuteGirl", "Cantonese_KindWoman",
+        ]),
+        ("Korean", vec![
+            "Korean_AirheadedGirl", "Korean_AthleticGirl", "Korean_AthleticStudent",
+            "Korean_BraveAdventurer", "Korean_BraveFemaleWarrior", "Korean_BraveYouth",
+            "Korean_CalmGentleman", "Korean_CalmLady", "Korean_CaringWoman",
+            "Korean_CharmingElderSister", "Korean_CharmingSister", "Korean_CheerfulBoyfriend",
+            "Korean_CheerfulCoolJunior", "Korean_CheerfulLittleSister", "Korean_ChildhoodFriendGirl",
+            "Korean_CockyGuy", "Korean_ColdGirl", "Korean_ColdYoungMan",
+            "Korean_ConfidentBoss", "Korean_ConsiderateSenior", "Korean_DecisiveQueen",
+            "Korean_DominantMan", "Korean_ElegantPrincess", "Korean_EnchantingSister",
+            "Korean_EnthusiasticTeen", "Korean_FriendlyBigSister", "Korean_GentleBoss",
+            "Korean_GentleWoman", "Korean_HaughtyLady", "Korean_InnocentBoy",
+            "Korean_IntellectualMan", "Korean_IntellectualSenior", "Korean_LonelyWarrior",
+            "Korean_MatureLady", "Korean_MysteriousGirl", "Korean_OptimisticYouth",
+            "Korean_PlayboyCharmer", "Korean_PossessiveMan", "Korean_QuirkyGirl",
+            "Korean_ReliableSister", "Korean_ReliableYouth", "Korean_SassyGirl",
+            "Korean_ShyGirl", "Korean_SoothingLady", "Korean_StrictBoss",
+            "Korean_SweetGirl", "Korean_ThoughtfulWoman", "Korean_WiseElf",
+            "Korean_WiseTeacher",
+        ]),
+        ("Spanish", vec![
+            "Spanish_SereneWoman", "Spanish_MaturePartner", "Spanish_CaptivatingStoryteller",
+            "Spanish_Narrator", "Spanish_WiseScholar", "Spanish_Kind-heartedGirl",
+            "Spanish_DeterminedManager", "Spanish_BossyLeader", "Spanish_ReservedYoungMan",
+            "Spanish_ConfidentWoman", "Spanish_ThoughtfulMan", "Spanish_Strong-WilledBoy",
+            "Spanish_SophisticatedLady", "Spanish_RationalMan", "Spanish_AnimeCharacter",
+            "Spanish_Deep-tonedMan", "Spanish_Fussyhostess", "Spanish_SincereTeen",
+            "Spanish_FrankLady", "Spanish_Comedian", "Spanish_Debator",
+            "Spanish_ToughBoss", "Spanish_Wiselady", "Spanish_Steadymentor",
+            "Spanish_Jovialman", "Spanish_SantaClaus", "Spanish_Rudolph",
+            "Spanish_Intonategirl", "Spanish_Arnold", "Spanish_Ghost",
+            "Spanish_HumorousElder", "Spanish_EnergeticBoy", "Spanish_WhimsicalGirl",
+            "Spanish_StrictBoss", "Spanish_ReliableMan", "Spanish_SereneElder",
+            "Spanish_AngryMan", "Spanish_AssertiveQueen", "Spanish_CaringGirlfriend",
+            "Spanish_PowerfulSoldier", "Spanish_PassionateWarrior", "Spanish_ChattyGirl",
+            "Spanish_RomanticHusband", "Spanish_CompellingGirl", "Spanish_PowerfulVeteran",
+            "Spanish_SensibleManager", "Spanish_ThoughtfulLady",
+        ]),
+        ("Portuguese", vec![
+            "Portuguese_SentimentalLady", "Portuguese_BossyLeader", "Portuguese_Wiselady",
+            "Portuguese_Strong-WilledBoy", "Portuguese_Deep-VoicedGentleman", "Portuguese_UpsetGirl",
+            "Portuguese_PassionateWarrior", "Portuguese_AnimeCharacter", "Portuguese_ConfidentWoman",
+            "Portuguese_AngryMan", "Portuguese_CaptivatingStoryteller", "Portuguese_Godfather",
+            "Portuguese_ReservedYoungMan", "Portuguese_SmartYoungGirl", "Portuguese_Kind-heartedGirl",
+            "Portuguese_Pompouslady", "Portuguese_Grinch", "Portuguese_Debator",
+            "Portuguese_SweetGirl", "Portuguese_AttractiveGirl", "Portuguese_ThoughtfulMan",
+            "Portuguese_PlayfulGirl", "Portuguese_GorgeousLady", "Portuguese_LovelyLady",
+            "Portuguese_SereneWoman", "Portuguese_SadTeen", "Portuguese_MaturePartner",
+            "Portuguese_Comedian", "Portuguese_NaughtySchoolgirl", "Portuguese_Narrator",
+            "Portuguese_ToughBoss", "Portuguese_Fussyhostess", "Portuguese_Dramatist",
+            "Portuguese_Steadymentor", "Portuguese_Jovialman", "Portuguese_CharmingQueen",
+            "Portuguese_SantaClaus", "Portuguese_Rudolph", "Portuguese_Arnold",
+            "Portuguese_CharmingSanta", "Portuguese_CharmingLady", "Portuguese_Ghost",
+            "Portuguese_HumorousElder", "Portuguese_CalmLeader", "Portuguese_GentleTeacher",
+            "Portuguese_EnergeticBoy", "Portuguese_ReliableMan", "Portuguese_SereneElder",
+            "Portuguese_GrimReaper", "Portuguese_AssertiveQueen", "Portuguese_WhimsicalGirl",
+            "Portuguese_StressedLady", "Portuguese_FriendlyNeighbor", "Portuguese_CaringGirlfriend",
+            "Portuguese_PowerfulSoldier", "Portuguese_FascinatingBoy", "Portuguese_RomanticHusband",
+            "Portuguese_StrictBoss", "Portuguese_InspiringLady", "Portuguese_PlayfulSpirit",
+            "Portuguese_ElegantGirl", "Portuguese_CompellingGirl", "Portuguese_PowerfulVeteran",
+            "Portuguese_SensibleManager", "Portuguese_ThoughtfulLady", "Portuguese_TheatricalActor",
+            "Portuguese_FragileBoy", "Portuguese_ChattyGirl", "Portuguese_Conscientiousinstructor",
+            "Portuguese_RationalMan", "Portuguese_WiseScholar", "Portuguese_FrankLady",
+            "Portuguese_DeterminedManager",
+        ]),
+        ("French", vec![
+            "French_Male_Speech_New", "French_Female_News Anchor", "French_CasualMan",
+            "French_MovieLeadFemale", "French_FemaleAnchor", "French_MaleNarrator",
+        ]),
+        ("Indonesian", vec![
+            "Indonesian_SweetGirl", "Indonesian_ReservedYoungMan", "Indonesian_CharmingGirl",
+            "Indonesian_CalmWoman", "Indonesian_ConfidentWoman", "Indonesian_CaringMan",
+            "Indonesian_BossyLeader", "Indonesian_DeterminedBoy", "Indonesian_GentleGirl",
+        ]),
+        ("German", vec![
+            "German_FriendlyMan", "German_SweetLady", "German_PlayfulMan",
+        ]),
+        ("Russian", vec![
+            "Russian_HandsomeChildhoodFriend", "Russian_BrightHeroine", "Russian_AmbitiousWoman",
+            "Russian_ReliableMan", "Russian_CrazyQueen", "Russian_PessimisticGirl",
+            "Russian_AttractiveGuy", "Russian_Bad-temperedBoy",
+        ]),
+        ("Italian", vec![
+            "Italian_BraveHeroine", "Italian_Narrator", "Italian_WanderingSorcerer",
+            "Italian_DiligentLeader",
+        ]),
+        ("Dutch", vec![
+            "Dutch_kindhearted_girl", "Dutch_bossy_leader",
+        ]),
+        ("Vietnamese", vec![
+            "Vietnamese_kindhearted_girl",
+        ]),
+        ("Arabic", vec![
+            "Arabic_CalmWoman", "Arabic_FriendlyGuy",
+        ]),
+        ("Turkish", vec![
+            "Turkish_CalmWoman", "Turkish_Trustworthyman",
+        ]),
+        ("Ukrainian", vec![
+            "Ukrainian_CalmWoman", "Ukrainian_WiseScholar",
+        ]),
+        ("Thai", vec![
+            "Thai_male_1_sample8", "Thai_male_2_sample2", "Thai_female_1_sample1",
+            "Thai_female_2_sample2",
+        ]),
+        ("Polish", vec![
+            "Polish_male_1_sample4", "Polish_male_2_sample3", "Polish_female_1_sample1",
+            "Polish_female_2_sample3",
+        ]),
+        ("Romanian", vec![
+            "Romanian_male_1_sample2", "Romanian_male_2_sample1", "Romanian_female_1_sample4",
+            "Romanian_female_2_sample1",
+        ]),
+        ("Greek", vec![
+            "greek_male_1a_v1", "Greek_female_1_sample1", "Greek_female_2_sample3",
+        ]),
+        ("Czech", vec![
+            "czech_male_1_v1", "czech_female_5_v7", "czech_female_2_v2",
+        ]),
+        ("Finnish", vec![
+            "finnish_male_3_v1", "finnish_male_1_v2", "finnish_female_4_v1",
+        ]),
+        ("Hindi", vec![
+            "hindi_male_1_v2", "hindi_female_2_v1", "hindi_female_1_v2",
+        ]),
     ]
 }
 
 pub fn all_tts_voice_ids() -> Vec<&'static str> {
-    tts_voices_grouped()
-        .into_iter()
-        .flat_map(|(_, v)| v)
-        .collect()
+    tts_voices_grouped().into_iter().flat_map(|(_, v)| v).collect()
 }
 
 pub fn validate_tts_voice_id(voice_id: &str) -> String {
     let valid: HashSet<String> = all_tts_voice_ids().iter().map(|s| s.to_string()).collect();
     if !valid.contains(voice_id) {
-        return format!(
-            "Invalid voice_id '{}'. Use 'vidu-cli task tts-voices' to list all available voices.",
-            voice_id
-        );
+        return format!("Invalid voice_id '{}'. Use 'vidu-cli task tts-voices' to list all available voices.", voice_id);
     }
     String::new()
 }
@@ -1140,11 +710,7 @@ pub fn validate_tts_language_boost(lang: &str) -> String {
     if !valid.contains(lang) {
         let mut list: Vec<&str> = valid.iter().map(|s| s.as_str()).collect();
         list.sort();
-        return format!(
-            "Invalid language_boost '{}'. Valid: {}",
-            lang,
-            list.join(", ")
-        );
+        return format!("Invalid language_boost '{}'. Valid: {}", lang, list.join(", "));
     }
     String::new()
 }
@@ -1162,16 +728,10 @@ pub fn validate_timeline_clips(timeline: &Value) -> String {
                 if let Some(clips) = track.get(*clip_key).and_then(|v| v.as_array()) {
                     for (ci, clip) in clips.iter().enumerate() {
                         if clip.get("timeline_in").map_or(true, |v| v.is_null()) {
-                            return format!(
-                                "{}[{}].{}[{}]: missing required field 'timeline_in'",
-                                track_key, ti, clip_key, ci
-                            );
+                            return format!("{}[{}].{}[{}]: missing required field 'timeline_in'", track_key, ti, clip_key, ci);
                         }
                         if clip.get("timeline_out").map_or(true, |v| v.is_null()) {
-                            return format!(
-                                "{}[{}].{}[{}]: missing required field 'timeline_out'",
-                                track_key, ti, clip_key, ci
-                            );
+                            return format!("{}[{}].{}[{}]: missing required field 'timeline_out'", track_key, ti, clip_key, ci);
                         }
                     }
                 }
@@ -1238,21 +798,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn make_body(
-        task_type: &str,
-        model: &str,
-        duration: i64,
-        images: usize,
-        materials: usize,
-    ) -> Value {
+    fn make_body(task_type: &str, model: &str, duration: i64, images: usize, materials: usize) -> Value {
         let mut prompts: Vec<Value> = vec![json!({"type": "text", "content": "test"})];
         for _ in 0..images {
             prompts.push(json!({"type": "image", "content": "ssupload:?id=x"}));
         }
         for _ in 0..materials {
-            prompts.push(
-                json!({"type": "material", "name": "m", "material": {"id": "1", "version": "1"}}),
-            );
+            prompts.push(json!({"type": "material", "name": "m", "material": {"id": "1", "version": "1"}}));
         }
         json!({
             "type": task_type,
@@ -1268,10 +820,7 @@ mod tests {
 
     #[test]
     fn task_body_missing_type() {
-        assert_eq!(
-            validate_task_body(&json!({})),
-            "Missing required field: type"
-        );
+        assert_eq!(validate_task_body(&json!({})), "Missing required field: type");
     }
 
     #[test]
@@ -1281,10 +830,7 @@ mod tests {
 
     #[test]
     fn task_body_missing_input() {
-        assert_eq!(
-            validate_task_body(&json!({"type": "text2video"})),
-            "input must be an object"
-        );
+        assert_eq!(validate_task_body(&json!({"type": "text2video"})), "input must be an object");
     }
 
     #[test]
@@ -1295,16 +841,12 @@ mod tests {
 
     #[test]
     fn task_body_valid_text2video() {
-        assert_eq!(
-            validate_task_body(&make_body("text2video", "3.2", 8, 0, 0)),
-            ""
-        );
+        assert_eq!(validate_task_body(&make_body("text2video", "3.2", 8, 0, 0)), "");
     }
 
     #[test]
     fn task_body_img2video_wrong_image_count() {
-        assert!(validate_task_body(&make_body("img2video", "3.1", 5, 0, 0))
-            .contains("requires exactly 1 image"));
+        assert!(validate_task_body(&make_body("img2video", "3.1", 5, 0, 0)).contains("requires exactly 1 image"));
     }
 
     #[test]
@@ -1316,68 +858,47 @@ mod tests {
 
     #[test]
     fn task_body_headtail_wrong_count() {
-        assert!(
-            validate_task_body(&make_body("headtailimg2video", "3.1", 5, 1, 0))
-                .contains("requires exactly 2 images")
-        );
+        assert!(validate_task_body(&make_body("headtailimg2video", "3.1", 5, 1, 0)).contains("requires exactly 2 images"));
     }
 
     #[test]
     fn task_body_character2video_too_many_refs() {
-        assert!(
-            validate_task_body(&make_body("character2video", "3.1", 5, 4, 4)).contains("max 7")
-        );
+        assert!(validate_task_body(&make_body("character2video", "3.1", 5, 4, 4)).contains("max 7"));
     }
 
     #[test]
     fn task_body_invalid_model() {
-        assert!(validate_task_body(&make_body("text2video", "9.9", 5, 0, 0))
-            .contains("Invalid model_version"));
+        assert!(validate_task_body(&make_body("text2video", "9.9", 5, 0, 0)).contains("Invalid model_version"));
     }
 
     #[test]
     fn task_body_model_not_support_task() {
-        assert!(validate_task_body(&make_body("text2image", "3.0", 0, 0, 0))
-            .contains("does not support"));
+        assert!(validate_task_body(&make_body("text2image", "3.0", 0, 0, 0)).contains("does not support"));
     }
 
     #[test]
     fn task_body_3_2_a_duration_auto() {
-        assert_eq!(
-            validate_task_body(&make_body("text2video", "3.2_a", -1, 0, 0)),
-            ""
-        );
+        assert_eq!(validate_task_body(&make_body("text2video", "3.2_a", -1, 0, 0)), "");
     }
 
     #[test]
     fn task_body_3_2_a_duration_valid() {
-        assert_eq!(
-            validate_task_body(&make_body("text2video", "3.2_a", 10, 0, 0)),
-            ""
-        );
+        assert_eq!(validate_task_body(&make_body("text2video", "3.2_a", 10, 0, 0)), "");
     }
 
     #[test]
     fn task_body_3_2_a_duration_invalid() {
-        assert!(
-            validate_task_body(&make_body("text2video", "3.2_a", 3, 0, 0))
-                .contains("invalid for 3.2_a")
-        );
+        assert!(validate_task_body(&make_body("text2video", "3.2_a", 3, 0, 0)).contains("invalid for 3.2_a"));
     }
 
     #[test]
     fn task_body_duration_out_of_range() {
-        assert!(
-            validate_task_body(&make_body("text2video", "3.1", 20, 0, 0)).contains("out of range")
-        );
+        assert!(validate_task_body(&make_body("text2video", "3.1", 20, 0, 0)).contains("out of range"));
     }
 
     #[test]
     fn task_body_char2video_3_2_requires_transition() {
-        assert!(
-            validate_task_body(&make_body("character2video", "3.2", 8, 1, 0))
-                .contains("requires transition")
-        );
+        assert!(validate_task_body(&make_body("character2video", "3.2", 8, 1, 0)).contains("requires transition"));
     }
 
     #[test]
@@ -1629,30 +1150,22 @@ mod tests {
 
     #[test]
     fn task_body_img2video_3_1_requires_transition() {
-        assert!(validate_task_body(&make_body("img2video", "3.1", 5, 1, 0))
-            .contains("requires transition"));
+        assert!(validate_task_body(&make_body("img2video", "3.1", 5, 1, 0)).contains("requires transition"));
     }
 
     #[test]
     fn task_body_img2video_3_2_requires_transition() {
-        assert!(validate_task_body(&make_body("img2video", "3.2", 5, 1, 0))
-            .contains("requires transition"));
+        assert!(validate_task_body(&make_body("img2video", "3.2", 5, 1, 0)).contains("requires transition"));
     }
 
     #[test]
     fn task_body_headtailimg2video_3_1_requires_transition() {
-        assert!(
-            validate_task_body(&make_body("headtailimg2video", "3.1", 5, 2, 0))
-                .contains("requires transition")
-        );
+        assert!(validate_task_body(&make_body("headtailimg2video", "3.1", 5, 2, 0)).contains("requires transition"));
     }
 
     #[test]
     fn task_body_headtailimg2video_3_2_requires_transition() {
-        assert!(
-            validate_task_body(&make_body("headtailimg2video", "3.2", 5, 2, 0))
-                .contains("requires transition")
-        );
+        assert!(validate_task_body(&make_body("headtailimg2video", "3.2", 5, 2, 0)).contains("requires transition"));
     }
 
     #[test]
@@ -1678,10 +1191,7 @@ mod tests {
 
     #[test]
     fn task_body_img2video_3_2_a_keeps_current_transition_behavior() {
-        assert_eq!(
-            validate_task_body(&make_body("img2video", "3.2_a", 5, 1, 0)),
-            ""
-        );
+        assert_eq!(validate_task_body(&make_body("img2video", "3.2_a", 5, 1, 0)), "");
         let mut body = make_body("img2video", "3.2_a", 5, 1, 0);
         body["settings"]["transition"] = json!("speed");
         assert_eq!(validate_task_body(&body), "");
@@ -1771,4 +1281,5 @@ mod tests {
         let err = read_prompt_file(path.to_str().unwrap()).unwrap_err();
         assert!(err.contains("not valid UTF-8"), "got: {}", err);
     }
+
 }

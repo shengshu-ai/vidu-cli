@@ -84,16 +84,9 @@ enum TaskAction {
             value_parser = PossibleValuesParser::new(validators::TASK_TYPES),
             help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
         task_type: String,
-        #[arg(
-            long,
-            help = "Text prompt (mutually preferred over --prompt-path when both are given)."
-        )]
+        #[arg(long, help = "Text prompt (mutually preferred over --prompt-path when both are given).")]
         prompt: Option<String>,
-        #[arg(
-            long = "prompt-path",
-            value_name = "PATH",
-            help = "Read the prompt from a UTF-8 file (≤1MiB). Ignored if --prompt is also set."
-        )]
+        #[arg(long = "prompt-path", value_name = "PATH", help = "Read the prompt from a UTF-8 file (≤1MiB). Ignored if --prompt is also set.")]
         prompt_path: Option<String>,
         #[arg(long = "image", action = clap::ArgAction::Append, help = "Image input (local path, URL, or ssupload:?id=xxx). Repeatable.")]
         images: Vec<String>,
@@ -103,11 +96,7 @@ enum TaskAction {
         audios: Vec<String>,
         #[arg(long = "video", action = clap::ArgAction::Append, help = "Video input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a only. Max 3, total duration ≤15s.")]
         videos: Vec<String>,
-        #[arg(
-            long,
-            allow_negative_numbers = true,
-            help = "Duration in seconds. Required for video tasks. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(-1 or 4-15). Ignored for image tasks."
-        )]
+        #[arg(long, allow_negative_numbers = true, help = "Duration in seconds. Required for video tasks. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(-1 or 4-15). Ignored for image tasks.")]
         duration: Option<i64>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
@@ -140,11 +129,7 @@ enum TaskAction {
     /// Get task result
     Get {
         task_id: String,
-        #[arg(
-            long,
-            short = 'o',
-            help = "Output path for downloading media files. Existing directories and paths without an extension are treated as directories; file paths are supported for single-artifact tasks."
-        )]
+        #[arg(long, short = 'o', help = "Output path for downloading media files. Existing directories and paths without an extension are treated as directories; file paths are supported for single-artifact tasks.")]
         output: Option<String>,
     },
     /// Lip sync: drive video mouth movement with text or audio
@@ -156,25 +141,15 @@ enum TaskAction {
     LipSync {
         #[arg(long)]
         video: String,
-        #[arg(
-            long,
-            help = "Text for lip sync (mutually exclusive with --audio). Chinese: 2-1000 chars, English: 4-2000 chars."
-        )]
+        #[arg(long, help = "Text for lip sync (mutually exclusive with --audio). Chinese: 2-1000 chars, English: 4-2000 chars.")]
         text: Option<String>,
-        #[arg(
-            long,
-            help = "Audio file for lip sync (mutually exclusive with --text). MP3/WAV/AAC/M4A, ≤100MB."
-        )]
+        #[arg(long, help = "Audio file for lip sync (mutually exclusive with --text). MP3/WAV/AAC/M4A, ≤100MB.")]
         audio: Option<String>,
         #[arg(long, default_value = "English_Aussie_Bloke")]
         voice_id: String,
         #[arg(long, default_value = "1")]
         speed: f64,
-        #[arg(
-            long,
-            default_value = "0",
-            help = "Volume [0.5,2], or 0 to use server default"
-        )]
+        #[arg(long, default_value = "0", help = "Volume [0.5,2], or 0 to use server default")]
         volume: f64,
         #[arg(long, default_value = "true")]
         enhance: bool,
@@ -196,25 +171,13 @@ enum TaskAction {
     /// Required: --voice-id, and one of --prompt, --prompt-path, or --text
     /// Optional: --speed, --volume, --emotion, --language-boost
     Tts {
-        #[arg(
-            long,
-            help = "Single text segment (mutually exclusive with --text). Preferred over --prompt-path when both are given.",
-            conflicts_with = "texts"
-        )]
+        #[arg(long, help = "Single text segment (mutually exclusive with --text). Preferred over --prompt-path when both are given.", conflicts_with = "texts")]
         prompt: Option<String>,
-        #[arg(
-            long = "prompt-path",
-            value_name = "PATH",
-            help = "Read the prompt from a UTF-8 file (≤1MiB). Ignored if --prompt is also set. Mutually exclusive with --text.",
-            conflicts_with = "texts"
-        )]
+        #[arg(long = "prompt-path", value_name = "PATH", help = "Read the prompt from a UTF-8 file (≤1MiB). Ignored if --prompt is also set. Mutually exclusive with --text.", conflicts_with = "texts")]
         prompt_path: Option<String>,
         #[arg(long = "text", action = clap::ArgAction::Append, help = "Text segment, repeatable for multi-segment TTS (mutually exclusive with --prompt)", conflicts_with = "prompt")]
         texts: Vec<String>,
-        #[arg(
-            long,
-            help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)"
-        )]
+        #[arg(long, help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)")]
         voice_id: String,
         #[arg(long, default_value = "1.0", help = "Speech speed: 0.5-2.0")]
         speed: f64,
@@ -264,10 +227,7 @@ enum TaskAction {
             value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
             help = "Model version (per-type compatibility enforced after parse)")]
         model_version: String,
-        #[arg(
-            long,
-            help = "Duration in seconds. Required for video tasks. Ignored for image tasks."
-        )]
+        #[arg(long, help = "Duration in seconds. Required for video tasks. Ignored for image tasks.")]
         duration: Option<i64>,
         #[arg(long, default_value = "1080p",
             value_parser = PossibleValuesParser::new(validators::RESOLUTIONS))]
@@ -292,10 +252,7 @@ enum TaskAction {
     TtsCost {
         #[arg(long, help = "Text content (cost is calculated by character count)")]
         text: String,
-        #[arg(
-            long,
-            help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)"
-        )]
+        #[arg(long, help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)")]
         voice_id: String,
         #[arg(long, default_value = "1.0", help = "Speech speed: 0.5-2.0")]
         speed: f64,
@@ -316,11 +273,7 @@ enum TaskAction {
         voice_id: String,
         #[arg(long, default_value = "1.0", help = "Speech speed: 0.5-2.0")]
         speed: f64,
-        #[arg(
-            long,
-            default_value = "0",
-            help = "Volume [0.5,2], or 0 for server default"
-        )]
+        #[arg(long, default_value = "0", help = "Volume [0.5,2], or 0 for server default")]
         volume: f64,
         #[arg(long, default_value = "h265",
             value_parser = PossibleValuesParser::new(validators::CODECS))]
@@ -415,162 +368,54 @@ fn main() -> ExitCode {
         }
         Group::Task { action } => match action {
             TaskAction::Submit {
-                task_type,
-                prompt,
-                prompt_path,
-                images,
-                materials,
-                audios,
-                videos,
-                duration,
-                model_version,
-                aspect_ratio,
-                transition,
-                resolution,
-                sample_count,
-                codec,
-                movement_amplitude,
-                schedule_mode,
+                task_type, prompt, prompt_path, images, materials, audios, videos, duration,
+                model_version, aspect_ratio, transition, resolution,
+                sample_count, codec, movement_amplitude, schedule_mode,
             } => {
                 commands::tasks::submit(
-                    &task_type,
-                    prompt.as_deref(),
-                    prompt_path.as_deref(),
-                    &images,
-                    &materials,
-                    &audios,
-                    &videos,
-                    duration,
-                    &model_version,
-                    aspect_ratio.as_deref(),
-                    transition.as_deref(),
-                    &resolution,
-                    sample_count,
-                    &codec,
-                    &movement_amplitude,
-                    schedule_mode.as_deref(),
+                    &task_type, prompt.as_deref(), prompt_path.as_deref(),
+                    &images, &materials, &audios, &videos, duration,
+                    &model_version, aspect_ratio.as_deref(), transition.as_deref(),
+                    &resolution, sample_count, &codec, &movement_amplitude, schedule_mode.as_deref(),
                 );
             }
-            TaskAction::Get { task_id, output } => {
-                commands::tasks::get(&task_id, output.as_deref())
-            }
-            TaskAction::LipSync {
-                video,
-                text,
-                audio,
-                voice_id,
-                speed,
-                volume,
-                enhance,
-                codec,
-                schedule_mode,
-            } => {
+            TaskAction::Get { task_id, output } => commands::tasks::get(&task_id, output.as_deref()),
+            TaskAction::LipSync { video, text, audio, voice_id, speed, volume, enhance, codec, schedule_mode } => {
                 commands::tasks::submit_lip_sync(
-                    &video,
-                    text.as_deref(),
-                    audio.as_deref(),
-                    &voice_id,
-                    speed,
-                    volume,
-                    enhance,
-                    &codec,
-                    schedule_mode.as_deref(),
+                    &video, text.as_deref(), audio.as_deref(),
+                    &voice_id, speed, volume, enhance, &codec, schedule_mode.as_deref(),
                 );
             }
             TaskAction::LipSyncVoices => {
                 commands::tasks::list_voices();
             }
-            TaskAction::Tts {
-                prompt,
-                prompt_path,
-                texts,
-                voice_id,
-                speed,
-                volume,
-                emotion,
-                language_boost,
-                subtitle_enable,
-                schedule_mode,
-            } => {
-                commands::tasks::submit_tts(
-                    prompt.as_deref(),
-                    prompt_path.as_deref(),
-                    &texts,
-                    &emotion,
-                    &voice_id,
-                    speed,
-                    volume,
-                    language_boost.as_deref(),
-                    subtitle_enable,
-                    schedule_mode.as_deref(),
-                );
+            TaskAction::Tts { prompt, prompt_path, texts, voice_id, speed, volume, emotion, language_boost, subtitle_enable, schedule_mode } => {
+                commands::tasks::submit_tts(prompt.as_deref(), prompt_path.as_deref(), &texts, &emotion, &voice_id, speed, volume, language_boost.as_deref(), subtitle_enable, schedule_mode.as_deref());
             }
             TaskAction::TtsVoices => {
                 commands::tasks::list_tts_voices();
             }
-            TaskAction::Compose {
-                timeline,
-                width,
-                height,
-                schedule_mode,
-            } => {
+            TaskAction::Compose { timeline, width, height, schedule_mode } => {
                 commands::tasks::compose(&timeline, width, height, schedule_mode.as_deref());
             }
             TaskAction::Cost {
-                task_type,
-                model_version,
-                duration,
-                resolution,
-                aspect_ratio,
-                transition,
-                sample_count,
-                codec,
-                schedule_mode,
+                task_type, model_version, duration, resolution,
+                aspect_ratio, transition, sample_count, codec, schedule_mode,
             } => {
                 commands::tasks::query_credits(
-                    &task_type,
-                    &model_version,
-                    duration,
-                    &resolution,
-                    aspect_ratio.as_deref(),
-                    transition.as_deref(),
-                    sample_count,
-                    &codec,
-                    schedule_mode.as_deref(),
+                    &task_type, &model_version, duration, &resolution,
+                    aspect_ratio.as_deref(), transition.as_deref(),
+                    sample_count, &codec, schedule_mode.as_deref(),
                 );
             }
-            TaskAction::TtsCost {
-                text,
-                voice_id,
-                speed,
-                pitch,
-                volume,
-                schedule_mode,
-            } => {
+            TaskAction::TtsCost { text, voice_id, speed, pitch, volume, schedule_mode } => {
                 commands::tasks::query_tts_credits(
-                    &text,
-                    &voice_id,
-                    speed,
-                    pitch,
-                    volume,
-                    schedule_mode.as_deref(),
+                    &text, &voice_id, speed, pitch, volume, schedule_mode.as_deref(),
                 );
             }
-            TaskAction::LipSyncCost {
-                duration,
-                voice_id,
-                speed,
-                volume,
-                codec,
-                schedule_mode,
-            } => {
+            TaskAction::LipSyncCost { duration, voice_id, speed, volume, codec, schedule_mode } => {
                 commands::tasks::query_lip_sync_credits(
-                    duration,
-                    &voice_id,
-                    speed,
-                    volume,
-                    &codec,
-                    schedule_mode.as_deref(),
+                    duration, &voice_id, speed, volume, &codec, schedule_mode.as_deref(),
                 );
             }
         },
@@ -578,43 +423,16 @@ fn main() -> ExitCode {
             ElementAction::Check { name } => {
                 commands::elements::check(&name);
             }
-            ElementAction::Preprocess {
-                name,
-                elem_type,
-                images,
-            } => {
+            ElementAction::Preprocess { name, elem_type, images } => {
                 commands::elements::preprocess(&name, &elem_type, &images);
             }
-            ElementAction::Create {
-                name,
-                modality,
-                elem_type,
-                images,
-                description,
-                style,
-            } => {
-                commands::elements::create(
-                    &name,
-                    &modality,
-                    &elem_type,
-                    &images,
-                    description.as_deref(),
-                    style.as_deref(),
-                );
+            ElementAction::Create { name, modality, elem_type, images, description, style } => {
+                commands::elements::create(&name, &modality, &elem_type, &images, description.as_deref(), style.as_deref());
             }
-            ElementAction::List {
-                keyword,
-                page,
-                pagesz,
-            } => {
+            ElementAction::List { keyword, page, pagesz } => {
                 commands::elements::list_elements(keyword.as_deref(), page, pagesz);
             }
-            ElementAction::Search {
-                keyword,
-                pagesz,
-                sort_by,
-                page_token,
-            } => {
+            ElementAction::Search { keyword, pagesz, sort_by, page_token } => {
                 commands::elements::search(&keyword, pagesz, &sort_by, &page_token);
             }
         },

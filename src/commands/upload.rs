@@ -11,35 +11,17 @@ fn compress_image_if_needed(path: &str) -> (Vec<u8>, u32, u32, String) {
     let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let img = match image::open(path) {
         Ok(i) => i,
-        Err(e) => client::fail(
-            "client_error",
-            &format!("Cannot read image: {}", e),
-            None,
-            None,
-            None,
-        ),
+        Err(e) => client::fail("client_error", &format!("Cannot read image: {}", e), None, None, None),
     };
     let (width, height) = img.dimensions();
 
-    let mime = mime_guess::from_path(path)
-        .first_or_octet_stream()
-        .to_string();
-    let mime = if mime.starts_with("image/") {
-        mime
-    } else {
-        "image/jpeg".into()
-    };
+    let mime = mime_guess::from_path(path).first_or_octet_stream().to_string();
+    let mime = if mime.starts_with("image/") { mime } else { "image/jpeg".into() };
 
     if file_size <= MAX_SIZE_MB * 1024 * 1024 {
         let bytes = match fs::read(path) {
             Ok(b) => b,
-            Err(e) => client::fail(
-                "client_error",
-                &format!("Cannot read file: {}", e),
-                None,
-                None,
-                None,
-            ),
+            Err(e) => client::fail("client_error", &format!("Cannot read file: {}", e), None, None, None),
         };
         return (bytes, width, height, mime);
     }
@@ -66,13 +48,7 @@ fn compress_image_if_needed(path: &str) -> (Vec<u8>, u32, u32, String) {
     let mut buf = Cursor::new(Vec::new());
     let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 85);
     if let Err(e) = rgb_resized.write_with_encoder(encoder) {
-        client::fail(
-            "client_error",
-            &format!("Failed to compress image: {}", e),
-            None,
-            None,
-            None,
-        );
+        client::fail("client_error", &format!("Failed to compress image: {}", e), None, None, None);
     }
     (buf.into_inner(), rw, rh, "image/jpeg".into())
 }
@@ -107,23 +83,14 @@ pub fn upload_and_get_uri(image_path: &str) -> String {
         Some(&body),
         None,
     );
-    let upload_id_str = data
-        .get("id")
-        .map(|v| match v {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Number(n) => n.to_string(),
-            _ => String::new(),
-        })
-        .unwrap_or_default();
+    let upload_id_str = data.get("id").map(|v| match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }).unwrap_or_default();
     let put_url = data.get("put_url").and_then(|v| v.as_str()).unwrap_or("");
     if upload_id_str.is_empty() || put_url.is_empty() {
-        client::fail(
-            "parse_error",
-            &format!("Unexpected create_upload response: {}", data),
-            None,
-            None,
-            Some("create_upload"),
-        );
+        client::fail("parse_error", &format!("Unexpected create_upload response: {}", data), None, None, Some("create_upload"));
     }
 
     // Step 2: PUT image bytes
@@ -172,8 +139,7 @@ fn check_color_metadata(path: &str) -> Option<bool> {
         .output()
         .ok()?;
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let has = json
-        .get("streams")
+    let has = json.get("streams")
         .and_then(|s| s.as_array())
         .map(|streams| {
             streams.iter().any(|s| {
@@ -201,16 +167,11 @@ fn inject_color_metadata(path: &str) -> Option<tempfile::NamedTempFile> {
         .ok()?;
     let status = std::process::Command::new("ffmpeg")
         .args([
-            "-i",
-            path,
-            "-c",
-            "copy",
-            "-color_primaries",
-            "bt709",
-            "-color_trc",
-            "bt709",
-            "-colorspace",
-            "bt709",
+            "-i", path,
+            "-c", "copy",
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
+            "-colorspace", "bt709",
             "-y",
             tmp.path().to_str()?,
         ])
@@ -218,21 +179,14 @@ fn inject_color_metadata(path: &str) -> Option<tempfile::NamedTempFile> {
         .stderr(std::process::Stdio::null())
         .status()
         .ok()?;
-    if status.success() {
-        Some(tmp)
-    } else {
-        None
-    }
+    if status.success() { Some(tmp) } else { None }
 }
 
 pub fn upload_media_and_get_uri(path: &str) -> String {
     upload_media_and_get_uri_with_metadata(path, None)
 }
 
-pub fn upload_media_and_get_uri_with_metadata(
-    path: &str,
-    metadata: Option<serde_json::Map<String, serde_json::Value>>,
-) -> String {
+pub fn upload_media_and_get_uri_with_metadata(path: &str, metadata: Option<serde_json::Map<String, serde_json::Value>>) -> String {
     let _color_tmp = if is_video_file(path) {
         match check_color_metadata(path) {
             Some(true) => None,
@@ -247,25 +201,16 @@ pub fn upload_media_and_get_uri_with_metadata(
     } else {
         None
     };
-    let path = _color_tmp
-        .as_ref()
+    let path = _color_tmp.as_ref()
         .and_then(|t| t.path().to_str())
         .unwrap_or(path);
 
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
-        Err(e) => client::fail(
-            "client_error",
-            &format!("Cannot read file: {}", e),
-            None,
-            None,
-            None,
-        ),
+        Err(e) => client::fail("client_error", &format!("Cannot read file: {}", e), None, None, None),
     };
 
-    let mime = mime_guess::from_path(path)
-        .first_or_octet_stream()
-        .to_string();
+    let mime = mime_guess::from_path(path).first_or_octet_stream().to_string();
 
     // Step 1: Create upload
     let mut body = json!({"scene": "vidu"});
@@ -280,23 +225,14 @@ pub fn upload_media_and_get_uri_with_metadata(
         Some(&body),
         None,
     );
-    let upload_id_str = data
-        .get("id")
-        .map(|v| match v {
-            serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Number(n) => n.to_string(),
-            _ => String::new(),
-        })
-        .unwrap_or_default();
+    let upload_id_str = data.get("id").map(|v| match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }).unwrap_or_default();
     let put_url = data.get("put_url").and_then(|v| v.as_str()).unwrap_or("");
     if upload_id_str.is_empty() || put_url.is_empty() {
-        client::fail(
-            "parse_error",
-            &format!("Unexpected create_upload response: {}", data),
-            None,
-            None,
-            Some("create_upload"),
-        );
+        client::fail("parse_error", &format!("Unexpected create_upload response: {}", data), None, None, Some("create_upload"));
     }
 
     // Step 2: PUT raw bytes (large file timeout)
