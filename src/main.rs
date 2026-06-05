@@ -46,22 +46,22 @@ enum TaskAction {
     ///   Aspect Ratio: 4:3, 3:4, 1:1, 9:16, 16:9
     ///
     /// TYPE: text2video
-    ///   Models: 3.0, 3.1, 3.2
-    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s
+    ///   Models: 3.0, 3.1, 3.2, 3.2_a
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s
     ///   Resolution: 1080p
     ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
     ///   Transition: 3.2 only (pro/speed)
     ///
     /// TYPE: img2video
-    ///   Models: 3.0, 3.1, 3.2
-    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s
+    ///   Models: 3.0, 3.1, 3.2, 3.2_a
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s
     ///   Resolution: 1080p
     ///   Transition: 3.0→creative/stable, 3.1/3.2→required pro/speed
     ///   Images: 1 required
     ///
     /// TYPE: headtailimg2video
-    ///   Models: 3.0, 3.1, 3.2
-    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s
+    ///   Models: 3.0, 3.1, 3.2, 3.2_a
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s
     ///   Resolution: 1080p
     ///   Transition: 3.0→creative/stable, 3.1/3.2→required pro/speed
     ///   Images: 2 required (head + tail)
@@ -74,8 +74,8 @@ enum TaskAction {
     ///   Inputs: image + material ≤ 7
     ///
     /// TYPE: character2video
-    ///   Models: 3.0, 3.1, 3.1_pro, 3.2
-    ///   Duration: 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s
+    ///   Models: 3.0, 3.1, 3.1_pro, 3.2, 3.2_a
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s
     ///   Resolution: 1080p
     ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
     ///   Inputs: image + material ≤ 7
@@ -96,7 +96,7 @@ enum TaskAction {
         audios: Vec<String>,
         #[arg(long = "video", action = clap::ArgAction::Append, help = "Video input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a only. Max 3, total duration ≤15s.")]
         videos: Vec<String>,
-        #[arg(long, allow_negative_numbers = true, help = "Duration in seconds. Required for video tasks. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(-1 or 4-15). Ignored for image tasks.")]
+        #[arg(long, allow_negative_numbers = true, help = "Duration in seconds. Required for video tasks. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(4-15). Ignored for image tasks.")]
         duration: Option<i64>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
