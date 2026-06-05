@@ -216,13 +216,16 @@ pub fn validate_task_body(body: &Value) -> String {
 
     let duration = settings.get("duration").and_then(|v| v.as_i64()).unwrap_or(0);
     if model_version == "3.2_a" {
-        if duration != -1 && !(4..=15).contains(&duration) {
-            return format!("duration {} is invalid for 3.2_a: must be -1 (auto) or 4-15", duration);
+        if !(4..=15).contains(&duration) {
+            return format!("duration {} is invalid for 3.2_a: must be 4-15", duration);
         }
     } else {
         let dr = duration_ranges();
         if let Some(type_ranges) = dr.get(task_type) {
             if let Some(&(min_d, max_d)) = type_ranges.get(model_version) {
+                if min_d < 0 && duration != min_d && !(2..=max_d).contains(&duration) {
+                    return format!("duration {} out of range [{}, {}] for {} with {}", duration, min_d, max_d, task_type, model_version);
+                }
                 if min_d > 0 && (duration < min_d || duration > max_d) {
                     return format!("duration {} out of range [{}, {}] for {} with {}", duration, min_d, max_d, task_type, model_version);
                 }
@@ -877,18 +880,25 @@ mod tests {
     }
 
     #[test]
-    fn task_body_3_2_a_duration_auto() {
-        assert_eq!(validate_task_body(&make_body("text2video", "3.2_a", -1, 0, 0)), "");
+    fn task_body_3_2_a_duration_rejects_auto() {
+        assert!(validate_task_body(&make_body("text2video", "3.2_a", -1, 0, 0)).contains("must be 4-15"));
     }
 
     #[test]
-    fn task_body_3_2_a_duration_valid() {
-        assert_eq!(validate_task_body(&make_body("text2video", "3.2_a", 10, 0, 0)), "");
+    fn task_body_3_2_a_duration_valid_boundaries() {
+        assert_eq!(validate_task_body(&make_body("text2video", "3.2_a", 4, 0, 0)), "");
+        assert_eq!(validate_task_body(&make_body("text2video", "3.2_a", 15, 0, 0)), "");
     }
 
     #[test]
-    fn task_body_3_2_a_duration_invalid() {
+    fn task_body_3_2_a_duration_invalid_boundaries() {
         assert!(validate_task_body(&make_body("text2video", "3.2_a", 3, 0, 0)).contains("invalid for 3.2_a"));
+        assert!(validate_task_body(&make_body("text2video", "3.2_a", 16, 0, 0)).contains("invalid for 3.2_a"));
+    }
+
+    #[test]
+    fn task_body_3_1_pro_duration_still_accepts_auto() {
+        assert_eq!(validate_task_body(&make_body("character2video", "3.1_pro", -1, 1, 0)), "");
     }
 
     #[test]
