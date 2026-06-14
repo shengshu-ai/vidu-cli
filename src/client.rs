@@ -22,7 +22,7 @@ fn render_message(message: &str, fields: Option<&Value>) -> String {
     }
 }
 
-pub fn fail_with_fields(error_type: &str, message: &str, http_status: Option<u16>, code: Option<&str>, step: Option<&str>, fields: Option<&Value>, trace_id: Option<&str>, cause: Option<&Value>) -> ! {
+pub fn fail_with_fields(error_type: &str, message: &str, http_status: Option<u16>, code: Option<&str>, step: Option<&str>, fields: Option<&Value>, trace_id: Option<&str>, cause: Option<&Value>, suggestion: Option<&str>) -> ! {
     let rendered_message = render_message(message, fields);
     let mut err = json!({"type": error_type, "message": rendered_message});
     if let Some(s) = http_status {
@@ -45,12 +45,15 @@ pub fn fail_with_fields(error_type: &str, message: &str, http_status: Option<u16
     if let Some(c) = cause {
         err["cause"] = c.clone();
     }
+    if let Some(s) = suggestion {
+        err["suggestion"] = json!(s);
+    }
     println!("{}", json!({"ok": false, "error": err}));
     process::exit(1);
 }
 
 pub fn fail(error_type: &str, message: &str, http_status: Option<u16>, code: Option<&str>, step: Option<&str>) -> ! {
-    fail_with_fields(error_type, message, http_status, code, step, None, None, None);
+    fail_with_fields(error_type, message, http_status, code, step, None, None, None, None);
 }
 
 pub fn ok(extra: Value) {
@@ -94,13 +97,16 @@ fn build_reqwest_headers(map: &HashMap<String, String>) -> reqwest::header::Head
     hm
 }
 
-fn parse_error_body(resp: Response) -> (String, String, Option<Value>, String, Option<Value>) {
+fn parse_error_body(resp: Response) -> (String, String, Option<Value>, String, Option<Value>, Option<String>) {
     let header_trace_id = resp.headers()
         .get("x-md-trace-id")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
     let text = resp.text().unwrap_or_default();
+    if env::var("VIDU_DEBUG").is_ok() {
+        eprintln!("[DEBUG] Error response body: {}", text);
+    }
     if let Ok(body) = serde_json::from_str::<Value>(&text) {
         let error_body = body.get("error").unwrap_or(&body);
         let code = error_body.get("reason")
@@ -155,10 +161,16 @@ fn parse_error_body(resp: Response) -> (String, String, Option<Value>, String, O
             .or_else(|| body.get("cause"))
             .or_else(|| body.get("metadata").and_then(|m| m.get("cause")))
             .cloned();
-        (code, msg, fields, trace_id, cause)
+        let suggestion = error_body.get("suggestion")
+            .or_else(|| error_body.get("metadata").and_then(|m| m.get("suggestion")))
+            .or_else(|| body.get("suggestion"))
+            .or_else(|| body.get("metadata").and_then(|m| m.get("suggestion")))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        (code, msg, fields, trace_id, cause, suggestion)
     } else {
         let truncated: String = text.chars().take(200).collect();
-        (String::new(), truncated, None, header_trace_id, None)
+        (String::new(), truncated, None, header_trace_id, None, None)
     }
 }
 
@@ -195,10 +207,10 @@ pub fn request(method: &str, url: &str, step: Option<&str>, retries: bool, body:
                     continue;
                 }
                 if status >= 400 {
-                    let (code, msg, fields, trace_id, cause) = parse_error_body(resp);
+                    let (code, msg, fields, trace_id, cause, suggestion) = parse_error_body(resp);
                     let code_opt = if code.is_empty() { None } else { Some(code.as_str()) };
                     let tid_opt = if trace_id.is_empty() { None } else { Some(trace_id.as_str()) };
-                    fail_with_fields("http_error", &msg, Some(status), code_opt, step, fields.as_ref(), tid_opt, cause.as_ref());
+                    fail_with_fields("http_error", &msg, Some(status), code_opt, step, fields.as_ref(), tid_opt, cause.as_ref(), suggestion.as_deref());
                 }
                 return resp;
             }
@@ -221,10 +233,10 @@ pub fn request(method: &str, url: &str, step: Option<&str>, retries: bool, body:
     // 5xx retries exhausted
     if let Some(resp) = last_resp {
         let status = resp.status().as_u16();
-        let (code, msg, fields, trace_id, cause) = parse_error_body(resp);
+        let (code, msg, fields, trace_id, cause, suggestion) = parse_error_body(resp);
         let code_opt = if code.is_empty() { None } else { Some(code.as_str()) };
         let tid_opt = if trace_id.is_empty() { None } else { Some(trace_id.as_str()) };
-        fail_with_fields("http_error", &msg, Some(status), code_opt, step, fields.as_ref(), tid_opt, cause.as_ref());
+        fail_with_fields("http_error", &msg, Some(status), code_opt, step, fields.as_ref(), tid_opt, cause.as_ref(), suggestion.as_deref());
     }
     fail("network_error", "unknown error", None, None, step);
 }
