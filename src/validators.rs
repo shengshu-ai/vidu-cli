@@ -36,7 +36,7 @@ pub const MODEL_VERSIONS: &[&str] = &[
 ];
 
 /// All accepted `--resolution` values (1080p universal, 2k/4k for image tasks).
-pub const RESOLUTIONS: &[&str] = &["1080p", "2k", "4k"];
+pub const RESOLUTIONS: &[&str] = &["720p", "1080p", "2k", "4k"];
 
 /// All accepted `--aspect-ratio` values.
 pub const ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4"];
@@ -238,7 +238,10 @@ pub fn validate_task_body(body: &Value) -> String {
     }
     let res = settings.get("resolution").and_then(|v| v.as_str()).unwrap_or("");
     let rs = resolution_support();
-    let valid_res = rs.get(task_type).cloned().unwrap_or_else(|| set(&["1080p"]));
+    let mut valid_res = rs.get(task_type).cloned().unwrap_or_else(|| set(&["1080p"]));
+    if model_version == "3.2_a" {
+        valid_res.insert("720p".into());
+    }
     if !valid_res.contains(res) {
         return format!("Invalid resolution '{}' for {}. Valid: {}", res, task_type, sorted_join(&valid_res));
     }
