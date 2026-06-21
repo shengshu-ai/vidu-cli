@@ -112,7 +112,7 @@ enum TaskAction {
         transition: Option<String>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::RESOLUTIONS),
-            help = "Resolution: 1080p (all), 2k/4k (text2image/reference2image only)")]
+            help = "Resolution: 1080p (all), 720p (3.2_a only), 2k/4k (text2image/reference2image only)")]
         resolution: String,
         #[arg(long, default_value = "1")]
         sample_count: i64,
