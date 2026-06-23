@@ -444,49 +444,6 @@ pub fn validate_lip_sync_text(text: &str) -> String {
     String::new()
 }
 
-pub fn all_voice_ids() -> Vec<&'static str> {
-    [
-        "male-qn-qingse", "male-qn-jingying", "male-qn-badao", "male-qn-daxuesheng",
-        "female-shaonv", "female-yujie", "female-chengshu", "female-tianmei",
-        "male-qn-qingse-jingpin", "male-qn-jingying-jingpin", "male-qn-badao-jingpin",
-        "male-qn-daxuesheng-jingpin", "female-shaonv-jingpin", "female-yujie-jingpin",
-        "female-chengshu-jingpin", "female-tianmei-jingpin",
-        "clever_boy", "cute_boy", "lovely_girl", "cartoon_pig",
-        "bingjiao_didi", "junlang_nanyou", "chunzhen_xuedi", "lengdan_xiongzhang",
-        "badao_shaoye", "tianxin_xiaoling", "qiaopi_mengmei", "wumei_yujie",
-        "diadia_xuemei", "danya_xuejie",
-        "Chinese (Mandarin)_Reliable_Executive", "Chinese (Mandarin)_News_Anchor",
-        "Chinese (Mandarin)_Mature_Woman", "Chinese (Mandarin)_Unrestrained_Young_Man",
-        "Arrogant_Miss", "Robot_Armor",
-        "Chinese (Mandarin)_Kind-hearted_Antie", "Chinese (Mandarin)_HK_Flight_Attendant",
-        "Chinese (Mandarin)_Humorous_Elder", "Chinese (Mandarin)_Gentleman",
-        "Chinese (Mandarin)_Warm_Bestie", "Chinese (Mandarin)_Male_Announcer",
-        "Chinese (Mandarin)_Sweet_Lady", "Chinese (Mandarin)_Southern_Young_Man",
-        "Chinese (Mandarin)_Wise_Women", "Chinese (Mandarin)_Gentle_Youth",
-        "Chinese (Mandarin)_Warm_Girl", "Chinese (Mandarin)_Kind-hearted_Elder",
-        "Chinese (Mandarin)_Cute_Spirit", "Chinese (Mandarin)_Radio_Host",
-        "Chinese (Mandarin)_Lyrical_Voice", "Chinese (Mandarin)_Straightforward_Boy",
-        "Chinese (Mandarin)_Sincere_Adult", "Chinese (Mandarin)_Gentle_Senior",
-        "Chinese (Mandarin)_Stubborn_Friend", "Chinese (Mandarin)_Crisp_Girl",
-        "Chinese (Mandarin)_Pure-hearted_Boy", "Chinese (Mandarin)_Soft_Girl",
-        "Cantonese_ProfessionalHost（F)", "Cantonese_GentleLady",
-        "Cantonese_ProfessionalHost（M)", "Cantonese_PlayfulMan",
-        "Cantonese_CuteGirl", "Cantonese_KindWoman",
-        "Grinch", "Rudolph", "Arnold", "Charming_Santa", "Charming_Lady",
-        "Sweet_Girl", "Cute_Elf", "Attractive_Girl", "Serene_Woman",
-        "English_Trustworthy_Man", "English_Graceful_Lady", "English_Aussie_Bloke",
-        "English_Whispering_girl", "English_Diligent_Man", "English_Gentle-voiced_man",
-    ].to_vec()
-}
-
-pub fn validate_voice_id(voice_id: &str) -> String {
-    let valid: HashSet<String> = all_voice_ids().iter().map(|s| s.to_string()).collect();
-    if !valid.contains(voice_id) {
-        return format!("Invalid voice_id '{}'", voice_id);
-    }
-    String::new()
-}
-
 pub fn validate_lip_sync_speed(speed: f64) -> String {
     if !(0.5..=2.0).contains(&speed) {
         return format!("speed must be between 0.5 and 2.0, got {}", speed);
@@ -1046,19 +1003,7 @@ mod tests {
         assert!(validate_timeline_clips(&t).contains("video_tracks[0].video_track_clips[1]"));
     }
 
-    // --- validate_voice_id ---
-
-    #[test]
-    fn voice_id_valid() {
-        assert_eq!(validate_voice_id("English_Aussie_Bloke"), "");
-    }
-
-    #[test]
-    fn voice_id_invalid() {
-        assert!(validate_voice_id("nonexistent_voice").contains("Invalid voice_id"));
-    }
-
-    // --- validate_tts_voice_id ---
+    // --- validate_tts_voice_id (also used by lip-sync) ---
 
     #[test]
     fn tts_voice_id_valid() {
@@ -1230,12 +1175,7 @@ mod tests {
         assert!(validate_task_body(&body).contains("resolution is required"));
     }
 
-    // --- all_voice_ids / tts_voices_grouped ---
-
-    #[test]
-    fn all_voice_ids_not_empty() {
-        assert!(!all_voice_ids().is_empty());
-    }
+    // --- tts_voices_grouped ---
 
     #[test]
     fn tts_voices_grouped_not_empty() {

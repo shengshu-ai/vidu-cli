@@ -501,7 +501,7 @@ pub fn submit_lip_sync(
         if !err.is_empty() {
             client::fail("client_error", &err, None, None, None);
         }
-        let err = validators::validate_voice_id(voice_id);
+        let err = validators::validate_tts_voice_id(voice_id);
         if !err.is_empty() {
             client::fail("client_error", &err, None, None, None);
         }
@@ -594,11 +594,7 @@ fn upload_media_file(path: &str) -> String {
 }
 
 pub fn list_voices() {
-    let voices = validators::all_voice_ids();
-    let mut result = serde_json::Map::new();
-    result.insert("count".into(), json!(voices.len()));
-    result.insert("voice_ids".into(), json!(voices));
-    client::ok(serde_json::Value::Object(result));
+    list_tts_voices();
 }
 
 pub fn submit_tts(
