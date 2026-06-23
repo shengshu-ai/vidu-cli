@@ -99,6 +99,7 @@ enum TaskAction {
         #[arg(long, allow_negative_numbers = true, help = "Duration in seconds. Required for video tasks. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(4-15). Ignored for image tasks.")]
         duration: Option<i64>,
         #[arg(long,
+            alias = "model",
             value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
             help = "Model version (per-type compatibility enforced after parse): 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.2_fast_m, 3.2_pro_m, 3.2_image_2")]
         model_version: String,
@@ -145,7 +146,7 @@ enum TaskAction {
         text: Option<String>,
         #[arg(long, help = "Audio file for lip sync (mutually exclusive with --text). MP3/WAV/AAC/M4A, ≤100MB.")]
         audio: Option<String>,
-        #[arg(long, default_value = "English_Aussie_Bloke")]
+        #[arg(long, alias = "voice", default_value = "English_Aussie_Bloke")]
         voice_id: String,
         #[arg(long, default_value = "1")]
         speed: f64,
@@ -177,7 +178,7 @@ enum TaskAction {
         prompt_path: Option<String>,
         #[arg(long = "text", action = clap::ArgAction::Append, help = "Text segment, repeatable for multi-segment TTS (mutually exclusive with --prompt)", conflicts_with = "prompt")]
         texts: Vec<String>,
-        #[arg(long, help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)")]
+        #[arg(long, alias = "voice", help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)")]
         voice_id: String,
         #[arg(long, default_value = "1.0", help = "Speech speed: 0.5-2.0")]
         speed: f64,
@@ -224,6 +225,7 @@ enum TaskAction {
             help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
         task_type: String,
         #[arg(long,
+            alias = "model",
             value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
             help = "Model version (per-type compatibility enforced after parse)")]
         model_version: String,
@@ -252,7 +254,7 @@ enum TaskAction {
     TtsCost {
         #[arg(long, help = "Text content (cost is calculated by character count)")]
         text: String,
-        #[arg(long, help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)")]
+        #[arg(long, alias = "voice", help = "Voice ID (use 'vidu-cli task tts-voices' to list available voices)")]
         voice_id: String,
         #[arg(long, default_value = "1.0", help = "Speech speed: 0.5-2.0")]
         speed: f64,
@@ -269,7 +271,7 @@ enum TaskAction {
     LipSyncCost {
         #[arg(long, help = "Duration in seconds")]
         duration: i64,
-        #[arg(long, default_value = "English_Aussie_Bloke", help = "Voice ID")]
+        #[arg(long, alias = "voice", default_value = "English_Aussie_Bloke", help = "Voice ID")]
         voice_id: String,
         #[arg(long, default_value = "1.0", help = "Speech speed: 0.5-2.0")]
         speed: f64,
