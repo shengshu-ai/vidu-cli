@@ -609,8 +609,9 @@ pub fn submit_tts(
     subtitle_enable: bool,
     schedule_mode: Option<&str>,
 ) {
-    if subtitle_enable && !texts.is_empty() {
-        client::fail("client_error", "subtitle-enable currently supports only single --prompt", None, None, None);
+    // subtitle only supports single segment (--prompt or single --text)
+    if subtitle_enable && texts.len() > 1 {
+        client::fail("client_error", "subtitle-enable currently supports only single --prompt or single --text", None, None, None);
     }
 
     let schedule_mode = resolve_schedule_mode(schedule_mode);
