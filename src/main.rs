@@ -86,7 +86,7 @@ enum TaskAction {
         task_type: String,
         #[arg(long, help = "Text prompt (mutually preferred over --prompt-path when both are given).")]
         prompt: Option<String>,
-        #[arg(long = "prompt-path", value_name = "PATH", help = "Read the prompt from a UTF-8 file (≤1MiB). Ignored if --prompt is also set.")]
+        #[arg(long = "prompt-path", alias = "prompt-file", value_name = "PATH", help = "Read the prompt from a UTF-8 file (≤1MiB). Ignored if --prompt is also set.")]
         prompt_path: Option<String>,
         #[arg(long = "image", action = clap::ArgAction::Append, help = "Image input (local path, URL, or ssupload:?id=xxx). Repeatable.")]
         images: Vec<String>,
@@ -174,7 +174,7 @@ enum TaskAction {
     Tts {
         #[arg(long, help = "Single text segment (mutually exclusive with --text). Preferred over --prompt-path when both are given.", conflicts_with = "texts")]
         prompt: Option<String>,
-        #[arg(long = "prompt-path", value_name = "PATH", help = "Read the prompt from a UTF-8 file (≤1MiB). Ignored if --prompt is also set. Mutually exclusive with --text.", conflicts_with = "texts")]
+        #[arg(long = "prompt-path", alias = "prompt-file", value_name = "PATH", help = "Read the prompt from a UTF-8 file (≤1MiB). Ignored if --prompt is also set. Mutually exclusive with --text.", conflicts_with = "texts")]
         prompt_path: Option<String>,
         #[arg(long = "text", action = clap::ArgAction::Append, help = "Text segment, repeatable for multi-segment TTS (mutually exclusive with --prompt)", conflicts_with = "prompt")]
         texts: Vec<String>,
