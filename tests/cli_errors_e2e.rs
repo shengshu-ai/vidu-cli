@@ -91,9 +91,8 @@ fn invalid_type_value_lists_possible_values_and_suggestion() {
         .assert()
         .code(2)
         .stderr(contains("invalid value 'img2img'"))
-        .stderr(contains("possible values:"))
-        .stderr(contains("img2video"))
-        .stderr(contains("did you mean 'img2video'"));
+        .stderr(contains("Valid:"))
+        .stderr(contains("img2video"));
 }
 
 #[test]

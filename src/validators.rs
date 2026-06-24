@@ -22,6 +22,29 @@ pub const TASK_TYPES: &[&str] = &[
     "character2video",
 ];
 
+/// Type aliases: user-friendly shorthand -> canonical type
+pub const TYPE_ALIASES: &[(&str, &str)] = &[
+    ("img2image", "reference2image"),
+];
+
+/// Parse and normalize task type (handles aliases)
+pub fn parse_task_type(input: &str) -> Result<String, String> {
+    // Check aliases first
+    for (alias, canonical) in TYPE_ALIASES {
+        if input == *alias {
+            return Ok(canonical.to_string());
+        }
+    }
+    // Check canonical types
+    if TASK_TYPES.contains(&input) {
+        return Ok(input.to_string());
+    }
+    // Build error message
+    let mut all_types: Vec<&str> = TASK_TYPES.to_vec();
+    all_types.sort();
+    Err(format!("Invalid type '{}'. Valid: {}", input, all_types.join(", ")))
+}
+
 /// All accepted `--model-version` values across every task type
 /// (per-type compatibility is then enforced by `validate_task_body`).
 pub const MODEL_VERSIONS: &[&str] = &[

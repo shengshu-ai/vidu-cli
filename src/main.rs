@@ -81,8 +81,8 @@ enum TaskAction {
     ///   Inputs: image + material ≤ 7
     Submit {
         #[arg(long = "type", value_name = "TYPE",
-            value_parser = PossibleValuesParser::new(validators::TASK_TYPES),
-            help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
+            value_parser = validators::parse_task_type,
+            help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image (alias: img2image), character2video")]
         task_type: String,
         #[arg(long, help = "Text prompt (mutually preferred over --prompt-path when both are given).")]
         prompt: Option<String>,
@@ -221,8 +221,8 @@ enum TaskAction {
     /// Query credit cost for a task before submitting
     Cost {
         #[arg(long = "type", value_name = "TYPE",
-            value_parser = PossibleValuesParser::new(validators::TASK_TYPES),
-            help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image, character2video")]
+            value_parser = validators::parse_task_type,
+            help = "Task type: text2image, text2video, img2video, headtailimg2video, reference2image (alias: img2image), character2video")]
         task_type: String,
         #[arg(long,
             alias = "model",
