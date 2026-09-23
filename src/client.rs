@@ -22,7 +22,17 @@ fn render_message(message: &str, fields: Option<&Value>) -> String {
     }
 }
 
-pub fn fail_with_fields(error_type: &str, message: &str, http_status: Option<u16>, code: Option<&str>, step: Option<&str>, fields: Option<&Value>, trace_id: Option<&str>, cause: Option<&Value>, suggestion: Option<&str>) -> ! {
+pub fn fail_with_fields(
+    error_type: &str,
+    message: &str,
+    http_status: Option<u16>,
+    code: Option<&str>,
+    step: Option<&str>,
+    fields: Option<&Value>,
+    trace_id: Option<&str>,
+    cause: Option<&Value>,
+    suggestion: Option<&str>,
+) -> ! {
     let rendered_message = render_message(message, fields);
     let mut err = json!({"type": error_type, "message": rendered_message});
     if let Some(s) = http_status {
@@ -52,8 +62,24 @@ pub fn fail_with_fields(error_type: &str, message: &str, http_status: Option<u16
     process::exit(1);
 }
 
-pub fn fail(error_type: &str, message: &str, http_status: Option<u16>, code: Option<&str>, step: Option<&str>) -> ! {
-    fail_with_fields(error_type, message, http_status, code, step, None, None, None, None);
+pub fn fail(
+    error_type: &str,
+    message: &str,
+    http_status: Option<u16>,
+    code: Option<&str>,
+    step: Option<&str>,
+) -> ! {
+    fail_with_fields(
+        error_type,
+        message,
+        http_status,
+        code,
+        step,
+        None,
+        None,
+        None,
+        None,
+    );
 }
 
 pub fn ok(extra: Value) {
@@ -75,7 +101,10 @@ pub fn get_headers(extra: Option<&HashMap<String, String>>) -> HashMap<String, S
     let mut headers = HashMap::new();
     headers.insert("Authorization".into(), format!("Token {tok}"));
     headers.insert("Content-Type".into(), "application/json".into());
-    headers.insert("User-Agent".into(), format!("viduclawbot/1.0 (+{})", base_url()));
+    headers.insert(
+        "User-Agent".into(),
+        format!("viduclawbot/1.0 (+{})", base_url()),
+    );
     if let Some(e) = extra {
         for (k, v) in e {
             headers.insert(k.clone(), v.clone());
@@ -97,8 +126,18 @@ fn build_reqwest_headers(map: &HashMap<String, String>) -> reqwest::header::Head
     hm
 }
 
-fn parse_error_body(resp: Response) -> (String, String, Option<Value>, String, Option<Value>, Option<String>) {
-    let header_trace_id = resp.headers()
+fn parse_error_body(
+    resp: Response,
+) -> (
+    String,
+    String,
+    Option<Value>,
+    String,
+    Option<Value>,
+    Option<String>,
+) {
+    let header_trace_id = resp
+        .headers()
         .get("x-md-trace-id")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
@@ -109,12 +148,14 @@ fn parse_error_body(resp: Response) -> (String, String, Option<Value>, String, O
     }
     if let Ok(body) = serde_json::from_str::<Value>(&text) {
         let error_body = body.get("error").unwrap_or(&body);
-        let code = error_body.get("reason")
+        let code = error_body
+            .get("reason")
             .or_else(|| body.get("reason"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .or_else(|| {
-                error_body.get("code")
+                error_body
+                    .get("code")
                     .or_else(|| body.get("code"))
                     .or_else(|| error_body.get("err_code"))
                     .or_else(|| body.get("err_code"))
@@ -122,7 +163,8 @@ fn parse_error_body(resp: Response) -> (String, String, Option<Value>, String, O
                     .map(|s| s.to_string())
             })
             .or_else(|| {
-                error_body.get("code")
+                error_body
+                    .get("code")
                     .or_else(|| body.get("code"))
                     .or_else(|| error_body.get("err_code"))
                     .or_else(|| body.get("err_code"))
@@ -131,14 +173,16 @@ fn parse_error_body(resp: Response) -> (String, String, Option<Value>, String, O
             })
             .unwrap_or_default();
 
-        let msg = error_body.get("message")
+        let msg = error_body
+            .get("message")
             .or_else(|| error_body.get("msg"))
             .or_else(|| error_body.get("err_msg"))
             .and_then(|v| v.as_str())
             .unwrap_or(&text)
             .to_string();
 
-        let fields = error_body.get("metadata")
+        let fields = error_body
+            .get("metadata")
             .and_then(|m| m.get("fields"))
             .or_else(|| error_body.get("fields"))
             .or_else(|| body.get("metadata").and_then(|m| m.get("fields")))
@@ -147,7 +191,8 @@ fn parse_error_body(resp: Response) -> (String, String, Option<Value>, String, O
         let trace_id = if !header_trace_id.is_empty() {
             header_trace_id
         } else {
-            error_body.get("metadata")
+            error_body
+                .get("metadata")
                 .and_then(|m| m.get("trace_id"))
                 .or_else(|| error_body.get("trace_id"))
                 .or_else(|| body.get("metadata").and_then(|m| m.get("trace_id")))
@@ -156,12 +201,14 @@ fn parse_error_body(resp: Response) -> (String, String, Option<Value>, String, O
                 .unwrap_or("")
                 .to_string()
         };
-        let cause = error_body.get("cause")
+        let cause = error_body
+            .get("cause")
             .or_else(|| error_body.get("metadata").and_then(|m| m.get("cause")))
             .or_else(|| body.get("cause"))
             .or_else(|| body.get("metadata").and_then(|m| m.get("cause")))
             .cloned();
-        let suggestion = error_body.get("suggestion")
+        let suggestion = error_body
+            .get("suggestion")
             .or_else(|| error_body.get("metadata").and_then(|m| m.get("suggestion")))
             .or_else(|| body.get("suggestion"))
             .or_else(|| body.get("metadata").and_then(|m| m.get("suggestion")))
@@ -174,7 +221,14 @@ fn parse_error_body(resp: Response) -> (String, String, Option<Value>, String, O
     }
 }
 
-pub fn request(method: &str, url: &str, step: Option<&str>, retries: bool, body: Option<&Value>, params: Option<&HashMap<String, String>>) -> Response {
+pub fn request(
+    method: &str,
+    url: &str,
+    step: Option<&str>,
+    retries: bool,
+    body: Option<&Value>,
+    params: Option<&HashMap<String, String>>,
+) -> Response {
     let client = Client::new();
     let attempts = if retries { MAX_RETRIES } else { 1 };
     let headers_map = get_headers(None);
@@ -190,7 +244,9 @@ pub fn request(method: &str, url: &str, step: Option<&str>, retries: bool, body:
             "DELETE" => client.delete(url),
             _ => client.get(url),
         };
-        builder = builder.headers(headers.clone()).timeout(Duration::from_secs(30));
+        builder = builder
+            .headers(headers.clone())
+            .timeout(Duration::from_secs(30));
         if let Some(b) = body {
             builder = builder.json(b);
         }
@@ -208,9 +264,27 @@ pub fn request(method: &str, url: &str, step: Option<&str>, retries: bool, body:
                 }
                 if status >= 400 {
                     let (code, msg, fields, trace_id, cause, suggestion) = parse_error_body(resp);
-                    let code_opt = if code.is_empty() { None } else { Some(code.as_str()) };
-                    let tid_opt = if trace_id.is_empty() { None } else { Some(trace_id.as_str()) };
-                    fail_with_fields("http_error", &msg, Some(status), code_opt, step, fields.as_ref(), tid_opt, cause.as_ref(), suggestion.as_deref());
+                    let code_opt = if code.is_empty() {
+                        None
+                    } else {
+                        Some(code.as_str())
+                    };
+                    let tid_opt = if trace_id.is_empty() {
+                        None
+                    } else {
+                        Some(trace_id.as_str())
+                    };
+                    fail_with_fields(
+                        "http_error",
+                        &msg,
+                        Some(status),
+                        code_opt,
+                        step,
+                        fields.as_ref(),
+                        tid_opt,
+                        cause.as_ref(),
+                        suggestion.as_deref(),
+                    );
                 }
                 return resp;
             }
@@ -234,16 +308,41 @@ pub fn request(method: &str, url: &str, step: Option<&str>, retries: bool, body:
     if let Some(resp) = last_resp {
         let status = resp.status().as_u16();
         let (code, msg, fields, trace_id, cause, suggestion) = parse_error_body(resp);
-        let code_opt = if code.is_empty() { None } else { Some(code.as_str()) };
-        let tid_opt = if trace_id.is_empty() { None } else { Some(trace_id.as_str()) };
-        fail_with_fields("http_error", &msg, Some(status), code_opt, step, fields.as_ref(), tid_opt, cause.as_ref(), suggestion.as_deref());
+        let code_opt = if code.is_empty() {
+            None
+        } else {
+            Some(code.as_str())
+        };
+        let tid_opt = if trace_id.is_empty() {
+            None
+        } else {
+            Some(trace_id.as_str())
+        };
+        fail_with_fields(
+            "http_error",
+            &msg,
+            Some(status),
+            code_opt,
+            step,
+            fields.as_ref(),
+            tid_opt,
+            cause.as_ref(),
+            suggestion.as_deref(),
+        );
     }
     fail("network_error", "unknown error", None, None, step);
 }
 
-pub fn request_json(method: &str, url: &str, step: Option<&str>, body: Option<&Value>, params: Option<&HashMap<String, String>>) -> Value {
+pub fn request_json(
+    method: &str,
+    url: &str,
+    step: Option<&str>,
+    body: Option<&Value>,
+    params: Option<&HashMap<String, String>>,
+) -> Value {
     let resp = request(method, url, step, true, body, params);
-    let trace_id = resp.headers()
+    let trace_id = resp
+        .headers()
         .get("x-md-trace-id")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
@@ -266,18 +365,35 @@ pub fn request_json(method: &str, url: &str, step: Option<&str>, body: Option<&V
         }
         Err(_) => {
             let truncated: String = text.chars().take(200).collect();
-            fail("parse_error", &format!("Response is not valid JSON: {truncated}"), None, None, step);
+            fail(
+                "parse_error",
+                &format!("Response is not valid JSON: {truncated}"),
+                None,
+                None,
+                step,
+            );
         }
     }
 }
 
-pub fn put_raw(url: &str, data: Vec<u8>, headers_map: &HashMap<String, String>, step: Option<&str>) -> (String,) {
+pub fn put_raw(
+    url: &str,
+    data: Vec<u8>,
+    headers_map: &HashMap<String, String>,
+    step: Option<&str>,
+) -> (String,) {
     let client = Client::new();
     let headers = build_reqwest_headers(headers_map);
     let mut last_exc: Option<String> = None;
 
     for i in 0..MAX_RETRIES {
-        match client.put(url).headers(headers.clone()).body(data.clone()).timeout(Duration::from_secs(60)).send() {
+        match client
+            .put(url)
+            .headers(headers.clone())
+            .body(data.clone())
+            .timeout(Duration::from_secs(60))
+            .send()
+        {
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 if status >= 500 && i < MAX_RETRIES - 1 {
@@ -286,31 +402,60 @@ pub fn put_raw(url: &str, data: Vec<u8>, headers_map: &HashMap<String, String>, 
                 }
                 if status >= 400 {
                     let text: String = resp.text().unwrap_or_default().chars().take(200).collect();
-                    fail("http_error", &format!("PUT failed: {text}"), Some(status), None, step);
+                    fail(
+                        "http_error",
+                        &format!("PUT failed: {text}"),
+                        Some(status),
+                        None,
+                        step,
+                    );
                 }
-                let etag = resp.headers().get("ETag")
+                let etag = resp
+                    .headers()
+                    .get("ETag")
                     .map(|v| v.to_str().unwrap_or("").to_string())
                     .unwrap_or_default();
                 return (etag,);
             }
             Err(e) => {
-                last_exc = Some(if e.is_timeout() { "timeout".into() } else { e.to_string() });
+                last_exc = Some(if e.is_timeout() {
+                    "timeout".into()
+                } else {
+                    e.to_string()
+                });
                 if i < MAX_RETRIES - 1 {
                     thread::sleep(Duration::from_secs(RETRY_DELAYS[i]));
                 }
             }
         }
     }
-    fail("network_error", &last_exc.unwrap_or_default(), None, None, step);
+    fail(
+        "network_error",
+        &last_exc.unwrap_or_default(),
+        None,
+        None,
+        step,
+    );
 }
 
-pub fn put_raw_large(url: &str, data: Vec<u8>, headers_map: &HashMap<String, String>, step: Option<&str>) -> (String,) {
+pub fn put_raw_large(
+    url: &str,
+    data: Vec<u8>,
+    headers_map: &HashMap<String, String>,
+    step: Option<&str>,
+) -> (String,) {
     let client = Client::new();
     let headers = build_reqwest_headers(headers_map);
     let mut last_exc: Option<String> = None;
 
     for i in 0..MAX_RETRIES {
-        match client.put(url).headers(headers.clone()).body(data.clone()).timeout(Duration::from_secs(600)).send() {
+        match client
+            .put(url)
+            .headers(headers.clone())
+            .body(data.clone())
+            .timeout(Duration::from_secs(600))
+            .send()
+        {
             Ok(resp) => {
                 let status = resp.status().as_u16();
                 if status >= 500 && i < MAX_RETRIES - 1 {
@@ -319,20 +464,38 @@ pub fn put_raw_large(url: &str, data: Vec<u8>, headers_map: &HashMap<String, Str
                 }
                 if status >= 400 {
                     let text: String = resp.text().unwrap_or_default().chars().take(200).collect();
-                    fail("http_error", &format!("PUT failed: {text}"), Some(status), None, step);
+                    fail(
+                        "http_error",
+                        &format!("PUT failed: {text}"),
+                        Some(status),
+                        None,
+                        step,
+                    );
                 }
-                let etag = resp.headers().get("ETag")
+                let etag = resp
+                    .headers()
+                    .get("ETag")
                     .map(|v| v.to_str().unwrap_or("").to_string())
                     .unwrap_or_default();
                 return (etag,);
             }
             Err(e) => {
-                last_exc = Some(if e.is_timeout() { "timeout".into() } else { e.to_string() });
+                last_exc = Some(if e.is_timeout() {
+                    "timeout".into()
+                } else {
+                    e.to_string()
+                });
                 if i < MAX_RETRIES - 1 {
                     thread::sleep(Duration::from_secs(RETRY_DELAYS[i]));
                 }
             }
         }
     }
-    fail("network_error", &last_exc.unwrap_or_default(), None, None, step);
+    fail(
+        "network_error",
+        &last_exc.unwrap_or_default(),
+        None,
+        None,
+        step,
+    );
 }
