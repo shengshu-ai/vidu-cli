@@ -201,7 +201,11 @@ fn ctx_strings(err: &ClapError, kind: ContextKind) -> Vec<String> {
 fn ctx_displayed(err: &ClapError, kind: ContextKind) -> Option<String> {
     let v = err.get(kind)?;
     let s = v.to_string();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 fn invalid_subcommand(err: &ClapError) -> Option<String> {
@@ -221,7 +225,10 @@ fn invalid_value(err: &ClapError) -> Option<String> {
 /// whether it was filed under SuggestedSubcommand or SuggestedValue and
 /// whether it was a single string or a list.
 fn suggested_value(err: &ClapError) -> Option<String> {
-    for kind in [ContextKind::SuggestedSubcommand, ContextKind::SuggestedValue] {
+    for kind in [
+        ContextKind::SuggestedSubcommand,
+        ContextKind::SuggestedValue,
+    ] {
         if let Some(s) = ctx_string(err, kind) {
             return Some(s);
         }
@@ -376,7 +383,10 @@ mod tests {
     #[test]
     fn invalid_top_level_subcommand_lists_available_and_suggests() {
         let out = render_for(&["vidu-cli", "tasks"]);
-        assert!(out.contains("unrecognized subcommand 'tasks'"), "got: {out}");
+        assert!(
+            out.contains("unrecognized subcommand 'tasks'"),
+            "got: {out}"
+        );
         assert!(out.contains("under 'vidu-cli'"), "got: {out}");
         assert!(out.contains("available: quota, task"), "got: {out}");
         assert!(out.contains("did you mean 'task'"), "got: {out}");
@@ -413,10 +423,7 @@ mod tests {
         let out = render_for(&["vidu-cli", "task", "submit"]);
         assert!(out.contains("missing required arguments:"), "got: {out}");
         assert!(out.contains("--type <TASK_TYPE>"), "got: {out}");
-        assert!(
-            out.contains("`vidu-cli task submit --help`"),
-            "got: {out}"
-        );
+        assert!(out.contains("`vidu-cli task submit --help`"), "got: {out}");
     }
 
     #[test]
