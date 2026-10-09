@@ -6,8 +6,7 @@
 //! renderer in isolation; this file covers the wiring through `main()` +
 //! `parse_or_exit` + `ExitCode` propagation.
 //!
-//! No network or auth required — all of these fail at parse time before
-//! any HTTP call.
+//! No network or auth required; validation failures happen before HTTP calls.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -144,4 +143,19 @@ fn missing_required_lists_each_arg_with_help_tip() {
         .stderr(contains("--model-version"))
         .stderr(contains("--resolution"))
         .stderr(contains("`vidu-cli task submit --help`"));
+}
+
+#[test]
+fn q4_pass_is_rejected_before_auth_or_upload() {
+    for action in ["submit", "cost"] {
+        let mut command = cli();
+        command.env_remove("VIDU_TOKEN").args([
+            "task", action, "--type", "img2video", "--model-version", "3.4",
+            "--duration", "3", "--resolution", "1080p", "--schedule-mode", "claw_pass",
+        ]);
+        if action == "submit" {
+            command.args(["--prompt", "test", "--image", "/does/not/exist.jpg"]);
+        }
+        command.assert().failure().stdout(contains("Q4 only supports credits"));
+    }
 }

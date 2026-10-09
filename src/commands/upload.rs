@@ -7,6 +7,25 @@ use std::io::Cursor;
 
 const MAX_SIZE_MB: u64 = 10;
 
+fn upload_headers(reply: &serde_json::Value, mime: String) -> HashMap<String, String> {
+    let mut headers: HashMap<String, String> = match reply.get("headers") {
+        None | Some(serde_json::Value::Null) => HashMap::new(),
+        Some(value) => serde_json::from_value(value.clone()).unwrap_or_else(|error| {
+            client::fail(
+                "parse_error",
+                &format!("Invalid upload headers: {error}"),
+                None,
+                None,
+                Some("create_upload"),
+            )
+        }),
+    };
+    if !headers.keys().any(|key| key.eq_ignore_ascii_case("content-type")) {
+        headers.insert("Content-Type".into(), mime);
+    }
+    headers
+}
+
 fn compress_image_if_needed(path: &str) -> (Vec<u8>, u32, u32, String) {
     let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let img = match image::open(path) {
@@ -127,10 +146,7 @@ pub fn upload_and_get_uri(image_path: &str) -> String {
     }
 
     // Step 2: PUT image bytes
-    let mut put_headers = HashMap::new();
-    put_headers.insert("Content-Type".into(), mime);
-    put_headers.insert("x-amz-meta-image-width".into(), width.to_string());
-    put_headers.insert("x-amz-meta-image-height".into(), height.to_string());
+    let put_headers = upload_headers(&data, mime);
     let (etag,) = client::put_raw(put_url, image_bytes, &put_headers, Some("put_image"));
 
     // Step 3: Finish upload
@@ -300,19 +316,7 @@ pub fn upload_media_and_get_uri_with_metadata(
     }
 
     // Step 2: PUT raw bytes (large file timeout)
-    let mut put_headers = HashMap::new();
-    put_headers.insert("Content-Type".into(), mime);
-    if let Some(meta) = &metadata {
-        for (key, value) in meta {
-            let header_key = format!("x-amz-meta-{}", key);
-            let header_value = match value {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Number(n) => n.to_string(),
-                _ => value.to_string(),
-            };
-            put_headers.insert(header_key, header_value);
-        }
-    }
+    let put_headers = upload_headers(&data, mime);
     let (etag,) = client::put_raw_large(put_url, bytes, &put_headers, Some("put_media"));
 
     // Step 3: Finish upload
@@ -326,4 +330,30 @@ pub fn upload_media_and_get_uri_with_metadata(
     );
 
     format!("ssupload:?id={}", upload_id_str)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upload_headers_preserve_provider_values_and_content_type_casing() {
+        let headers = upload_headers(
+            &json!({"headers": {"x-oss-meta-duration": "10", "content-type": "audio/x-wav"}}),
+            "audio/wav".into(),
+        );
+        assert_eq!(headers["x-oss-meta-duration"], "10");
+        assert_eq!(headers["content-type"], "audio/x-wav");
+        assert_eq!(headers.len(), 2);
+    }
+
+    #[test]
+    fn upload_headers_default_content_type_when_not_supplied() {
+        for reply in [json!({}), json!({"headers": null}), json!({"headers": {}})] {
+            assert_eq!(
+                upload_headers(&reply, "audio/wav".into()),
+                HashMap::from([("Content-Type".into(), "audio/wav".into())]),
+            );
+        }
+    }
 }

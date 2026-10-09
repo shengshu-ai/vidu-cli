@@ -75,7 +75,8 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> --duration <DURATION> \
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--schedule-mode` | auto | `claw_pass`（每日配额）或 `normal`（积分），省略时自动检测 |
+| `--schedule-mode` | auto | Q4 使用 `normal`（积分），拒绝 `claw_pass`；其他模型省略时自动检测 |
+| `--audio` | - | `character2video` 的 `3.2_a` 或 `3.4`（Q4）参考音频；可重复传入，最多 3 个，支持本地 WAV/MP3 或 `ssupload` URI |
 | `--transition` | - | `img2video` / `headtailimg2video`：`3.0` 使用 `creative` / `stable`，`3.1` / `3.2` 必须传 `pro` / `speed`；`character2video 3.2` 也必须传 `pro` / `speed`；`text2video` 仅 `3.2` 支持 |
 | `--sample-count` | 1 | 生成样本数 |
 | `--codec` | h265 | 输出视频编码 |
@@ -90,8 +91,15 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> --duration <DURATION> \
 | `img2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — |
 | `headtailimg2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — |
 | `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 |
+| `character2video`（Q4） | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0（图片） | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0（图片） | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
+
+Q4 本地参考音频每段 1-16 秒，最多 3 段，不套用 `3.2_a` 的合计 15 秒限制。
+Q4 支持文本加纯音频参考，有音频时图片或 material 可不传。
+`3.2_a` 保持每段 2-15 秒、合计不超过 15 秒的规则。
+本地 WAV/MP3 文件仍限制为每个不超过 15 MB；音频校验在图片上传前完成，
+已有 `ssupload` 引用的元数据由服务端校验。
 
 **示例：**
 
