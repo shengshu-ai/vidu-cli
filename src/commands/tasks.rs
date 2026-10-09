@@ -3,13 +3,11 @@ use lofty::prelude::AudioFile;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
-fn resolve_schedule_mode(explicit: Option<&str>) -> String {
-    if let Some(mode) = explicit {
-        let err = validators::validate_schedule_mode(mode);
-        if !err.is_empty() {
-            client::fail("client_error", &err, None, None, None);
-        }
-        return mode.to_string();
+fn resolve_schedule_mode(explicit: Option<&str>, model_version: Option<&str>) -> String {
+    match validators::preferred_schedule_mode(model_version, explicit) {
+        Ok(Some(mode)) => return mode,
+        Ok(None) => {}
+        Err(err) => client::fail("client_error", &err, None, None, None),
     }
     let base = client::base_url();
     let data = client::request_json(
@@ -101,6 +99,59 @@ fn upload_local_file(path: &str) -> String {
     crate::commands::upload::upload_and_get_uri(path)
 }
 
+fn reference_audio_durations(
+    task_type: &str,
+    model_version: &str,
+    audios: &[String],
+) -> Vec<Option<f64>> {
+    let err = validators::validate_reference_audio_count(task_type, model_version, audios.len());
+    if !err.is_empty() {
+        client::fail("client_error", &err, None, None, None);
+    }
+    let (min, max) = if model_version == "3.4" {
+        (1.0, 16.0)
+    } else {
+        (2.0, 15.0)
+    };
+    let mut total = 0.0;
+    audios
+        .iter()
+        .map(|audio| {
+            if audio.starts_with("ssupload:") {
+                return None;
+            }
+            if audio.starts_with("http://") || audio.starts_with("https://") {
+                client::fail("client_error", "HTTP/HTTPS URLs are not supported for audio input. Use a local file path or ssupload:?id=...", None, None, None);
+            }
+            let err = validators::validate_reference_audio_file(audio);
+            if !err.is_empty() {
+                client::fail("client_error", &err, None, None, None);
+            }
+            let duration = read_audio_duration_f64(audio);
+            if !(min..=max).contains(&duration) {
+                client::fail(
+                    "client_error",
+                    &format!("Audio duration {:.3}s out of range [{}, {}]s", duration, min, max),
+                    None,
+                    None,
+                    None,
+                );
+            }
+            total += duration;
+            if model_version == "3.2_a" && total > 15.0 {
+                client::fail(
+                    "client_error",
+                    &format!("Total audio duration {:.1}s exceeds 15s", total),
+                    None,
+                    None,
+                    None,
+                );
+            }
+            Some(duration)
+        })
+        .collect()
+}
+
 pub fn submit(
     task_type: &str,
     prompt: Option<&str>,
@@ -128,7 +179,8 @@ pub fn submit(
             None,
         )
     });
-    let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let schedule_mode = resolve_schedule_mode(schedule_mode, Some(model_version));
+    let audio_durations = reference_audio_durations(task_type, model_version, audios);
     let is_image_type = task_type == "text2image" || task_type == "reference2image";
     let duration = if is_image_type {
         0
@@ -178,64 +230,16 @@ pub fn submit(
         }));
     }
 
-    if !audios.is_empty() && !(model_version == "3.2_a" && task_type == "character2video") {
-        client::fail(
-            "client_error",
-            "Audio input is only supported for character2video with model_version 3.2_a",
-            None,
-            None,
-            None,
-        );
-    }
-    if audios.len() > 3 {
-        client::fail(
-            "client_error",
-            &format!("Too many audio inputs: {}. Max: 3", audios.len()),
-            None,
-            None,
-            None,
-        );
-    }
-    let mut total_audio_duration = 0.0f64;
-    for audio_input in audios {
-        let uri = if audio_input.starts_with("ssupload:") {
-            audio_input.clone()
-        } else if audio_input.starts_with("http://") || audio_input.starts_with("https://") {
-            client::fail("client_error", "HTTP/HTTPS URLs are not supported for audio input. Use a local file path or ssupload:?id=...", None, None, None);
-        } else {
-            let err = validators::validate_reference_audio_file(audio_input);
-            if !err.is_empty() {
-                client::fail("client_error", &err, None, None, None);
-            }
-            let dur = read_audio_duration_f64(audio_input);
-            if !(2.0..=15.0).contains(&dur) {
-                client::fail(
-                    "client_error",
-                    &format!("Audio duration {:.1}s out of range [2, 15]s", dur),
-                    None,
-                    None,
-                    None,
-                );
-            }
-            total_audio_duration += dur;
-            if total_audio_duration > 15.0 {
-                client::fail(
-                    "client_error",
-                    &format!(
-                        "Total audio duration {:.1}s exceeds 15s",
-                        total_audio_duration
-                    ),
-                    None,
-                    None,
-                    None,
-                );
-            }
+    for (audio_input, duration) in audios.iter().zip(audio_durations) {
+        let uri = if let Some(duration) = duration {
             let mut metadata = serde_json::Map::new();
-            metadata.insert("duration".to_string(), json!(dur.to_string()));
+            metadata.insert("duration".to_string(), json!(duration.to_string()));
             crate::commands::upload::upload_media_and_get_uri_with_metadata(
                 audio_input,
                 Some(metadata),
             )
+        } else {
+            audio_input.clone()
         };
         let name = Path::new(audio_input)
             .file_name()
@@ -744,7 +748,7 @@ pub fn submit_lip_sync(
         _ => {}
     }
 
-    let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let schedule_mode = resolve_schedule_mode(schedule_mode, None);
     let codec = if codec == "h265" && !crate::commands::upload::ffprobe_available() {
         "h264"
     } else {
@@ -942,7 +946,7 @@ pub fn submit_tts(
         );
     }
 
-    let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let schedule_mode = resolve_schedule_mode(schedule_mode, None);
     // 1. 构建 (content, Option<emotion>) 列表
     // --prompt wins over --prompt-path; the resolver yields an owned String so
     // the borrows in `segments` stay valid.
@@ -1153,7 +1157,7 @@ pub fn compose(
     height: Option<i32>,
     schedule_mode: Option<&str>,
 ) {
-    let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let schedule_mode = resolve_schedule_mode(schedule_mode, None);
     let mut timeline = parse_timeline(timeline_input);
     validate_timeline_clips(&timeline);
     normalize_timeline_urls(&mut timeline);
@@ -1546,7 +1550,7 @@ pub fn query_credits(
     codec: &str,
     schedule_mode: Option<&str>,
 ) {
-    let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let schedule_mode = resolve_schedule_mode(schedule_mode, Some(model_version));
     let is_image_type = task_type == "text2image" || task_type == "reference2image";
     let duration = if is_image_type {
         0
@@ -1563,6 +1567,12 @@ pub fn query_credits(
         }
     };
 
+    if model_version == "3.4" {
+        let err = validators::validate_q4_cost(task_type, duration, resolution, transition);
+        if !err.is_empty() {
+            client::fail("client_error", &err, None, None, None);
+        }
+    }
     let mut params = std::collections::HashMap::new();
     params.insert("type".to_string(), task_type.to_string());
     params.insert(
@@ -1607,7 +1617,7 @@ pub fn query_tts_credits(
     volume: i32,
     schedule_mode: Option<&str>,
 ) {
-    let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let schedule_mode = resolve_schedule_mode(schedule_mode, None);
 
     let mut params = std::collections::HashMap::new();
     params.insert("type".to_string(), "tts".to_string());
@@ -1640,7 +1650,7 @@ pub fn query_lip_sync_credits(
     codec: &str,
     schedule_mode: Option<&str>,
 ) {
-    let schedule_mode = resolve_schedule_mode(schedule_mode);
+    let schedule_mode = resolve_schedule_mode(schedule_mode, None);
 
     let mut params = std::collections::HashMap::new();
     params.insert("type".to_string(), "lip_sync".to_string());
@@ -1677,6 +1687,9 @@ fn output_credits_result(data: &serde_json::Value) {
 
     if let Some(claw) = data.get("claw_pass_quota") {
         result["claw_pass_quota"] = crate::commands::quota::format_claw_pass_json(claw);
+    }
+    if let Some(quote) = data.get("claw_pass_quote") {
+        result["claw_pass_quote"] = quote.clone();
     }
 
     client::ok(result);

@@ -53,9 +53,9 @@ enum TaskAction {
     ///   Transition: 3.2 only (pro/speed)
     ///
     /// TYPE: img2video
-    ///   Models: 3.0, 3.1, 3.2, 3.2_a
-    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s
-    ///   Resolution: 1080p
+    ///   Models: 3.0, 3.1, 3.2, 3.2_a, 3.4 (Q4, credits only)
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s, 3.4→3-16s
+    ///   Resolution: 1080p; Q4 also supports 540p, 720p, 2k, 4k
     ///   Transition: 3.0→creative/stable, 3.1/3.2→required pro/speed
     ///   Images: 1 required
     ///
@@ -74,9 +74,9 @@ enum TaskAction {
     ///   Inputs: image + material ≤ 7
     ///
     /// TYPE: character2video
-    ///   Models: 3.0, 3.1, 3.1_pro, 3.2, 3.2_a
-    ///   Duration: 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s
-    ///   Resolution: 1080p
+    ///   Models: 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.4 (Q4, credits only)
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s, 3.4→1-16s
+    ///   Resolution: 1080p; Q4 also supports 540p, 720p, 2k, 4k
     ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
     ///   Inputs: image + material ≤ 7
     Submit {
@@ -100,20 +100,24 @@ enum TaskAction {
         images: Vec<String>,
         #[arg(long = "material", action = clap::ArgAction::Append, help = "Material reference (format: name:id:version). Repeatable.")]
         materials: Vec<String>,
-        #[arg(long = "audio", action = clap::ArgAction::Append, help = "Audio input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a only. Max 3, total duration ≤15s.")]
+        #[arg(
+            long = "audio",
+            action = clap::ArgAction::Append,
+            help = "Reference audio (local WAV/MP3 path or ssupload:?id=xxx). character2video + 3.2_a or 3.4 (Q4), max 3. Q4: each 1-16s, audio-only references allowed. 3.2_a: each 2-15s, total <=15s."
+        )]
         audios: Vec<String>,
         #[arg(long = "video", action = clap::ArgAction::Append, help = "Video input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a only. Max 3, total duration ≤15s.")]
         videos: Vec<String>,
         #[arg(
             long,
             allow_negative_numbers = true,
-            help = "Duration in seconds. Required for video tasks. Range depends on model: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(4-15). Ignored for image tasks."
+            help = "Video duration: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(4-15), Q4 img2video(3-16)/character2video(1-16). Ignored for images."
         )]
         duration: Option<i64>,
         #[arg(long,
             alias = "model",
             value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
-            help = "Model version (per-type compatibility enforced after parse): 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro")]
+            help = "Model version (per-type compatibility enforced after parse): 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.4 (Q4), 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro")]
         model_version: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::ASPECT_RATIOS),
@@ -125,7 +129,7 @@ enum TaskAction {
         transition: Option<String>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::RESOLUTIONS),
-            help = "Resolution: 1080p (all), 720p (3.2_a only), 2k/4k (text2image/reference2image only)")]
+            help = "Resolution: 1080p (all), 720p (3.2_a/Q4), 2k/4k (images/Q4), 540p (Q4 only)")]
         resolution: String,
         #[arg(long, default_value = "1")]
         sample_count: i64,
@@ -136,7 +140,7 @@ enum TaskAction {
         movement_amplitude: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+            help = "Q4 uses normal (credits) and rejects claw_pass. Other models auto-detect pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// Get task result
@@ -290,7 +294,7 @@ enum TaskAction {
         codec: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+            help = "Q4 uses normal (credits) and rejects claw_pass. Other models auto-detect pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// Query credit cost for a TTS task before submitting

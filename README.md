@@ -73,7 +73,8 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> --duration <DURATION> \
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--schedule-mode` | auto | `claw_pass` (daily quota) or `normal` (credits). Auto-detected if omitted |
+| `--schedule-mode` | auto | Q4 uses `normal` (credits) and rejects `claw_pass`. Other models auto-detect when omitted |
+| `--audio` | - | Reference audio for `character2video` with `3.2_a` or `3.4` (Q4). Repeatable, max 3; local WAV/MP3 or `ssupload` URI |
 | `--transition` | - | For `img2video` / `headtailimg2video`: `3.0` uses `creative` / `stable`, `3.1` / `3.2` require `pro` / `speed`; `character2video 3.2` also requires `pro` / `speed`; `text2video` supports it only on `3.2` |
 | `--sample-count` | 1 | Number of samples to generate |
 | `--codec` | h265 | Output video codec |
@@ -88,8 +89,17 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> --duration <DURATION> \
 | `img2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — |
 | `headtailimg2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — |
 | `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 |
+| `character2video` (Q4) | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
+
+Q4 reference audio: each local file must be 1-16 seconds. Up to 3 files are
+allowed without the `3.2_a` combined 15-second limit. Q4 accepts audio-only
+references with a text prompt; image/material references are optional when
+audio is present. `3.2_a` keeps its per-file 2-15 second and combined
+15-second limits. Local WAV/MP3 files remain limited to 15 MB each.
+Audio validation runs before image uploads. Existing `ssupload` references
+are checked by the server.
 
 **Examples:**
 

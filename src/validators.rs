@@ -55,6 +55,7 @@ pub const MODEL_VERSIONS: &[&str] = &[
     "3.1_pro",
     "3.2",
     "3.2_a",
+    "3.4",
     "3.2_fast_m",
     "3.2_pro_m",
     "3.2_image_2",
@@ -62,8 +63,7 @@ pub const MODEL_VERSIONS: &[&str] = &[
     "3.2_image_2_5_pro",
 ];
 
-/// All accepted `--resolution` values (1080p universal, 2k/4k for image tasks).
-pub const RESOLUTIONS: &[&str] = &["720p", "1080p", "2k", "4k"];
+pub const RESOLUTIONS: &[&str] = &["540p", "720p", "1080p", "2k", "4k"];
 
 /// All accepted `--aspect-ratio` values.
 pub const ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4"];
@@ -153,13 +153,16 @@ fn duration_ranges() -> HashMap<String, HashMap<String, (i64, i64)>> {
     tv.insert("3.1".into(), (2, 8));
     tv.insert("3.2".into(), (1, 16));
     m.insert("text2video".into(), tv.clone());
-    m.insert("img2video".into(), tv.clone());
+    let mut iv = tv.clone();
+    iv.insert("3.4".into(), (3, 16));
+    m.insert("img2video".into(), iv);
     m.insert("headtailimg2video".into(), tv);
     let mut cv = HashMap::new();
     cv.insert("3.0".into(), (5, 5));
     cv.insert("3.1".into(), (2, 8));
     cv.insert("3.1_pro".into(), (-1, 8));
     cv.insert("3.2".into(), (1, 16));
+    cv.insert("3.4".into(), (1, 16));
     m.insert("character2video".into(), cv);
     let mut ri = HashMap::new();
     ri.insert("3.1".into(), (0, 0));
@@ -187,7 +190,10 @@ fn model_support() -> HashMap<String, HashSet<String>> {
         ]),
     );
     m.insert("text2video".into(), set(&["3.0", "3.1", "3.2", "3.2_a"]));
-    m.insert("img2video".into(), set(&["3.0", "3.1", "3.2", "3.2_a"]));
+    m.insert(
+        "img2video".into(),
+        set(&["3.0", "3.1", "3.2", "3.2_a", "3.4"]),
+    );
     m.insert(
         "headtailimg2video".into(),
         set(&["3.0", "3.1", "3.2", "3.2_a"]),
@@ -205,7 +211,7 @@ fn model_support() -> HashMap<String, HashSet<String>> {
     );
     m.insert(
         "character2video".into(),
-        set(&["3.0", "3.1", "3.1_pro", "3.2", "3.2_a"]),
+        set(&["3.0", "3.1", "3.1_pro", "3.2", "3.2_a", "3.4"]),
     );
     m
 }
@@ -250,6 +256,10 @@ pub fn validate_task_body(body: &Value) -> String {
     let material_count = prompts_arr
         .iter()
         .filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("material"))
+        .count();
+    let audio_count = prompts_arr
+        .iter()
+        .filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("audio"))
         .count();
 
     // Validate counts by task type
@@ -300,6 +310,18 @@ pub fn validate_task_body(body: &Value) -> String {
         }
     }
 
+    let audio_error = validate_reference_audio_count(task_type, model_version, audio_count);
+    if !audio_error.is_empty() {
+        return audio_error;
+    }
+
+    if model_version == "3.4"
+        && task_type == "character2video"
+        && image_count + material_count + audio_count == 0
+    {
+        return "Q4 character2video requires an image, material or audio reference".into();
+    }
+
     let duration = settings
         .get("duration")
         .and_then(|v| v.as_i64())
@@ -342,6 +364,8 @@ pub fn validate_task_body(body: &Value) -> String {
         .unwrap_or_else(|| set(&["1080p"]));
     if model_version == "3.2_a" {
         valid_res.insert("720p".into());
+    } else if model_version == "3.4" {
+        valid_res = set(RESOLUTIONS);
     }
     if !valid_res.contains(res) {
         return format!(
@@ -366,6 +390,10 @@ pub fn validate_task_body(body: &Value) -> String {
     }
 
     let transition = settings.get("transition").and_then(|v| v.as_str());
+
+    if model_version == "3.4" && transition.is_some() {
+        return "Q4 should not include transition".into();
+    }
 
     if transition.is_some() {
         let no_trans = ["reference2image", "text2image"];
@@ -439,13 +467,54 @@ pub fn validate_task_body(body: &Value) -> String {
         return "input.enhance is required (true or false)".into();
     }
 
-    if let Some(sm) = settings.get("schedule_mode").and_then(|v| v.as_str()) {
-        let err = validate_schedule_mode(sm);
-        if !err.is_empty() {
-            return err;
-        }
+    if let Err(err) = preferred_schedule_mode(
+        Some(model_version),
+        settings.get("schedule_mode").and_then(Value::as_str),
+    ) {
+        return err;
     }
 
+    String::new()
+}
+
+pub fn preferred_schedule_mode(
+    model_version: Option<&str>,
+    explicit: Option<&str>,
+) -> Result<Option<String>, String> {
+    let mode = explicit.or_else(|| {
+        (model_version == Some("3.4")).then_some("normal")
+    });
+    if let Some(mode) = mode {
+        let err = validate_schedule_mode(mode);
+        if !err.is_empty() {
+            return Err(err);
+        }
+        if model_version == Some("3.4") && mode != "normal" {
+            return Err("Q4 only supports credits; use --schedule-mode normal".into());
+        }
+    }
+    Ok(mode.map(str::to_string))
+}
+
+pub fn validate_q4_cost(
+    task_type: &str,
+    duration: i64,
+    resolution: &str,
+    transition: Option<&str>,
+) -> String {
+    let ranges = duration_ranges();
+    let Some(&(min, max)) = ranges.get(task_type).and_then(|r| r.get("3.4")) else {
+        return format!("model_version 3.4 does not support {}", task_type);
+    };
+    if !(min..=max).contains(&duration) {
+        return format!("duration {} out of range [{}, {}] for Q4 {}", duration, min, max, task_type);
+    }
+    if !RESOLUTIONS.contains(&resolution) {
+        return format!("Invalid resolution '{}' for Q4", resolution);
+    }
+    if transition.is_some() {
+        return "Q4 should not include transition".into();
+    }
     String::new()
 }
 
@@ -539,6 +608,19 @@ pub fn validate_audio_file(path: &str) -> String {
             "Audio file too large ({:.1}MB). Max: 100MB",
             size as f64 / 1024.0 / 1024.0
         );
+    }
+    String::new()
+}
+
+pub fn validate_reference_audio_count(task_type: &str, model_version: &str, count: usize) -> String {
+    if count == 0 {
+        return String::new();
+    }
+    if task_type != "character2video" || !["3.2_a", "3.4"].contains(&model_version) {
+        return "Audio input is only supported for character2video with model_version 3.2_a or 3.4".into();
+    }
+    if count > 3 {
+        return format!("Too many audio inputs: {}. Max: 3", count);
     }
     String::new()
 }
@@ -1220,6 +1302,81 @@ mod tests {
                 "schedule_mode": "normal",
             }
         })
+    }
+
+    #[test]
+    fn q4_basic_options_match_submit_and_cost() {
+        for (task_type, min) in [("img2video", 3), ("character2video", 1)] {
+            for duration in [min, 16] {
+                for resolution in RESOLUTIONS {
+                    let mut body = make_body(task_type, "3.4", duration, 1, 0);
+                    body["settings"]["resolution"] = json!(resolution);
+                    assert_eq!(validate_task_body(&body), "");
+                    assert_eq!(validate_q4_cost(task_type, duration, resolution, None), "");
+                }
+            }
+            for duration in [0, min - 1, 17] {
+                assert!(!validate_task_body(&make_body(task_type, "3.4", duration, 1, 0)).is_empty());
+                assert!(!validate_q4_cost(task_type, duration, "1080p", None).is_empty());
+            }
+        }
+        assert!(!validate_q4_cost("text2video", 5, "1080p", None).is_empty());
+        assert!(!validate_q4_cost("headtailimg2video", 5, "1080p", None).is_empty());
+        assert!(!validate_q4_cost("img2video", 5, "8k", None).is_empty());
+        assert!(!validate_q4_cost("img2video", 5, "1080p", Some("pro")).is_empty());
+        assert!(!validate_task_body(&make_body("character2video", "3.4", 5, 0, 0)).is_empty());
+    }
+
+    #[test]
+    fn q4_uses_credits_without_overriding_explicit_pass() {
+        assert_eq!(preferred_schedule_mode(Some("3.4"), None), Ok(Some("normal".into())));
+        assert_eq!(preferred_schedule_mode(Some("3.4"), Some("normal")), Ok(Some("normal".into())));
+        assert!(preferred_schedule_mode(Some("3.4"), Some("claw_pass"))
+            .unwrap_err().contains("Q4 only supports credits"));
+        let mut body = make_body("img2video", "3.4", 5, 1, 0);
+        body["settings"]["schedule_mode"] = json!("claw_pass");
+        assert!(validate_task_body(&body).contains("Q4 only supports credits"));
+        for model in [None, Some("3.2"), Some("3.2_a")] {
+            assert_eq!(preferred_schedule_mode(model, None), Ok(None));
+            assert_eq!(preferred_schedule_mode(model, Some("claw_pass")), Ok(Some("claw_pass".into())));
+        }
+    }
+
+    #[test]
+    fn q4_accepts_audio_only_references() {
+        for image_count in [0, 1] {
+            for audio_count in [1, 3] {
+                let mut body = make_body("character2video", "3.4", 8, image_count, 0);
+                for index in 0..audio_count {
+                    body["input"]["prompts"].as_array_mut().unwrap().push(json!({
+                        "type": "audio",
+                        "content": format!("ssupload:?id=audio-{}", index),
+                    }));
+                }
+                assert_eq!(validate_task_body(&body), "");
+                body["settings"]["schedule_mode"] = json!("claw_pass");
+                assert!(validate_task_body(&body).contains("Q4 only supports credits"));
+            }
+        }
+    }
+
+    #[test]
+    fn reference_audio_count_is_model_specific() {
+        for model in ["3.2_a", "3.4"] {
+            assert_eq!(validate_reference_audio_count("character2video", model, 3), "");
+            assert!(validate_reference_audio_count("character2video", model, 4).contains("Max: 3"));
+        }
+        for (task_type, model) in [("img2video", "3.4"), ("character2video", "3.2")] {
+            assert!(!validate_reference_audio_count(task_type, model, 1).is_empty());
+            assert_eq!(validate_reference_audio_count(task_type, model, 0), "");
+        }
+        let mut body = make_body("character2video", "3.4", 8, 1, 0);
+        for _ in 0..4 {
+            body["input"]["prompts"].as_array_mut().unwrap().push(json!({
+                "type": "audio", "content": "ssupload:?id=audio",
+            }));
+        }
+        assert!(validate_task_body(&body).contains("Max: 3"));
     }
 
     #[test]
