@@ -73,7 +73,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> --duration <DURATION> \
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--schedule-mode` | auto | Q4 uses `normal` (credits) and rejects `claw_pass`. Other models auto-detect when omitted |
+| `--schedule-mode` | auto | `nopeak` uses off-peak quota subject to server eligibility, remaining quota, and task/model rules; `claw_pass` uses pass quota; `normal` uses credits. When omitted, Q4 defaults to `normal`; other models auto-detect an active claw pass, otherwise use `normal`. Q4 rejects `claw_pass` and accepts `nopeak` subject to server rules |
 | `--audio` | - | Reference audio for `character2video` with `3.2_a` or `3.4` (Q4). Repeatable, max 3; local WAV/MP3 or `ssupload` URI |
 | `--transition` | - | For `img2video` / `headtailimg2video`: `3.0` uses `creative` / `stable`, `3.1` / `3.2` require `pro` / `speed`; `character2video 3.2` also requires `pro` / `speed`; `text2video` supports it only on `3.2` |
 | `--sample-count` | 1 | Number of samples to generate |
@@ -213,7 +213,7 @@ vidu-cli task tts \
 | `--volume` | No | 80 | 0-100 | Audio volume level |
 | `--emotion` | No | - | repeatable | Emotion per segment (paired by order with `--text`) |
 | `--language-boost` | No | - | Chinese, English, auto, etc. | Enhance recognition of specific languages/dialects |
-| `--schedule-mode` | No | auto | claw_pass, normal | Billing mode (auto-detected if omitted) |
+| `--schedule-mode` | No | auto | claw_pass, nopeak, normal | Billing/queue mode. `nopeak` uses off-peak quota subject to server rules; `claw_pass` uses pass quota; `normal` uses credits. If omitted, an active claw pass is auto-detected; otherwise normal is used |
 
 #### List available TTS voices
 

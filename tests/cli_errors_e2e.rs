@@ -156,6 +156,9 @@ fn q4_pass_is_rejected_before_auth_or_upload() {
         if action == "submit" {
             command.args(["--prompt", "test", "--image", "/does/not/exist.jpg"]);
         }
-        command.assert().failure().stdout(contains("Q4 only supports credits"));
+        command
+            .assert()
+            .failure()
+            .stdout(contains("Q4 does not support claw_pass"));
     }
 }

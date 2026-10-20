@@ -75,7 +75,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> --duration <DURATION> \
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--schedule-mode` | auto | Q4 使用 `normal`（积分），拒绝 `claw_pass`；其他模型省略时自动检测 |
+| `--schedule-mode` | auto | `nopeak` 使用闲时额度，资格、剩余额度及任务/模型限制由服务端校验；`claw_pass` 使用通行证额度；`normal` 使用积分。省略时 Q4 默认 `normal`，其他模型自动检测有效 claw pass，否则使用 `normal`。Q4 不支持 `claw_pass`，`nopeak` 受服务端规则限制 |
 | `--audio` | - | `character2video` 的 `3.2_a` 或 `3.4`（Q4）参考音频；可重复传入，最多 3 个，支持本地 WAV/MP3 或 `ssupload` URI |
 | `--transition` | - | `img2video` / `headtailimg2video`：`3.0` 使用 `creative` / `stable`，`3.1` / `3.2` 必须传 `pro` / `speed`；`character2video 3.2` 也必须传 `pro` / `speed`；`text2video` 仅 `3.2` 支持 |
 | `--sample-count` | 1 | 生成样本数 |
@@ -213,7 +213,7 @@ vidu-cli task tts \
 | `--volume` | 否 | 80 | 0-100 | 音量 |
 | `--emotion` | 否 | - | 可重复 | 每段情绪（按顺序与 `--text` 配对） |
 | `--language-boost` | 否 | - | Chinese, English, auto 等 | 增强特定语言/方言识别 |
-| `--schedule-mode` | 否 | auto | claw_pass, normal | 计费模式（省略时自动检测） |
+| `--schedule-mode` | 否 | auto | claw_pass, nopeak, normal | 计费/排队模式：`nopeak` 使用闲时额度并由服务端校验资格、剩余额度和任务/模型限制；`claw_pass` 使用通行证额度；`normal` 使用积分。省略时若有有效 claw pass 则自动选择，否则使用 `normal` |
 
 #### 列出 TTS 可用声音
 

@@ -72,7 +72,7 @@ pub const ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4"];
 pub const TRANSITIONS: &[&str] = &["creative", "stable", "pro", "speed"];
 
 /// All accepted `--schedule-mode` values.
-pub const SCHEDULE_MODES: &[&str] = &["claw_pass", "normal"];
+pub const SCHEDULE_MODES: &[&str] = &["claw_pass", "nopeak", "normal"];
 
 /// All accepted `--codec` values.
 pub const CODECS: &[&str] = &["h264", "h265"];
@@ -481,16 +481,16 @@ pub fn preferred_schedule_mode(
     model_version: Option<&str>,
     explicit: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let mode = explicit.or_else(|| {
-        (model_version == Some("3.4")).then_some("normal")
-    });
+    let mode = explicit.or_else(|| (model_version == Some("3.4")).then_some("normal"));
     if let Some(mode) = mode {
         let err = validate_schedule_mode(mode);
         if !err.is_empty() {
             return Err(err);
         }
-        if model_version == Some("3.4") && mode != "normal" {
-            return Err("Q4 only supports credits; use --schedule-mode normal".into());
+        if model_version == Some("3.4") && mode == "claw_pass" {
+            return Err(
+                "Q4 does not support claw_pass; use --schedule-mode normal or nopeak".into(),
+            );
         }
     }
     Ok(mode.map(str::to_string))
@@ -519,8 +519,12 @@ pub fn validate_q4_cost(
 }
 
 pub fn validate_schedule_mode(mode: &str) -> String {
-    if mode != "normal" && mode != "claw_pass" {
-        return format!("Invalid schedule_mode '{}'. Valid: claw_pass, normal", mode);
+    if !SCHEDULE_MODES.contains(&mode) {
+        return format!(
+            "Invalid schedule_mode '{}'. Valid: {}",
+            mode,
+            SCHEDULE_MODES.join(", ")
+        );
     }
     String::new()
 }
@@ -1328,17 +1332,37 @@ mod tests {
     }
 
     #[test]
-    fn q4_uses_credits_without_overriding_explicit_pass() {
-        assert_eq!(preferred_schedule_mode(Some("3.4"), None), Ok(Some("normal".into())));
-        assert_eq!(preferred_schedule_mode(Some("3.4"), Some("normal")), Ok(Some("normal".into())));
+    fn q4_defaults_to_credits_and_accepts_nopeak_but_not_claw_pass() {
+        assert_eq!(
+            preferred_schedule_mode(Some("3.4"), None),
+            Ok(Some("normal".into()))
+        );
+        assert_eq!(
+            preferred_schedule_mode(Some("3.4"), Some("normal")),
+            Ok(Some("normal".into()))
+        );
+        assert_eq!(
+            preferred_schedule_mode(Some("3.4"), Some("nopeak")),
+            Ok(Some("nopeak".into()))
+        );
         assert!(preferred_schedule_mode(Some("3.4"), Some("claw_pass"))
-            .unwrap_err().contains("Q4 only supports credits"));
+            .unwrap_err()
+            .contains("Q4 does not support claw_pass"));
         let mut body = make_body("img2video", "3.4", 5, 1, 0);
         body["settings"]["schedule_mode"] = json!("claw_pass");
-        assert!(validate_task_body(&body).contains("Q4 only supports credits"));
+        assert!(validate_task_body(&body).contains("Q4 does not support claw_pass"));
+        body["settings"]["schedule_mode"] = json!("nopeak");
+        assert_eq!(validate_task_body(&body), "");
         for model in [None, Some("3.2"), Some("3.2_a")] {
             assert_eq!(preferred_schedule_mode(model, None), Ok(None));
-            assert_eq!(preferred_schedule_mode(model, Some("claw_pass")), Ok(Some("claw_pass".into())));
+            assert_eq!(
+                preferred_schedule_mode(model, Some("claw_pass")),
+                Ok(Some("claw_pass".into()))
+            );
+            assert_eq!(
+                preferred_schedule_mode(model, Some("nopeak")),
+                Ok(Some("nopeak".into()))
+            );
         }
     }
 
@@ -1355,7 +1379,7 @@ mod tests {
                 }
                 assert_eq!(validate_task_body(&body), "");
                 body["settings"]["schedule_mode"] = json!("claw_pass");
-                assert!(validate_task_body(&body).contains("Q4 only supports credits"));
+                assert!(validate_task_body(&body).contains("Q4 does not support claw_pass"));
             }
         }
     }
@@ -1576,11 +1600,14 @@ mod tests {
     fn schedule_mode_valid() {
         assert_eq!(validate_schedule_mode("normal"), "");
         assert_eq!(validate_schedule_mode("claw_pass"), "");
+        assert_eq!(validate_schedule_mode("nopeak"), "");
     }
 
     #[test]
     fn schedule_mode_invalid() {
-        assert!(validate_schedule_mode("free").contains("Invalid schedule_mode"));
+        let err = validate_schedule_mode("free");
+        assert!(err.contains("Invalid schedule_mode"));
+        assert!(err.contains("claw_pass, nopeak, normal"));
     }
 
     #[test]

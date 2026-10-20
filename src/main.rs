@@ -140,7 +140,7 @@ enum TaskAction {
         movement_amplitude: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Q4 uses normal (credits) and rejects claw_pass. Other models auto-detect pass status if omitted.")]
+            help = "Q4 defaults to normal (credits), allows nopeak subject to server eligibility/model rules, and rejects claw_pass. Other models auto-detect pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// Get task result
@@ -189,7 +189,7 @@ enum TaskAction {
         codec: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+            help = "Schedule mode: nopeak (off-peak quota; server checks eligibility, remaining quota and task/model rules), claw_pass (pass quota), or normal (credits). If omitted, an active claw pass is auto-detected; otherwise normal is used.")]
         schedule_mode: Option<String>,
     },
     /// List available voice IDs for lip-sync
@@ -238,7 +238,7 @@ enum TaskAction {
         subtitle_enable: bool,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+            help = "Schedule mode: nopeak (off-peak quota; server checks eligibility, remaining quota and task/model rules), claw_pass (pass quota), or normal (credits). If omitted, an active claw pass is auto-detected; otherwise normal is used.")]
         schedule_mode: Option<String>,
     },
     /// List available TTS voice IDs
@@ -259,7 +259,7 @@ enum TaskAction {
         height: Option<i32>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+            help = "Schedule mode: nopeak (off-peak quota; server checks eligibility, remaining quota and task/model rules), claw_pass (pass quota), or normal (credits). If omitted, an active claw pass is auto-detected; otherwise normal is used.")]
         schedule_mode: Option<String>,
     },
     /// Query credit cost for a task before submitting
@@ -294,7 +294,7 @@ enum TaskAction {
         codec: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Q4 uses normal (credits) and rejects claw_pass. Other models auto-detect pass status if omitted.")]
+            help = "Q4 defaults to normal (credits), allows nopeak subject to server eligibility/model rules, and rejects claw_pass. Other models auto-detect pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// Query credit cost for a TTS task before submitting
@@ -315,7 +315,7 @@ enum TaskAction {
         volume: i32,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+            help = "Schedule mode: nopeak (off-peak quota; server checks eligibility, remaining quota and task/model rules), claw_pass (pass quota), or normal (credits). If omitted, an active claw pass is auto-detected; otherwise normal is used.")]
         schedule_mode: Option<String>,
     },
     /// Query credit cost for a lip-sync task before submitting
@@ -342,7 +342,7 @@ enum TaskAction {
         codec: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Schedule mode: claw_pass (use daily quota) or normal (use credits). Auto-detected from claw-pass status if omitted.")]
+            help = "Schedule mode: nopeak (off-peak quota; server checks eligibility, remaining quota and task/model rules), claw_pass (pass quota), or normal (credits). If omitted, an active claw pass is auto-detected; otherwise normal is used.")]
         schedule_mode: Option<String>,
     },
 }
