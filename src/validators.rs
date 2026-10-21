@@ -25,6 +25,9 @@ pub const TASK_TYPES: &[&str] = &[
 /// Type aliases: user-friendly shorthand -> canonical type
 pub const TYPE_ALIASES: &[(&str, &str)] = &[("img2image", "reference2image")];
 
+/// Vidu Q3.1 Drama model, exposed as an additional model version rather than a type alias.
+pub const DRAMA_MODEL_VERSION: &str = "viduq3.1-drama-std";
+
 /// Parse and normalize task type (handles aliases)
 pub fn parse_task_type(input: &str) -> Result<String, String> {
     // Check aliases first
@@ -61,9 +64,11 @@ pub const MODEL_VERSIONS: &[&str] = &[
     "3.2_image_2",
     "3.2_image_2_5_fast",
     "3.2_image_2_5_pro",
+    DRAMA_MODEL_VERSION,
 ];
 
-pub const RESOLUTIONS: &[&str] = &["540p", "720p", "1080p", "2k", "4k"];
+pub const RESOLUTIONS: &[&str] = &["480p", "540p", "720p", "1080p", "2k", "4k"];
+const Q4_RESOLUTIONS: &[&str] = &["540p", "720p", "1080p", "2k", "4k"];
 
 /// All accepted `--aspect-ratio` values.
 pub const ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4"];
@@ -152,7 +157,9 @@ fn duration_ranges() -> HashMap<String, HashMap<String, (i64, i64)>> {
     tv.insert("3.0".into(), (5, 5));
     tv.insert("3.1".into(), (2, 8));
     tv.insert("3.2".into(), (1, 16));
-    m.insert("text2video".into(), tv.clone());
+    let mut drama_tv = tv.clone();
+    drama_tv.insert(DRAMA_MODEL_VERSION.into(), (4, 30));
+    m.insert("text2video".into(), drama_tv);
     let mut iv = tv.clone();
     iv.insert("3.4".into(), (3, 16));
     m.insert("img2video".into(), iv);
@@ -163,6 +170,7 @@ fn duration_ranges() -> HashMap<String, HashMap<String, (i64, i64)>> {
     cv.insert("3.1_pro".into(), (-1, 8));
     cv.insert("3.2".into(), (1, 16));
     cv.insert("3.4".into(), (1, 16));
+    cv.insert(DRAMA_MODEL_VERSION.into(), (4, 30));
     m.insert("character2video".into(), cv);
     let mut ri = HashMap::new();
     ri.insert("3.1".into(), (0, 0));
@@ -189,7 +197,10 @@ fn model_support() -> HashMap<String, HashSet<String>> {
             "3.2_image_2_5_pro",
         ]),
     );
-    m.insert("text2video".into(), set(&["3.0", "3.1", "3.2", "3.2_a"]));
+    m.insert(
+        "text2video".into(),
+        set(&["3.0", "3.1", "3.2", "3.2_a", DRAMA_MODEL_VERSION]),
+    );
     m.insert(
         "img2video".into(),
         set(&["3.0", "3.1", "3.2", "3.2_a", "3.4"]),
@@ -211,7 +222,15 @@ fn model_support() -> HashMap<String, HashSet<String>> {
     );
     m.insert(
         "character2video".into(),
-        set(&["3.0", "3.1", "3.1_pro", "3.2", "3.2_a", "3.4"]),
+        set(&[
+            "3.0",
+            "3.1",
+            "3.1_pro",
+            "3.2",
+            "3.2_a",
+            "3.4",
+            DRAMA_MODEL_VERSION,
+        ]),
     );
     m
 }
@@ -261,27 +280,22 @@ pub fn validate_task_body(body: &Value) -> String {
         .iter()
         .filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("audio"))
         .count();
-
-    // Validate counts by task type
-    match task_type {
-        "img2video" if image_count != 1 => {
-            return format!("img2video requires exactly 1 image, got {}", image_count)
-        }
-        "headtailimg2video" if image_count != 2 => {
-            return format!(
-                "headtailimg2video requires exactly 2 images, got {}",
-                image_count
-            )
-        }
-        "reference2image" | "character2video" if image_count + material_count > 7 => {
-            return format!(
-                "{} allows max 7 images+materials, got {}",
-                task_type,
-                image_count + material_count
-            );
-        }
-        _ => {}
-    }
+    let video_count = prompts_arr
+        .iter()
+        .filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("video"))
+        .count();
+    let non_text_prompt_count = prompts_arr
+        .iter()
+        .filter(|p| p.get("type").and_then(|v| v.as_str()) != Some("text"))
+        .count();
+    let unsupported_prompt_type = prompts_arr.iter().find_map(|prompt| {
+        let prompt_type = prompt.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        (![
+            "text", "image", "video", "material", "audio",
+        ]
+        .contains(&prompt_type))
+        .then_some(prompt_type)
+    });
 
     let settings = match body.get("settings") {
         Some(Value::Object(_)) => body.get("settings").unwrap(),
@@ -307,6 +321,69 @@ pub fn validate_task_body(body: &Value) -> String {
                 "model_version {} does not support {}",
                 model_version, task_type
             );
+        }
+    }
+
+    // Validate input counts by task type and model version.
+    match task_type {
+        "img2video" if image_count != 1 => {
+            return format!("img2video requires exactly 1 image, got {}", image_count)
+        }
+        "headtailimg2video" if image_count != 2 => {
+            return format!(
+                "headtailimg2video requires exactly 2 images, got {}",
+                image_count
+            )
+        }
+        "reference2image" if image_count + material_count > 7 => {
+            return format!(
+                "{} allows max 7 images+materials, got {}",
+                task_type,
+                image_count + material_count
+            );
+        }
+        "character2video" if model_version == DRAMA_MODEL_VERSION && image_count > 9 => {
+            return format!("{} allows max 9 images, got {}", task_type, image_count);
+        }
+        "character2video" if model_version != DRAMA_MODEL_VERSION && image_count + material_count > 7 => {
+            return format!(
+                "{} allows max 7 images+materials, got {}",
+                task_type,
+                image_count + material_count
+            );
+        }
+        _ => {}
+    }
+
+    let video_error = validate_reference_video_count(task_type, model_version, video_count);
+    if !video_error.is_empty() {
+        return video_error;
+    }
+
+    if model_version == DRAMA_MODEL_VERSION {
+        if material_count > 0 {
+            return "viduq3.1-drama-std does not support material references".into();
+        }
+        if audio_count > 0 {
+            return "viduq3.1-drama-std does not support audio references".into();
+        }
+        if let Some(prompt_type) = unsupported_prompt_type {
+            return format!(
+                "viduq3.1-drama-std does not support '{}' prompt references",
+                prompt_type
+            );
+        }
+        if input
+            .get("editor_mode")
+            .is_some_and(|mode| mode.as_str() != Some("normal"))
+        {
+            return "viduq3.1-drama-std supports only normal generation mode".into();
+        }
+        if task_type == "text2video" && non_text_prompt_count > 0 {
+            return "viduq3.1-drama-std text2video accepts text prompts only; use character2video for references".into();
+        }
+        if task_type == "character2video" && image_count + video_count == 0 {
+            return "viduq3.1-drama-std character2video requires at least one image or video reference".into();
         }
     }
 
@@ -358,15 +435,22 @@ pub fn validate_task_body(body: &Value) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let rs = resolution_support();
-    let mut valid_res = rs
-        .get(task_type)
-        .cloned()
-        .unwrap_or_else(|| set(&["1080p"]));
-    if model_version == "3.2_a" {
-        valid_res.insert("720p".into());
+    let valid_res = if model_version == DRAMA_MODEL_VERSION {
+        set(&["480p", "720p", "1080p"])
+    } else if model_version == "3.2_a" {
+        let mut valid = rs
+            .get(task_type)
+            .cloned()
+            .unwrap_or_else(|| set(&["1080p"]));
+        valid.insert("720p".into());
+        valid
     } else if model_version == "3.4" {
-        valid_res = set(RESOLUTIONS);
-    }
+        set(Q4_RESOLUTIONS)
+    } else {
+        rs.get(task_type)
+            .cloned()
+            .unwrap_or_else(|| set(&["1080p"]))
+    };
     if !valid_res.contains(res) {
         return format!(
             "Invalid resolution '{}' for {}. Valid: {}",
@@ -390,6 +474,10 @@ pub fn validate_task_body(body: &Value) -> String {
     }
 
     let transition = settings.get("transition").and_then(|v| v.as_str());
+
+    if model_version == DRAMA_MODEL_VERSION && transition.is_some() {
+        return "viduq3.1-drama-std does not support transition".into();
+    }
 
     if model_version == "3.4" && transition.is_some() {
         return "Q4 should not include transition".into();
@@ -481,7 +569,11 @@ pub fn preferred_schedule_mode(
     model_version: Option<&str>,
     explicit: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let mode = explicit.or_else(|| (model_version == Some("3.4")).then_some("normal"));
+    let mode = explicit.or_else(|| {
+        [Some("3.4"), Some(DRAMA_MODEL_VERSION)]
+            .contains(&model_version)
+            .then_some("normal")
+    });
     if let Some(mode) = mode {
         let err = validate_schedule_mode(mode);
         if !err.is_empty() {
@@ -490,6 +582,11 @@ pub fn preferred_schedule_mode(
         if model_version == Some("3.4") && mode == "claw_pass" {
             return Err(
                 "Q4 does not support claw_pass; use --schedule-mode normal or nopeak".into(),
+            );
+        }
+        if model_version == Some(DRAMA_MODEL_VERSION) && mode != "normal" {
+            return Err(
+                "viduq3.1-drama-std supports only --schedule-mode normal (credits)".into(),
             );
         }
     }
@@ -509,11 +606,35 @@ pub fn validate_q4_cost(
     if !(min..=max).contains(&duration) {
         return format!("duration {} out of range [{}, {}] for Q4 {}", duration, min, max, task_type);
     }
-    if !RESOLUTIONS.contains(&resolution) {
+    if !Q4_RESOLUTIONS.contains(&resolution) {
         return format!("Invalid resolution '{}' for Q4", resolution);
     }
     if transition.is_some() {
         return "Q4 should not include transition".into();
+    }
+    String::new()
+}
+
+pub fn validate_drama_cost(
+    task_type: &str,
+    duration: i64,
+    resolution: &str,
+    transition: Option<&str>,
+) -> String {
+    if !["text2video", "character2video"].contains(&task_type) {
+        return format!(
+            "model_version {} does not support {}",
+            DRAMA_MODEL_VERSION, task_type
+        );
+    }
+    if !(4..=30).contains(&duration) {
+        return format!("Drama duration {} out of range [4, 30]", duration);
+    }
+    if !["480p", "720p", "1080p"].contains(&resolution) {
+        return format!("Invalid resolution '{}' for Drama", resolution);
+    }
+    if transition.is_some() {
+        return "viduq3.1-drama-std does not support transition".into();
     }
     String::new()
 }
@@ -625,6 +746,19 @@ pub fn validate_reference_audio_count(task_type: &str, model_version: &str, coun
     }
     if count > 3 {
         return format!("Too many audio inputs: {}. Max: 3", count);
+    }
+    String::new()
+}
+
+pub fn validate_reference_video_count(task_type: &str, model_version: &str, count: usize) -> String {
+    if count == 0 {
+        return String::new();
+    }
+    if task_type != "character2video" || !["3.2_a", DRAMA_MODEL_VERSION].contains(&model_version) {
+        return "Video input is only supported for character2video with model_version 3.2_a or viduq3.1-drama-std".into();
+    }
+    if count > 3 {
+        return format!("Too many video inputs: {}. Max: 3", count);
     }
     String::new()
 }
@@ -1312,7 +1446,7 @@ mod tests {
     fn q4_basic_options_match_submit_and_cost() {
         for (task_type, min) in [("img2video", 3), ("character2video", 1)] {
             for duration in [min, 16] {
-                for resolution in RESOLUTIONS {
+                for resolution in Q4_RESOLUTIONS {
                     let mut body = make_body(task_type, "3.4", duration, 1, 0);
                     body["settings"]["resolution"] = json!(resolution);
                     assert_eq!(validate_task_body(&body), "");
@@ -1329,6 +1463,97 @@ mod tests {
         assert!(!validate_q4_cost("img2video", 5, "8k", None).is_empty());
         assert!(!validate_q4_cost("img2video", 5, "1080p", Some("pro")).is_empty());
         assert!(!validate_task_body(&make_body("character2video", "3.4", 5, 0, 0)).is_empty());
+    }
+
+    #[test]
+    fn drama_model_accepts_only_supported_task_types_and_duration_boundaries() {
+        assert!(MODEL_VERSIONS.contains(&DRAMA_MODEL_VERSION));
+        for (task_type, images) in [("text2video", 0), ("character2video", 1)] {
+            for duration in [4, 30] {
+                let mut body = make_body(task_type, DRAMA_MODEL_VERSION, duration, images, 0);
+                body["settings"]["resolution"] = json!("480p");
+                assert_eq!(validate_task_body(&body), "");
+                assert_eq!(validate_drama_cost(task_type, duration, "720p", None), "");
+            }
+            for duration in [3, 31, -1] {
+                let body = make_body(task_type, DRAMA_MODEL_VERSION, duration, images, 0);
+                assert!(validate_task_body(&body).contains("out of range"));
+                assert!(!validate_drama_cost(task_type, duration, "720p", None).is_empty());
+            }
+        }
+        for task_type in ["img2video", "headtailimg2video", "text2image", "reference2image"] {
+            assert!(validate_task_body(&make_body(task_type, DRAMA_MODEL_VERSION, 5, 1, 0))
+                .contains("does not support"));
+            assert!(!validate_drama_cost(task_type, 5, "720p", None).is_empty());
+        }
+    }
+
+    #[test]
+    fn drama_reference_rules_are_model_specific() {
+        let mut character = make_body("character2video", DRAMA_MODEL_VERSION, 5, 9, 0);
+        assert_eq!(validate_task_body(&character), "");
+        character["input"]["prompts"].as_array_mut().unwrap().push(json!({
+            "type": "image", "content": "ssupload:?id=extra"
+        }));
+        assert!(validate_task_body(&character).contains("max 9 images"));
+
+        let mut character_without_reference = make_body("character2video", DRAMA_MODEL_VERSION, 5, 0, 0);
+        assert!(validate_task_body(&character_without_reference).contains("requires at least one image or video"));
+        character_without_reference["input"]["prompts"].as_array_mut().unwrap().push(json!({
+            "type": "video", "content": "ssupload:?id=video"
+        }));
+        assert_eq!(validate_task_body(&character_without_reference), "");
+
+        assert_eq!(validate_reference_video_count("character2video", DRAMA_MODEL_VERSION, 3), "");
+        assert!(validate_reference_video_count("character2video", DRAMA_MODEL_VERSION, 4).contains("Max: 3"));
+        assert!(!validate_reference_video_count("character2video", "3.2", 1).is_empty());
+    }
+
+    #[test]
+    fn drama_text_tasks_reject_every_non_text_prompt_and_unsupported_options() {
+        let mut body = make_body("text2video", DRAMA_MODEL_VERSION, 5, 1, 0);
+        assert!(validate_task_body(&body).contains("text prompts only"));
+        body["input"]["prompts"] = json!([
+            {"type": "text", "content": "prompt"},
+            {"type": "extend", "content": "anything"}
+        ]);
+        assert!(validate_task_body(&body).contains("does not support 'extend'"));
+
+        let mut character = make_body("character2video", DRAMA_MODEL_VERSION, 5, 1, 0);
+        character["input"]["prompts"].as_array_mut().unwrap().push(json!({
+            "type": "material", "name": "m", "material": {"id": "1", "version": "1"}
+        }));
+        assert!(validate_task_body(&character).contains("does not support material"));
+        character["input"]["prompts"].as_array_mut().unwrap().pop();
+        character["input"]["prompts"].as_array_mut().unwrap().push(json!({
+            "type": "audio", "content": "ssupload:?id=audio"
+        }));
+        assert!(validate_task_body(&character).contains("does not support audio"));
+        character["input"]["prompts"].as_array_mut().unwrap().pop();
+        character["settings"]["transition"] = json!("pro");
+        assert!(validate_task_body(&character).contains("does not support transition"));
+
+        let mut character = make_body("character2video", DRAMA_MODEL_VERSION, 5, 1, 0);
+        character["input"]["prompts"].as_array_mut().unwrap().push(json!({
+            "type": "extend", "content": "ssupload:?id=video"
+        }));
+        assert!(validate_task_body(&character).contains("does not support 'extend'"));
+        character["input"]["prompts"].as_array_mut().unwrap().pop();
+        character["input"]["editor_mode"] = json!("edit");
+        assert!(validate_task_body(&character).contains("normal generation mode"));
+        assert!(!validate_drama_cost("text2video", 5, "540p", None).is_empty());
+        assert!(!validate_drama_cost("text2video", 5, "720p", Some("pro")).is_empty());
+    }
+
+    #[test]
+    fn drama_task_body_allows_only_normal_credit_schedule_mode() {
+        let mut body = make_body("character2video", DRAMA_MODEL_VERSION, 5, 1, 0);
+        body["settings"]["schedule_mode"] = json!("normal");
+        assert_eq!(validate_task_body(&body), "");
+        for mode in ["nopeak", "claw_pass"] {
+            body["settings"]["schedule_mode"] = json!(mode);
+            assert!(validate_task_body(&body).contains("only --schedule-mode normal"));
+        }
     }
 
     #[test]
@@ -1364,6 +1589,25 @@ mod tests {
                 Ok(Some("nopeak".into()))
             );
         }
+    }
+
+    #[test]
+    fn drama_defaults_to_credits_without_pass_detection_and_rejects_claw_pass() {
+        assert_eq!(
+            preferred_schedule_mode(Some(DRAMA_MODEL_VERSION), None),
+            Ok(Some("normal".into()))
+        );
+        assert_eq!(
+            preferred_schedule_mode(Some(DRAMA_MODEL_VERSION), Some("normal")),
+            Ok(Some("normal".into()))
+        );
+        assert_eq!(
+            preferred_schedule_mode(Some(DRAMA_MODEL_VERSION), Some("nopeak")),
+            Err("viduq3.1-drama-std supports only --schedule-mode normal (credits)".into())
+        );
+        assert!(preferred_schedule_mode(Some(DRAMA_MODEL_VERSION), Some("claw_pass"))
+            .unwrap_err()
+            .contains("only --schedule-mode normal"));
     }
 
     #[test]
