@@ -324,66 +324,35 @@ fn inspect_reference_videos(
             if !err.is_empty() {
                 client::fail("client_error", &err, None, None, None);
             }
-            let (w, h) = match read_mp4_dimensions(video_input) {
-                Some(dims) => dims,
-                None => client::fail(
+            let metadata = match read_local_video_metadata(video_input) {
+                Ok(metadata) => metadata,
+                Err(error) => client::fail(
                     "client_error",
-                    &format!("Cannot read video dimensions: {}", video_input),
+                    &format_local_video_metadata_error(video_input, error),
                     None,
                     None,
                     None,
                 ),
             };
-            let aspect = w as f64 / h as f64;
-            if !(0.4..=2.5).contains(&aspect) {
-                client::fail(
+            let (w, h) = match metadata.dimensions {
+                Some(dimensions) => dimensions,
+                None => client::fail(
                     "client_error",
-                    &format!(
-                        "Video aspect ratio {:.2} out of range [0.4, 2.5] ({}x{})",
-                        aspect, w, h
-                    ),
+                    &format_local_video_dimensions_error(video_input),
                     None,
                     None,
                     None,
-                );
-            }
-            if !(300..=60000).contains(&w) {
-                client::fail(
-                    "client_error",
-                    &format!("Video width {} out of range [300, 60000]", w),
-                    None,
-                    None,
-                    None,
-                );
-            }
-            if !(300..=60000).contains(&h) {
-                client::fail(
-                    "client_error",
-                    &format!("Video height {} out of range [300, 60000]", h),
-                    None,
-                    None,
-                    None,
-                );
-            }
-            let pixels = (w as u64) * (h as u64);
-            if !(409600..=2086876).contains(&pixels) {
-                client::fail(
-                    "client_error",
-                    &format!(
-                        "Video total pixels {} out of range [409600, 2086876] ({}x{})",
-                        pixels, w, h
-                    ),
-                    None,
-                    None,
-                    None,
-                );
+                ),
+            };
+            if let Err(error) = validate_local_reference_video_geometry(video_input, w, h) {
+                client::fail("client_error", &error, None, None, None);
             }
 
-            let duration = match read_video_duration_f64(video_input) {
+            let duration = match metadata.duration {
                 Some(value) => value,
                 None => client::fail(
                     "client_error",
-                    &format!("Cannot read video duration: {}", video_input),
+                    &format_local_video_duration_error(video_input),
                     None,
                     None,
                     None,
@@ -1690,27 +1659,128 @@ fn video_track_dimensions(track: &mp4parse::Track) -> Option<(u32, u32)> {
     (dimensions.0 > 0 && dimensions.1 > 0).then_some(dimensions)
 }
 
-fn read_mp4_dimensions(path: &str) -> Option<(u32, u32)> {
-    let file = std::fs::File::open(path).ok()?;
+#[derive(Debug, Default)]
+struct LocalVideoMetadata {
+    dimensions: Option<(u32, u32)>,
+    duration: Option<f64>,
+}
+
+#[derive(Debug)]
+enum LocalVideoMetadataReadError {
+    FileOpen(std::io::Error),
+    Parse(mp4parse::Error),
+    NoVideoTrack,
+}
+
+fn local_video_metadata_from_context(
+    context: &mp4parse::MediaContext,
+) -> Result<LocalVideoMetadata, LocalVideoMetadataReadError> {
+    let first_video_track = context
+        .tracks
+        .iter()
+        .find(|track| track.track_type == mp4parse::TrackType::Video)
+        .ok_or(LocalVideoMetadataReadError::NoVideoTrack)?;
+
+    Ok(LocalVideoMetadata {
+        // Preserve the existing semantics: dimensions use the first video
+        // track that has readable dimensions; duration uses the first video track.
+        dimensions: context.tracks.iter().find_map(video_track_dimensions),
+        duration: video_track_duration_f64(first_video_track),
+    })
+}
+
+fn read_local_video_metadata(
+    path: &str,
+) -> Result<LocalVideoMetadata, LocalVideoMetadataReadError> {
+    let file = std::fs::File::open(path).map_err(LocalVideoMetadataReadError::FileOpen)?;
     let mut reader = std::io::BufReader::new(file);
-    let ctx = mp4parse::read_mp4(&mut reader).ok()?;
-    ctx.tracks.iter().find_map(video_track_dimensions)
+    let context = mp4parse::read_mp4(&mut reader).map_err(LocalVideoMetadataReadError::Parse)?;
+    local_video_metadata_from_context(&context)
+}
+
+fn format_local_video_metadata_error(path: &str, error: LocalVideoMetadataReadError) -> String {
+    match error {
+        LocalVideoMetadataReadError::FileOpen(error) => format!(
+            "Cannot open reference video '{}': {}. Check the file path and permissions.",
+            path, error
+        ),
+        LocalVideoMetadataReadError::Parse(error) => format!(
+            "Cannot parse MP4/MOV metadata for '{}': {}. Re-export as MP4/MOV and retry.",
+            path, error
+        ),
+        LocalVideoMetadataReadError::NoVideoTrack => {
+            format!("No video track found in reference video '{}'.", path)
+        }
+    }
+}
+
+fn format_local_video_dimensions_error(path: &str) -> String {
+    format!(
+        "Video track in reference video '{}' has no readable dimensions; re-export as MP4/MOV and retry.",
+        path
+    )
+}
+
+fn format_local_video_duration_error(path: &str) -> String {
+    format!(
+        "Video track in reference video '{}' has no readable duration metadata; re-export as MP4/MOV and retry.",
+        path
+    )
+}
+
+fn video_track_duration_f64(track: &mp4parse::Track) -> Option<f64> {
+    if track.track_type != mp4parse::TrackType::Video {
+        return None;
+    }
+    let duration = track.duration?;
+    let timescale = track.timescale?;
+    (timescale.0 > 0).then_some(duration.0 as f64 / timescale.0 as f64)
+}
+
+fn read_mp4_dimensions(path: &str) -> Option<(u32, u32)> {
+    read_local_video_metadata(path).ok()?.dimensions
 }
 
 fn read_video_duration_f64(path: &str) -> Option<f64> {
-    let file = std::fs::File::open(path).ok()?;
-    let mut reader = std::io::BufReader::new(file);
-    let ctx = mp4parse::read_mp4(&mut reader).ok()?;
-    for track in &ctx.tracks {
-        if track.track_type == mp4parse::TrackType::Video {
-            let duration = track.duration?;
-            let timescale = track.timescale?;
-            if timescale.0 > 0 {
-                return Some(duration.0 as f64 / timescale.0 as f64);
-            }
-        }
+    read_local_video_metadata(path).ok()?.duration
+}
+
+fn validate_local_reference_video_geometry(
+    path: &str,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let pixels = u64::from(width) * u64::from(height);
+    let aspect = (height > 0).then_some(width as f64 / height as f64);
+    let aspect_text = aspect
+        .map(|ratio| format!("{:.2}", ratio))
+        .unwrap_or_else(|| "undefined".to_string());
+
+    let violation = if aspect.map_or(true, |ratio| !(0.4..=2.5).contains(&ratio)) {
+        Some("aspect ratio must be in [0.4, 2.5]")
+    } else if !(300..=60000).contains(&width) {
+        Some("width must be in [300, 60000]")
+    } else if !(300..=60000).contains(&height) {
+        Some("height must be in [300, 60000]")
+    } else if !(409600..=2086876).contains(&pixels) {
+        Some("total pixels must be in [409600, 2086876]")
+    } else {
+        None
+    };
+
+    if let Some(violation) = violation {
+        let suggestion = if width < 300 || height < 300 || pixels < 409600 {
+            "Upscale/rescale the video while preserving its aspect ratio"
+        } else {
+            "Resize or re-export the video to meet the geometry constraints"
+        };
+        Err(format!(
+            "Reference video '{}': dimensions {}x{} ({} pixels, aspect ratio {}); {}. {}.",
+            path, width, height, pixels, aspect_text, violation, suggestion
+        ))
+    } else {
+        Ok(())
     }
-    None
 }
 
 fn upload_local_media(path: &str) -> String {
@@ -1934,6 +2004,66 @@ fn ext_from_bytes(bytes: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_video_metadata_reader_distinguishes_open_and_parse_errors() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing = temp_dir.path().join("missing.mp4");
+        let open_error = read_local_video_metadata(missing.to_str().unwrap()).unwrap_err();
+        let open_message = format_local_video_metadata_error(missing.to_str().unwrap(), open_error);
+        assert!(open_message.contains("Cannot open reference video"));
+        assert!(open_message.contains(missing.to_str().unwrap()));
+        assert!(open_message.contains("permissions"));
+
+        let damaged = temp_dir.path().join("damaged.mp4");
+        std::fs::write(&damaged, b"not a valid MP4").unwrap();
+        let parse_error = read_local_video_metadata(damaged.to_str().unwrap()).unwrap_err();
+        let parse_message = format_local_video_metadata_error(damaged.to_str().unwrap(), parse_error);
+        assert!(parse_message.contains("Cannot parse MP4/MOV metadata"));
+        assert!(parse_message.contains(damaged.to_str().unwrap()));
+        assert!(parse_message.contains("Re-export as MP4/MOV and retry"));
+    }
+
+    #[test]
+    fn local_video_metadata_reader_rejects_audio_only_tracks_and_keeps_fields_independent() {
+        let mut audio_only = mp4parse::MediaContext::default();
+        audio_only
+            .tracks
+            .push(mp4parse::Track {
+                track_type: mp4parse::TrackType::Audio,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(matches!(
+            local_video_metadata_from_context(&audio_only),
+            Err(LocalVideoMetadataReadError::NoVideoTrack)
+        ));
+
+        let mut context = mp4parse::MediaContext::default();
+        let mut video_track = mp4parse::Track::default();
+        video_track.track_type = mp4parse::TrackType::Video;
+        video_track.duration = Some(mp4parse::TrackScaledTime(4, 1));
+        video_track.timescale = Some(mp4parse::TrackTimeScale(1, 1));
+        context.tracks.push(video_track).unwrap();
+        let metadata = local_video_metadata_from_context(&context).unwrap();
+        assert_eq!(metadata.dimensions, None);
+        assert_eq!(metadata.duration, Some(4.0));
+        assert!(format_local_video_dimensions_error("audio-only.mp4")
+            .contains("has no readable dimensions"));
+    }
+
+    #[test]
+    fn local_reference_video_geometry_error_includes_path_details_and_resize_guidance() {
+        let error = validate_local_reference_video_geometry("sample.mp4", 704, 396).unwrap_err();
+        assert_eq!(
+            error,
+            "Reference video 'sample.mp4': dimensions 704x396 (278784 pixels, aspect ratio 1.78); total pixels must be in [409600, 2086876]. Upscale/rescale the video while preserving its aspect ratio."
+        );
+        assert_eq!(
+            validate_local_reference_video_geometry("sample.mp4", 864, 486),
+            Ok(())
+        );
+    }
 
     #[test]
     fn read_mp4_dimensions_uses_tkhd_for_hevc_and_keeps_coded_size_for_rotated_track() {
