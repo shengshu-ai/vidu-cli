@@ -309,11 +309,13 @@ fn inspect_reference_videos(
         client::fail("client_error", &video_error, None, None, None);
     }
 
+    let mut frame_rates = Vec::with_capacity(videos.len());
     let durations: Vec<Option<f64>> = videos
         .iter()
         .map(|video_input| {
             if video_input.starts_with("ssupload:") {
                 // The backend validates the complete metadata set for existing uploads.
+                frame_rates.push(None);
                 return None;
             }
             if video_input.starts_with("http://") || video_input.starts_with("https://") {
@@ -358,12 +360,23 @@ fn inspect_reference_videos(
                     None,
                 ),
             };
+            frame_rates.push(metadata.average_frame_rate);
             Some(duration)
         })
         .collect();
     let local_durations: Vec<f64> = durations.iter().filter_map(|duration| *duration).collect();
     if let Err(err) = validate_local_reference_video_durations(model_version, &local_durations) {
         client::fail("client_error", &err, None, None, None);
+    }
+    if model_version == validators::DRAMA_MODEL_VERSION {
+        for (video_input, frame_rate) in videos.iter().zip(frame_rates) {
+            if video_input.starts_with("ssupload:") {
+                continue;
+            }
+            if let Err(error) = validate_local_reference_video_frame_rate(video_input, frame_rate) {
+                client::fail("client_error", &error, None, None, None);
+            }
+        }
     }
     durations
 }
@@ -1663,6 +1676,36 @@ fn video_track_dimensions(track: &mp4parse::Track) -> Option<(u32, u32)> {
 struct LocalVideoMetadata {
     dimensions: Option<(u32, u32)>,
     duration: Option<f64>,
+    average_frame_rate: Option<AverageFrameRate>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AverageFrameRate {
+    numerator: u128,
+    duration_ticks: u128,
+}
+
+impl AverageFrameRate {
+    fn as_f64(self) -> f64 {
+        self.numerator as f64 / self.duration_ticks as f64
+    }
+
+    fn is_within_q31_range(self) -> bool {
+        if self.numerator == 0 || self.duration_ticks == 0 {
+            return false;
+        }
+        let Some(minimum_numerator) = self.duration_ticks.checked_mul(24) else {
+            return false;
+        };
+        if self.numerator < minimum_numerator {
+            return false;
+        }
+
+        let Some(maximum_numerator) = self.duration_ticks.checked_mul(60) else {
+            return true;
+        };
+        self.numerator <= maximum_numerator
+    }
 }
 
 #[derive(Debug)]
@@ -1686,6 +1729,7 @@ fn local_video_metadata_from_context(
         // track that has readable dimensions; duration uses the first video track.
         dimensions: context.tracks.iter().find_map(video_track_dimensions),
         duration: video_track_duration_f64(first_video_track),
+        average_frame_rate: video_track_average_frame_rate(first_video_track),
     })
 }
 
@@ -1735,6 +1779,58 @@ fn video_track_duration_f64(track: &mp4parse::Track) -> Option<f64> {
     let duration = track.duration?;
     let timescale = track.timescale?;
     (timescale.0 > 0).then_some(duration.0 as f64 / timescale.0 as f64)
+}
+
+// The weighted stts sample durations provide the same average-rate measure
+// used by ffprobe's avg_frame_rate without requiring ffprobe at runtime.
+fn video_track_average_frame_rate(track: &mp4parse::Track) -> Option<AverageFrameRate> {
+    if track.track_type != mp4parse::TrackType::Video {
+        return None;
+    }
+    let timescale = track.timescale?.0;
+    if timescale == 0 {
+        return None;
+    }
+    let stts = track.stts.as_ref()?;
+    let (frame_count, duration_ticks) = stts.samples.iter().try_fold(
+        (0_u128, 0_u128),
+        |(frame_count, duration_ticks), sample| {
+            let sample_count = u128::from(sample.sample_count);
+            let sample_ticks = sample_count.checked_mul(u128::from(sample.sample_delta))?;
+            Some((
+                frame_count.checked_add(sample_count)?,
+                duration_ticks.checked_add(sample_ticks)?,
+            ))
+        },
+    )?;
+    if frame_count == 0 || duration_ticks == 0 {
+        return None;
+    }
+    Some(AverageFrameRate {
+        numerator: frame_count.checked_mul(u128::from(timescale))?,
+        duration_ticks,
+    })
+}
+
+fn validate_local_reference_video_frame_rate(
+    path: &str,
+    frame_rate: Option<AverageFrameRate>,
+) -> Result<(), String> {
+    let Some(frame_rate) = frame_rate else {
+        return Err(format!(
+            "Reference video '{}': cannot determine average FPS from valid video timing metadata; expected [24, 60] fps.",
+            path
+        ));
+    };
+    if frame_rate.is_within_q31_range() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Reference video '{}': average FPS {:.9} is outside allowed range [24, 60] fps.",
+            path,
+            frame_rate.as_f64()
+        ))
+    }
 }
 
 fn read_mp4_dimensions(path: &str) -> Option<(u32, u32)> {
@@ -2048,6 +2144,7 @@ mod tests {
         let metadata = local_video_metadata_from_context(&context).unwrap();
         assert_eq!(metadata.dimensions, None);
         assert_eq!(metadata.duration, Some(4.0));
+        assert_eq!(metadata.average_frame_rate, None);
         assert!(format_local_video_dimensions_error("audio-only.mp4")
             .contains("has no readable dimensions"));
     }
@@ -2063,6 +2160,94 @@ mod tests {
             validate_local_reference_video_geometry("sample.mp4", 864, 486),
             Ok(())
         );
+    }
+
+    fn video_track_with_timing(timescale: u64, entries: &[(u32, u32)]) -> mp4parse::Track {
+        let mut samples = mp4parse::TryVec::new();
+        for &(sample_count, sample_delta) in entries {
+            samples
+                .push(mp4parse::Sample {
+                    sample_count,
+                    sample_delta,
+                })
+                .unwrap();
+        }
+        mp4parse::Track {
+            track_type: mp4parse::TrackType::Video,
+            timescale: Some(mp4parse::TrackTimeScale(timescale, 1)),
+            stts: Some(mp4parse::TimeToSampleBox { samples }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn local_reference_video_average_fps_accepts_inclusive_q31_bounds() {
+        let at_minimum =
+            video_track_average_frame_rate(&video_track_with_timing(24_000, &[(24, 1_000)]))
+                .unwrap();
+        let at_maximum =
+            video_track_average_frame_rate(&video_track_with_timing(60_000, &[(60, 1_000)]))
+                .unwrap();
+        assert!(at_minimum.is_within_q31_range());
+        assert!(at_maximum.is_within_q31_range());
+        assert_eq!(
+            validate_local_reference_video_frame_rate("minimum.mp4", Some(at_minimum)),
+            Ok(())
+        );
+        assert_eq!(
+            validate_local_reference_video_frame_rate("maximum.mp4", Some(at_maximum)),
+            Ok(())
+        );
+
+        // Weight sample timing by frame count: 48 frames over 2.4s is 20 FPS.
+        let variable_rate =
+            video_track_average_frame_rate(&video_track_with_timing(1_000, &[(24, 40), (24, 60)]))
+                .unwrap();
+        assert_eq!(variable_rate.as_f64(), 20.0);
+        assert!(!variable_rate.is_within_q31_range());
+        assert!(
+            validate_local_reference_video_frame_rate("vfr.mp4", Some(variable_rate))
+                .unwrap_err()
+                .contains("average FPS 20.000000000")
+        );
+    }
+
+    #[test]
+    fn local_reference_video_average_fps_rejects_out_of_range_rates_without_rounding() {
+        let below_minimum =
+            video_track_average_frame_rate(&video_track_with_timing(24_000, &[(24, 1_001)]))
+                .unwrap();
+        let above_maximum =
+            video_track_average_frame_rate(&video_track_with_timing(60_100, &[(60, 1_000)]))
+                .unwrap();
+        assert_eq!(below_minimum.as_f64(), 24_000.0 / 1_001.0);
+        assert!(!below_minimum.is_within_q31_range());
+        assert!(!above_maximum.is_within_q31_range());
+        assert_eq!(
+            validate_local_reference_video_frame_rate("ntsc.mp4", Some(below_minimum))
+                .unwrap_err(),
+            "Reference video 'ntsc.mp4': average FPS 23.976023976 is outside allowed range [24, 60] fps."
+        );
+        assert!(
+            validate_local_reference_video_frame_rate("fast.mp4", Some(above_maximum))
+                .unwrap_err()
+                .contains("average FPS 60.100000000")
+        );
+    }
+
+    #[test]
+    fn local_reference_video_average_fps_reports_missing_or_invalid_timing() {
+        let mut missing_stts = video_track_with_timing(24_000, &[]);
+        missing_stts.stts = None;
+        let zero_timescale = video_track_with_timing(0, &[(24, 1_000)]);
+        let zero_duration = video_track_with_timing(24_000, &[(24, 0)]);
+        for track in [missing_stts, zero_timescale, zero_duration] {
+            assert_eq!(video_track_average_frame_rate(&track), None);
+        }
+        let error = validate_local_reference_video_frame_rate("missing-fps.mp4", None).unwrap_err();
+        assert!(error.contains("missing-fps.mp4"));
+        assert!(error.contains("cannot determine average FPS"));
+        assert!(error.contains("[24, 60]"));
     }
 
     #[test]
@@ -2082,6 +2267,8 @@ mod tests {
             read_mp4_dimensions(path.to_str().unwrap()),
             Some((640, 360))
         );
+        let metadata = read_local_video_metadata(path.to_str().unwrap()).unwrap();
+        assert_eq!(metadata.average_frame_rate.unwrap().as_f64(), 1.0);
 
         let file = std::fs::File::open(&path).unwrap();
         let mut reader = std::io::BufReader::new(file);

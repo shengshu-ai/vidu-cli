@@ -110,8 +110,9 @@ references; it requires at least one image or video, accepts up to 9 images
 and 3 videos, and does not support materials, audio, automatic duration,
 transitions, edit, or extend inputs. It accepts only `--schedule-mode normal`
 (credits). Local MP4/MOV references must each be
-4-30 seconds and total at most 30 seconds. Existing `ssupload` videos pass
-through for full server-side validation. Submit and cost use the same Drama
+4-30 seconds, average 24-60 fps, and total at most 30 seconds. The CLI checks
+the average frame rate of each local video before submission. Existing `ssupload`
+videos pass through for full server-side validation. Submit and cost use the same Drama
 defaults; cost values are returned by the API.
 
 **Examples:**

@@ -109,8 +109,9 @@ Q3.1 Drama 的 `text2video` 只接受文本 prompt。图像和视频参考请使
 `character2video`，并且至少提供一张图或一个视频；最多 9 张图、3 段视频。
 该模型不支持 material、音频、自动时长、转场、edit 或 extend，且仅支持
 `--schedule-mode normal` 积分模式。每段本地
-MP4/MOV 参考视频须为 4–30 秒，合计不超过 30 秒。已有 `ssupload` 视频直接
-透传，由服务端校验完整集合。submit 和 cost 使用相同的 Drama 默认参数，
+MP4/MOV 参考视频须为 4–30 秒、平均帧率为 24–60 fps，合计不超过 30 秒。
+CLI 会在提交前检查每段本地视频的平均帧率。已有 `ssupload` 视频直接透传，
+由服务端校验完整集合。submit 和 cost 使用相同的 Drama 默认参数，
 报价由后端返回。
 
 **示例：**
