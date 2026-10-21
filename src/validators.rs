@@ -364,9 +364,6 @@ pub fn validate_task_body(body: &Value) -> String {
         if material_count > 0 {
             return "viduq3.1-drama-std does not support material references".into();
         }
-        if audio_count > 0 {
-            return "viduq3.1-drama-std does not support audio references".into();
-        }
         if let Some(prompt_type) = unsupported_prompt_type {
             return format!(
                 "viduq3.1-drama-std does not support '{}' prompt references",
@@ -741,10 +738,12 @@ pub fn validate_reference_audio_count(task_type: &str, model_version: &str, coun
     if count == 0 {
         return String::new();
     }
-    if task_type != "character2video" || !["3.2_a", "3.4"].contains(&model_version) {
-        return "Audio input is only supported for character2video with model_version 3.2_a or 3.4".into();
+    if task_type != "character2video"
+        || !["3.2_a", "3.4", DRAMA_MODEL_VERSION].contains(&model_version)
+    {
+        return "Audio input is only supported for character2video with model_version 3.2_a, 3.4, or viduq3.1-drama-std".into();
     }
-    if count > 3 {
+    if model_version != DRAMA_MODEL_VERSION && count > 3 {
         return format!("Too many audio inputs: {}. Max: 3", count);
     }
     String::new()
@@ -1528,7 +1527,7 @@ mod tests {
         character["input"]["prompts"].as_array_mut().unwrap().push(json!({
             "type": "audio", "content": "ssupload:?id=audio"
         }));
-        assert!(validate_task_body(&character).contains("does not support audio"));
+        assert_eq!(validate_task_body(&character), "");
         character["input"]["prompts"].as_array_mut().unwrap().pop();
         character["settings"]["transition"] = json!("pro");
         assert!(validate_task_body(&character).contains("does not support transition"));
@@ -1634,6 +1633,14 @@ mod tests {
             assert_eq!(validate_reference_audio_count("character2video", model, 3), "");
             assert!(validate_reference_audio_count("character2video", model, 4).contains("Max: 3"));
         }
+        assert_eq!(
+            validate_reference_audio_count(
+                "character2video",
+                DRAMA_MODEL_VERSION,
+                4
+            ),
+            ""
+        );
         for (task_type, model) in [("img2video", "3.4"), ("character2video", "3.2")] {
             assert!(!validate_reference_audio_count(task_type, model, 1).is_empty());
             assert_eq!(validate_reference_audio_count(task_type, model, 0), "");

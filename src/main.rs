@@ -78,7 +78,7 @@ enum TaskAction {
     ///   Duration: 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s, 3.4→1-16s, Drama→4-30s (default 5)
     ///   Resolution: 1080p; Q4 also supports 540p, 720p, 2k, 4k; Drama supports 480p/720p/1080p (default 720p)
     ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
-    ///   Inputs: image + material ≤ 7 (Drama: image ≤ 9, video ≤ 3; no material/audio)
+    ///   Inputs: image + material ≤ 7 (Drama: image ≤ 9, video ≤ 3, audio references; no material)
     Submit {
         #[arg(long = "type", value_name = "TYPE",
             value_parser = validators::parse_task_type,
@@ -103,7 +103,7 @@ enum TaskAction {
         #[arg(
             long = "audio",
             action = clap::ArgAction::Append,
-            help = "Reference audio (local WAV/MP3 path or ssupload:?id=xxx). character2video + 3.2_a or 3.4 (Q4), max 3. Q4: each 1-16s, audio-only references allowed. 3.2_a: each 2-15s, total <=15s."
+            help = "Reference audio for character2video + 3.2_a, 3.4 (Q4), or Drama. Local WAV/MP3 (max 15MB) or ssupload URI. 3.2_a: max 3, each 2-15s (15s total). Q4: max 3, each 1-16s. Drama has no CLI count or duration limit."
         )]
         audios: Vec<String>,
         #[arg(long = "video", action = clap::ArgAction::Append, help = "Video input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a or viduq3.1-drama-std. Max 3; Drama local MP4/MOV clips: 4-30s each, total ≤30s.")]

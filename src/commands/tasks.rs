@@ -229,11 +229,6 @@ fn reference_audio_durations(
     if !err.is_empty() {
         client::fail("client_error", &err, None, None, None);
     }
-    let (min, max) = if model_version == "3.4" {
-        (1.0, 16.0)
-    } else {
-        (2.0, 15.0)
-    };
     let mut total = 0.0;
     audios
         .iter()
@@ -249,28 +244,40 @@ fn reference_audio_durations(
                 client::fail("client_error", &err, None, None, None);
             }
             let duration = read_audio_duration_f64(audio);
-            if !(min..=max).contains(&duration) {
-                client::fail(
-                    "client_error",
-                    &format!("Audio duration {:.3}s out of range [{}, {}]s", duration, min, max),
-                    None,
-                    None,
-                    None,
-                );
-            }
             total += duration;
-            if model_version == "3.2_a" && total > 15.0 {
-                client::fail(
-                    "client_error",
-                    &format!("Total audio duration {:.1}s exceeds 15s", total),
-                    None,
-                    None,
-                    None,
-                );
+            if let Err(err) = validate_reference_audio_duration(model_version, duration, total) {
+                client::fail("client_error", &err, None, None, None);
             }
             Some(duration)
         })
         .collect()
+}
+
+fn validate_reference_audio_duration(
+    model_version: &str,
+    duration: f64,
+    total_duration: f64,
+) -> Result<(), String> {
+    let range = match model_version {
+        "3.2_a" => Some((2.0, 15.0)),
+        "3.4" => Some((1.0, 16.0)),
+        _ => None,
+    };
+    if let Some((min, max)) = range {
+        if !(min..=max).contains(&duration) {
+            return Err(format!(
+                "Audio duration {:.3}s out of range [{}, {}]s",
+                duration, min, max
+            ));
+        }
+    }
+    if model_version == "3.2_a" && total_duration > 15.0 {
+        return Err(format!(
+            "Total audio duration {:.1}s exceeds 15s",
+            total_duration
+        ));
+    }
+    Ok(())
 }
 
 fn validate_local_reference_video_durations(
@@ -2361,6 +2368,50 @@ mod tests {
         assert_eq!(params["settings.duration"], "5");
         assert_eq!(params["settings.resolution"], "720p");
         assert_eq!(params["settings.aspect_ratio"], "16:9");
+    }
+
+    #[test]
+    fn drama_submit_body_includes_audio_reference_prompt() {
+        let prompts = vec![
+            json!({"type": "text", "content": "spoken scene"}),
+            json!({"type": "image", "content": "ssupload:?id=character"}),
+            json!({
+                "type": "audio",
+                "content": "ssupload:?id=voice",
+                "name": "voice.wav"
+            }),
+        ];
+        let body = build_submit_body(
+            "character2video",
+            prompts,
+            5,
+            validators::DRAMA_MODEL_VERSION,
+            Some("16:9"),
+            None,
+            "720p",
+            1,
+            "h265",
+            "auto",
+            Some("normal"),
+        );
+
+        assert_eq!(body["input"]["prompts"][2]["type"], "audio");
+        assert_eq!(body["input"]["prompts"][2]["content"], "ssupload:?id=voice");
+        assert_eq!(validators::validate_task_body(&body), "");
+    }
+
+    #[test]
+    fn drama_audio_duration_has_no_3_2a_or_q4_specific_bounds() {
+        assert_eq!(
+            validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 30.0, 30.0),
+            Ok(())
+        );
+        assert!(validate_reference_audio_duration("3.4", 30.0, 30.0)
+            .unwrap_err()
+            .contains("out of range [1, 16]"));
+        assert!(validate_reference_audio_duration("3.2_a", 10.0, 16.0)
+            .unwrap_err()
+            .contains("Total audio duration 16.0s exceeds 15s"));
     }
 
     #[test]

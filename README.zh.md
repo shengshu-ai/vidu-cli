@@ -79,7 +79,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `--resolution` | Drama：720p；旧版 submit 模型：必填 | 输出分辨率。旧模型的 cost 查询仍默认 1080p |
 | `--aspect-ratio` | Drama：16:9 | `16:9`、`9:16`、`1:1`、`4:3`、`3:4`（img2video/headtailimg2video 不适用） |
 | `--schedule-mode` | auto | `nopeak` 使用闲时额度，资格、剩余额度及任务/模型限制由服务端校验；`claw_pass` 使用通行证额度；`normal` 使用积分。Q4 默认 `normal`，不支持 `claw_pass`，并可按服务端规则使用 `nopeak`。Drama 只支持积分模式 `normal`。其他模型省略时自动检测有效 claw pass，否则使用 `normal` |
-| `--audio` | - | `character2video` 的 `3.2_a` 或 `3.4`（Q4）参考音频；可重复传入，最多 3 个，支持本地 WAV/MP3 或 `ssupload` URI |
+| `--audio` | - | `character2video` 的 `3.2_a`、`3.4`（Q4）或 Q3.1 Drama 参考音频；可重复传入。`3.2_a`/Q4 最多 3 个（`3.2_a` 每个 2–15 秒、合计不超过 15 秒；Q4 每个 1–16 秒）；Drama 不在 CLI 限制数量或时长。本地 WAV/MP3 文件最大 15MB；`ssupload` URI 透传给服务端校验 |
 | `--transition` | - | `img2video` / `headtailimg2video`：`3.0` 使用 `creative` / `stable`，`3.1` / `3.2` 必须传 `pro` / `speed`；`character2video 3.2` 也必须传 `pro` / `speed`；`text2video` 仅 `3.2` 支持 |
 | `--sample-count` | 1 | 生成样本数 |
 | `--codec` | h265 | 输出视频编码 |

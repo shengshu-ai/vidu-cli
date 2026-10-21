@@ -77,7 +77,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `--resolution` | Drama: 720p; legacy submit models: required | Supported output size. Cost queries keep the legacy 1080p default |
 | `--aspect-ratio` | Drama: 16:9 | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` (not for img2video/headtailimg2video) |
 | `--schedule-mode` | auto | `nopeak` uses off-peak quota subject to server eligibility, remaining quota, and task/model rules; `claw_pass` uses pass quota; `normal` uses credits. Q4 defaults to `normal`, rejects `claw_pass`, and accepts `nopeak` subject to server rules. Drama supports only `normal` credits. Other models auto-detect an active claw pass, otherwise use `normal` |
-| `--audio` | - | Reference audio for `character2video` with `3.2_a` or `3.4` (Q4). Repeatable, max 3; local WAV/MP3 or `ssupload` URI |
+| `--audio` | - | Reference audio for `character2video` with `3.2_a`, `3.4` (Q4), or Q3.1 Drama. Repeatable; `3.2_a`/Q4 allow up to 3 (2–15s each, 15s total for `3.2_a`; 1–16s each for Q4). Drama has no CLI count or duration limit. Local WAV/MP3 files are limited to 15MB; `ssupload` URIs are passed through for server validation |
 | `--transition` | - | For `img2video` / `headtailimg2video`: `3.0` uses `creative` / `stable`, `3.1` / `3.2` require `pro` / `speed`; `character2video 3.2` also requires `pro` / `speed`; `text2video` supports it only on `3.2` |
 | `--sample-count` | 1 | Number of samples to generate |
 | `--codec` | h265 | Output video codec |
