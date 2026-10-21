@@ -224,6 +224,7 @@ fn reference_audio_durations(
     task_type: &str,
     model_version: &str,
     audios: &[String],
+    has_reference_video: bool,
 ) -> Vec<Option<f64>> {
     let err = validators::validate_reference_audio_count(task_type, model_version, audios.len());
     if !err.is_empty() {
@@ -245,7 +246,12 @@ fn reference_audio_durations(
             }
             let duration = read_audio_duration_f64(audio);
             total += duration;
-            if let Err(err) = validate_reference_audio_duration(model_version, duration, total) {
+            if let Err(err) = validate_reference_audio_duration(
+                model_version,
+                duration,
+                total,
+                has_reference_video,
+            ) {
                 client::fail("client_error", &err, None, None, None);
             }
             Some(duration)
@@ -257,10 +263,13 @@ fn validate_reference_audio_duration(
     model_version: &str,
     duration: f64,
     total_duration: f64,
+    has_reference_video: bool,
 ) -> Result<(), String> {
     let range = match model_version {
         "3.2_a" => Some((2.0, 15.0)),
         "3.4" => Some((1.0, 16.0)),
+        validators::DRAMA_MODEL_VERSION if has_reference_video => Some((2.0, 30.0)),
+        validators::DRAMA_MODEL_VERSION => Some((4.0, 30.0)),
         _ => None,
     };
     if let Some((min, max)) = range {
@@ -274,6 +283,12 @@ fn validate_reference_audio_duration(
     if model_version == "3.2_a" && total_duration > 15.0 {
         return Err(format!(
             "Total audio duration {:.1}s exceeds 15s",
+            total_duration
+        ));
+    }
+    if model_version == validators::DRAMA_MODEL_VERSION && total_duration > 30.0 {
+        return Err(format!(
+            "Total audio duration {:.1}s exceeds 30s",
             total_duration
         ));
     }
@@ -486,7 +501,12 @@ pub fn submit(
     }
 
     let video_durations = inspect_reference_videos(task_type, model_version, videos);
-    let audio_durations = reference_audio_durations(task_type, model_version, audios);
+    let audio_durations = reference_audio_durations(
+        task_type,
+        model_version,
+        audios,
+        !videos.is_empty(),
+    );
     let mut prompts = vec![json!({"type": "text", "content": prompt})];
 
     // Process images (auto-upload local files / URLs)
@@ -2374,7 +2394,6 @@ mod tests {
     fn drama_submit_body_includes_audio_reference_prompt() {
         let prompts = vec![
             json!({"type": "text", "content": "spoken scene"}),
-            json!({"type": "image", "content": "ssupload:?id=character"}),
             json!({
                 "type": "audio",
                 "content": "ssupload:?id=voice",
@@ -2395,23 +2414,77 @@ mod tests {
             Some("normal"),
         );
 
-        assert_eq!(body["input"]["prompts"][2]["type"], "audio");
-        assert_eq!(body["input"]["prompts"][2]["content"], "ssupload:?id=voice");
+        assert_eq!(body["input"]["prompts"].as_array().unwrap().len(), 2);
+        assert_eq!(body["input"]["prompts"][1]["type"], "audio");
+        assert_eq!(body["input"]["prompts"][1]["content"], "ssupload:?id=voice");
         assert_eq!(validators::validate_task_body(&body), "");
     }
 
     #[test]
-    fn drama_audio_duration_has_no_3_2a_or_q4_specific_bounds() {
+    fn drama_audio_duration_limits_follow_available_video_context() {
         assert_eq!(
-            validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 30.0, 30.0),
+            validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 4.0, 30.0, false),
             Ok(())
         );
-        assert!(validate_reference_audio_duration("3.4", 30.0, 30.0)
+        assert!(validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 3.9, 3.9, false)
+            .unwrap_err()
+            .contains("out of range [4, 30]"));
+        assert_eq!(
+            validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 2.0, 30.0, true),
+            Ok(())
+        );
+        assert!(validate_reference_audio_duration(
+            validators::DRAMA_MODEL_VERSION,
+            1.99,
+            1.99,
+            true
+        )
+        .unwrap_err()
+        .contains("out of range [2, 30]"));
+        assert_eq!(
+            validate_reference_audio_duration(
+                validators::DRAMA_MODEL_VERSION,
+                30.0,
+                30.0,
+                true
+            ),
+            Ok(())
+        );
+        assert!(validate_reference_audio_duration(
+            validators::DRAMA_MODEL_VERSION,
+            30.01,
+            30.01,
+            true
+        )
+        .unwrap_err()
+        .contains("out of range [2, 30]"));
+        assert!(validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 30.0, 30.1, true)
+            .unwrap_err()
+            .contains("Total audio duration 30.1s exceeds 30s"));
+        assert!(validate_reference_audio_duration("3.4", 30.0, 30.0, false)
             .unwrap_err()
             .contains("out of range [1, 16]"));
-        assert!(validate_reference_audio_duration("3.2_a", 10.0, 16.0)
+        assert!(validate_reference_audio_duration("3.2_a", 10.0, 16.0, false)
             .unwrap_err()
             .contains("Total audio duration 16.0s exceeds 15s"));
+
+        let mut total = 0.0;
+        for duration in [15.0, 15.1] {
+            total += duration;
+            let result = validate_reference_audio_duration(
+                validators::DRAMA_MODEL_VERSION,
+                duration,
+                total,
+                false,
+            );
+            if total <= 30.0 {
+                assert_eq!(result, Ok(()));
+            } else {
+                assert!(result
+                    .unwrap_err()
+                    .contains("Total audio duration 30.1s exceeds 30s"));
+            }
+        }
     }
 
     #[test]
