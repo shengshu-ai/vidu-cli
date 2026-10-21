@@ -1662,22 +1662,39 @@ fn get_media_dimensions(path: &str, ext: &str) -> Option<(u32, u32)> {
     }
 }
 
+fn video_track_dimensions(track: &mp4parse::Track) -> Option<(u32, u32)> {
+    if track.track_type != mp4parse::TrackType::Video {
+        return None;
+    }
+
+    let sample_entry_dimensions = track
+        .stsd
+        .as_ref()
+        .and_then(|stsd| stsd.descriptions.first())
+        .and_then(|desc| match desc {
+            mp4parse::SampleEntry::Video(video) => {
+                Some((u32::from(video.width), u32::from(video.height)))
+            }
+            _ => None,
+        })
+        .filter(|(width, height)| *width > 0 && *height > 0);
+    if sample_entry_dimensions.is_some() {
+        return sample_entry_dimensions;
+    }
+
+    // The sample entry has no dimensions for codecs such as HEVC. tkhd stores
+    // the track dimensions as 16.16 fixed-point values; keep its declared
+    // width/height, matching the coded dimensions returned above.
+    let header = track.tkhd.as_ref()?;
+    let dimensions = (header.width >> 16, header.height >> 16);
+    (dimensions.0 > 0 && dimensions.1 > 0).then_some(dimensions)
+}
+
 fn read_mp4_dimensions(path: &str) -> Option<(u32, u32)> {
     let file = std::fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(file);
     let ctx = mp4parse::read_mp4(&mut reader).ok()?;
-    for track in &ctx.tracks {
-        if track.track_type == mp4parse::TrackType::Video {
-            if let Some(ref stsd) = track.stsd {
-                if let Some(desc) = stsd.descriptions.first() {
-                    if let mp4parse::SampleEntry::Video(ref video) = desc {
-                        return Some((video.width as u32, video.height as u32));
-                    }
-                }
-            }
-        }
-    }
-    None
+    ctx.tracks.iter().find_map(video_track_dimensions)
 }
 
 fn read_video_duration_f64(path: &str) -> Option<f64> {
@@ -1917,6 +1934,57 @@ fn ext_from_bytes(bytes: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_mp4_dimensions_uses_tkhd_for_hevc_and_keeps_coded_size_for_rotated_track() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("hevc-rotated.mp4");
+        std::fs::write(
+            &path,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/hevc_640x360_rotated.mp4"
+            )),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_mp4_dimensions(path.to_str().unwrap()),
+            Some((640, 360))
+        );
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut reader = std::io::BufReader::new(file);
+        let context = mp4parse::read_mp4(&mut reader).unwrap();
+        let mut track = context.tracks.into_iter().next().unwrap();
+        assert_eq!(track.track_type, mp4parse::TrackType::Video);
+        assert!(matches!(
+            track
+                .stsd
+                .as_ref()
+                .and_then(|stsd| stsd.descriptions.first()),
+            Some(mp4parse::SampleEntry::Unknown)
+        ));
+        let header = track.tkhd.as_ref().unwrap();
+        assert_eq!(
+            (
+                header.matrix.a,
+                header.matrix.b,
+                header.matrix.c,
+                header.matrix.d
+            ),
+            (0, -65536, 65536, 0)
+        );
+        assert_eq!(video_track_dimensions(&track), Some((640, 360)));
+
+        track.track_type = mp4parse::TrackType::Audio;
+        assert_eq!(video_track_dimensions(&track), None);
+        track.track_type = mp4parse::TrackType::Video;
+        let header = track.tkhd.as_mut().unwrap();
+        header.width = 0;
+        header.height = 0;
+        assert_eq!(video_track_dimensions(&track), None);
+    }
 
     #[test]
     fn drama_submit_and_cost_build_the_same_default_settings() {
