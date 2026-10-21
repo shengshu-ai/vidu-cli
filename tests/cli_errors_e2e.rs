@@ -171,7 +171,7 @@ fn drama_text2video_rejects_reference_inputs_before_file_access() {
 }
 
 #[test]
-fn drama_character2video_requires_an_image_or_video_reference() {
+fn drama_character2video_requires_at_least_one_reference() {
     cli()
         .env_remove("VIDU_TOKEN")
         .args([
@@ -180,7 +180,20 @@ fn drama_character2video_requires_an_image_or_video_reference() {
         ])
         .assert()
         .failure()
-        .stdout(contains("requires at least one image or video"));
+        .stdout(contains("requires at least one image, video or audio"));
+}
+
+#[test]
+fn drama_character2video_allows_audio_only_preflight() {
+    cli()
+        .env_remove("VIDU_TOKEN")
+        .args([
+            "task", "submit", "--type", "character2video", "--prompt", "test",
+            "--model-version", "viduq3.1-drama-std", "--audio", "ssupload:?id=audio",
+        ])
+        .assert()
+        .failure()
+        .stdout(contains("VIDU_TOKEN not set"));
 }
 
 #[test]

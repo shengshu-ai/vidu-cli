@@ -77,7 +77,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `--resolution` | Drama: 720p; legacy submit models: required | Supported output size. Cost queries keep the legacy 1080p default |
 | `--aspect-ratio` | Drama: 16:9 | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` (not for img2video/headtailimg2video) |
 | `--schedule-mode` | auto | `nopeak` uses off-peak quota subject to server eligibility, remaining quota, and task/model rules; `claw_pass` uses pass quota; `normal` uses credits. Q4 defaults to `normal`, rejects `claw_pass`, and accepts `nopeak` subject to server rules. Drama supports only `normal` credits. Other models auto-detect an active claw pass, otherwise use `normal` |
-| `--audio` | - | Reference audio for `character2video` with `3.2_a` or `3.4` (Q4). Repeatable, max 3; local WAV/MP3 or `ssupload` URI |
+| `--audio` | - | Reference audio for `character2video` with `3.2_a`, `3.4` (Q4), or Q3.1 Drama. `3.2_a`/Q4 allow up to 3 (2–15s each, 15s total for `3.2_a`; 1–16s each for Q4). Drama allows up to 10 and 30s total. Local Drama audio: 4–30s each without `--video`, 2–30s each with `--video`; the server determines edit/reference task type and enforces the 4s minimum for non-edit tasks. Local WAV/MP3 files are limited to 15MB; `ssupload` durations are validated by the server |
 | `--transition` | - | For `img2video` / `headtailimg2video`: `3.0` uses `creative` / `stable`, `3.1` / `3.2` require `pro` / `speed`; `character2video 3.2` also requires `pro` / `speed`; `text2video` supports it only on `3.2` |
 | `--sample-count` | 1 | Number of samples to generate |
 | `--codec` | h265 | Output video codec |
@@ -106,9 +106,16 @@ Audio validation runs before image uploads. Existing `ssupload` references
 are checked by the server.
 
 Q3.1 Drama `text2video` accepts text prompts only. Use `character2video` for
-references; it requires at least one image or video, accepts up to 9 images
-and 3 videos, and does not support materials, audio, automatic duration,
-transitions, edit, or extend inputs. It accepts only `--schedule-mode normal`
+references; it requires at least one image, video, or audio, accepts up to 9
+images, 3 videos, and 10 audio references, and does not support materials,
+automatic duration, or transitions. The CLI does not expose an explicit
+edit/extend task-type selector; the server determines the task type from the
+references and prompt. Audio references
+allow up to 30 seconds total: local clips must be 4–30 seconds each without
+`--video`, or 2–30 seconds each with `--video`. With a video reference, the
+server determines the task type and enforces a 4-second minimum for non-edit
+tasks. Local WAV/MP3 files are limited to 15MB each; `ssupload` durations are
+validated by the server. It accepts only `--schedule-mode normal`
 (credits). Local MP4/MOV references must each be
 4-30 seconds, average 24-60 fps, and total at most 30 seconds. The CLI checks
 the average frame rate of each local video before submission. Existing `ssupload`
