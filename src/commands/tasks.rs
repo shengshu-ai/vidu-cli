@@ -3,6 +3,127 @@ use lofty::prelude::AudioFile;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, PartialEq, Eq)]
+struct NormalizedTaskSettings {
+    duration: i64,
+    resolution: String,
+    aspect_ratio: Option<String>,
+}
+
+fn normalize_task_settings(
+    task_type: &str,
+    model_version: &str,
+    duration: Option<i64>,
+    resolution: Option<&str>,
+    aspect_ratio: Option<&str>,
+    legacy_resolution_default: Option<&str>,
+) -> Result<NormalizedTaskSettings, String> {
+    let is_image_type = task_type == "text2image" || task_type == "reference2image";
+    let duration = if is_image_type {
+        0
+    } else {
+        duration
+            .or_else(|| (model_version == validators::DRAMA_MODEL_VERSION).then_some(5))
+            .ok_or_else(|| "duration is required for this task type".to_string())?
+    };
+    let resolution = resolution
+        .or_else(|| {
+            (model_version == validators::DRAMA_MODEL_VERSION)
+                .then_some("720p")
+                .or(legacy_resolution_default)
+        })
+        .ok_or_else(|| "resolution is required for this model".to_string())?
+        .to_string();
+    let aspect_ratio = aspect_ratio
+        .or_else(|| (model_version == validators::DRAMA_MODEL_VERSION).then_some("16:9"))
+        .map(str::to_string);
+
+    Ok(NormalizedTaskSettings {
+        duration,
+        resolution,
+        aspect_ratio,
+    })
+}
+
+fn build_submit_body(
+    task_type: &str,
+    prompts: Vec<Value>,
+    duration: i64,
+    model_version: &str,
+    aspect_ratio: Option<&str>,
+    transition: Option<&str>,
+    resolution: &str,
+    sample_count: i64,
+    codec: &str,
+    movement_amplitude: &str,
+    schedule_mode: Option<&str>,
+) -> Value {
+    let mut body = json!({
+        "type": task_type,
+        "input": {
+            "prompts": prompts,
+            "editor_mode": "normal",
+            "enhance": true
+        },
+        "settings": {
+            "duration": duration,
+            "model_version": model_version,
+            "sample_count": sample_count,
+            "codec": codec,
+            "resolution": resolution,
+        }
+    });
+
+    if let Some(mode) = schedule_mode {
+        body["settings"]["schedule_mode"] = json!(mode);
+    }
+    if let Some(ar) = aspect_ratio {
+        body["settings"]["aspect_ratio"] = json!(ar);
+    }
+    if let Some(tr) = transition {
+        body["settings"]["transition"] = json!(tr);
+    }
+    if movement_amplitude != "auto" {
+        body["settings"]["movement_amplitude"] = json!(movement_amplitude);
+    }
+    body
+}
+
+fn build_credit_query_params(
+    task_type: &str,
+    model_version: &str,
+    settings: &NormalizedTaskSettings,
+    transition: Option<&str>,
+    sample_count: i64,
+    codec: &str,
+    schedule_mode: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut params = std::collections::HashMap::new();
+    params.insert("type".to_string(), task_type.to_string());
+    params.insert(
+        "settings.model_version".to_string(),
+        model_version.to_string(),
+    );
+    params.insert("settings.duration".to_string(), settings.duration.to_string());
+    params.insert(
+        "settings.resolution".to_string(),
+        settings.resolution.clone(),
+    );
+    params.insert(
+        "settings.sample_count".to_string(),
+        sample_count.to_string(),
+    );
+    params.insert("settings.codec".to_string(), codec.to_string());
+    params.insert("settings.schedule_mode".to_string(), schedule_mode.to_string());
+    if let Some(ar) = settings.aspect_ratio.as_deref() {
+        params.insert("settings.aspect_ratio".to_string(), ar.to_string());
+    }
+    if let Some(tr) = transition {
+        params.insert("settings.transition".to_string(), tr.to_string());
+    }
+    params
+}
+
 fn resolve_schedule_mode(explicit: Option<&str>, model_version: Option<&str>) -> String {
     match validators::preferred_schedule_mode(model_version, explicit) {
         Ok(Some(mode)) => return mode,
@@ -152,128 +273,53 @@ fn reference_audio_durations(
         .collect()
 }
 
-pub fn submit(
-    task_type: &str,
-    prompt: Option<&str>,
-    prompt_path: Option<&str>,
-    images: &[String],
-    materials: &[String],
-    audios: &[String],
-    videos: &[String],
-    duration: Option<i64>,
+fn validate_local_reference_video_durations(
     model_version: &str,
-    aspect_ratio: Option<&str>,
-    transition: Option<&str>,
-    resolution: &str,
-    sample_count: i64,
-    codec: &str,
-    movement_amplitude: &str,
-    schedule_mode: Option<&str>,
-) {
-    let prompt = resolve_prompt_inputs(prompt, prompt_path).unwrap_or_else(|| {
-        client::fail(
-            "client_error",
-            "Either --prompt or --prompt-path is required",
-            None,
-            None,
-            None,
-        )
-    });
-    let schedule_mode = resolve_schedule_mode(schedule_mode, Some(model_version));
-    let audio_durations = reference_audio_durations(task_type, model_version, audios);
-    let is_image_type = task_type == "text2image" || task_type == "reference2image";
-    let duration = if is_image_type {
-        0
-    } else {
-        match duration {
-            Some(d) => d,
-            None => client::fail(
-                "client_error",
-                "duration is required for this task type",
-                None,
-                None,
-                None,
-            ),
+    durations: &[f64],
+) -> Result<(), String> {
+    let is_drama = model_version == validators::DRAMA_MODEL_VERSION;
+    if is_drama {
+        if let Some(duration) = durations.iter().find(|d| !(4.0..=30.0).contains(*d)) {
+            return Err(format!(
+                "Drama local video duration {:.3}s out of range [4, 30]s",
+                duration
+            ));
         }
-    };
-    let codec = if codec == "h265" && !crate::commands::upload::ffprobe_available() {
-        "h264"
-    } else {
-        codec
-    };
-    let mut prompts = vec![json!({"type": "text", "content": prompt})];
-
-    // Process images (auto-upload local files / URLs)
-    for img_input in images {
-        let ssupload_uri = process_image_input(img_input);
-        prompts.push(json!({"type": "image", "content": ssupload_uri}));
     }
-
-    for mat in materials {
-        let parts: Vec<&str> = mat.split(':').collect();
-        if parts.len() != 3 {
-            client::fail(
-                "client_error",
-                &format!(
-                    "Invalid material format '{}'. Expected 'name:id:version'",
-                    mat
-                ),
-                None,
-                None,
-                None,
-            );
-        }
-        prompts.push(json!({
-            "type": "material",
-            "name": parts[0],
-            "material": {"id": parts[1], "version": parts[2]}
-        }));
-    }
-
-    for (audio_input, duration) in audios.iter().zip(audio_durations) {
-        let uri = if let Some(duration) = duration {
-            let mut metadata = serde_json::Map::new();
-            metadata.insert("duration".to_string(), json!(duration.to_string()));
-            crate::commands::upload::upload_media_and_get_uri_with_metadata(
-                audio_input,
-                Some(metadata),
-            )
+    let total: f64 = durations.iter().sum();
+    let max_total = if is_drama { 30.0 } else { 15.0 };
+    if total > max_total {
+        let message = if is_drama {
+            format!("Total local video duration {:.1}s exceeds 30s", total)
         } else {
-            audio_input.clone()
+            format!("Total video duration {:.1}s exceeds 15s", total)
         };
-        let name = Path::new(audio_input)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("audio");
-        prompts.push(json!({"type": "audio", "content": uri, "name": name}));
+        return Err(message);
+    }
+    Ok(())
+}
+
+fn inspect_reference_videos(
+    task_type: &str,
+    model_version: &str,
+    videos: &[String],
+) -> Vec<Option<f64>> {
+    let video_error = validators::validate_reference_video_count(task_type, model_version, videos.len());
+    if !video_error.is_empty() {
+        client::fail("client_error", &video_error, None, None, None);
     }
 
-    // Process video inputs (character2video + 3.2_a only)
-    if !videos.is_empty() && !(model_version == "3.2_a" && task_type == "character2video") {
-        client::fail(
-            "client_error",
-            "Video input is only supported for character2video with model_version 3.2_a",
-            None,
-            None,
-            None,
-        );
-    }
-    if !videos.is_empty() && videos.len() > 3 {
-        client::fail(
-            "client_error",
-            &format!("Too many video inputs: {}. Max: 3", videos.len()),
-            None,
-            None,
-            None,
-        );
-    }
-    let mut total_video_duration = 0.0f64;
-    for video_input in videos {
-        let uri = if video_input.starts_with("ssupload:") {
-            video_input.clone()
-        } else if video_input.starts_with("http://") || video_input.starts_with("https://") {
-            client::fail("client_error", "HTTP/HTTPS URLs are not supported for video input. Use a local file path or ssupload:?id=...", None, None, None);
-        } else {
+    let durations: Vec<Option<f64>> = videos
+        .iter()
+        .map(|video_input| {
+            if video_input.starts_with("ssupload:") {
+                // The backend validates the complete metadata set for existing uploads.
+                return None;
+            }
+            if video_input.starts_with("http://") || video_input.starts_with("https://") {
+                client::fail("client_error", "HTTP/HTTPS URLs are not supported for video input. Use a local file path or ssupload:?id=...", None, None, None);
+            }
+
             let err = validators::validate_reference_video_file(video_input);
             if !err.is_empty() {
                 client::fail("client_error", &err, None, None, None);
@@ -332,8 +378,9 @@ pub fn submit(
                     None,
                 );
             }
-            let dur = match read_video_duration_f64(video_input) {
-                Some(d) => d,
+
+            let duration = match read_video_duration_f64(video_input) {
+                Some(value) => value,
                 None => client::fail(
                     "client_error",
                     &format!("Cannot read video duration: {}", video_input),
@@ -342,21 +389,172 @@ pub fn submit(
                     None,
                 ),
             };
-            total_video_duration += dur;
-            if total_video_duration > 15.0 {
-                client::fail(
-                    "client_error",
-                    &format!(
-                        "Total video duration {:.1}s exceeds 15s",
-                        total_video_duration
-                    ),
-                    None,
-                    None,
-                    None,
-                );
-            }
+            Some(duration)
+        })
+        .collect();
+    let local_durations: Vec<f64> = durations.iter().filter_map(|duration| *duration).collect();
+    if let Err(err) = validate_local_reference_video_durations(model_version, &local_durations) {
+        client::fail("client_error", &err, None, None, None);
+    }
+    durations
+}
+
+pub fn submit(
+    task_type: &str,
+    prompt: Option<&str>,
+    prompt_path: Option<&str>,
+    images: &[String],
+    materials: &[String],
+    audios: &[String],
+    videos: &[String],
+    duration: Option<i64>,
+    model_version: &str,
+    aspect_ratio: Option<&str>,
+    transition: Option<&str>,
+    resolution: Option<&str>,
+    sample_count: i64,
+    codec: &str,
+    movement_amplitude: &str,
+    schedule_mode: Option<&str>,
+) {
+    let prompt = resolve_prompt_inputs(prompt, prompt_path).unwrap_or_else(|| {
+        client::fail(
+            "client_error",
+            "Either --prompt or --prompt-path is required",
+            None,
+            None,
+            None,
+        )
+    });
+    let settings = normalize_task_settings(
+        task_type,
+        model_version,
+        duration,
+        resolution,
+        aspect_ratio,
+        None,
+    )
+    .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
+    let codec = if codec == "h265" && !crate::commands::upload::ffprobe_available() {
+        "h264"
+    } else {
+        codec
+    };
+    let schedule_mode = resolve_schedule_mode(schedule_mode, Some(model_version));
+
+    // Validate all model-specific options and reference counts before performing uploads.
+    let mut preflight_prompts = vec![json!({"type": "text", "content": "preflight"})];
+    preflight_prompts.extend((0..images.len()).map(|_| json!({"type": "image", "content": "ssupload:?id=preflight"})));
+    preflight_prompts.extend((0..materials.len()).map(|_| json!({"type": "material", "name": "preflight", "material": {"id": "preflight", "version": "preflight"}})));
+    preflight_prompts.extend((0..audios.len()).map(|_| json!({"type": "audio", "content": "ssupload:?id=preflight"})));
+    preflight_prompts.extend((0..videos.len()).map(|_| json!({"type": "video", "content": "ssupload:?id=preflight"})));
+    let preflight_body = build_submit_body(
+        task_type,
+        preflight_prompts,
+        settings.duration,
+        model_version,
+        settings.aspect_ratio.as_deref(),
+        transition,
+        &settings.resolution,
+        sample_count,
+        codec,
+        movement_amplitude,
+        Some(&schedule_mode),
+    );
+    let preflight_error = validators::validate_task_body(&preflight_body);
+    if !preflight_error.is_empty() {
+        client::fail("client_error", &preflight_error, None, None, None);
+    }
+
+    for material in materials {
+        if material.split(':').count() != 3 {
+            client::fail(
+                "client_error",
+                &format!(
+                    "Invalid material format '{}'. Expected 'name:id:version'",
+                    material
+                ),
+                None,
+                None,
+                None,
+            );
+        }
+    }
+    for image in images {
+        if !image.starts_with("ssupload:")
+            && !image.starts_with("http://")
+            && !image.starts_with("https://")
+            && !Path::new(image).is_file()
+        {
+            client::fail(
+                "client_error",
+                &format!("Image file not found: {}", image),
+                None,
+                None,
+                None,
+            );
+        }
+    }
+
+    let video_durations = inspect_reference_videos(task_type, model_version, videos);
+    let audio_durations = reference_audio_durations(task_type, model_version, audios);
+    let mut prompts = vec![json!({"type": "text", "content": prompt})];
+
+    // Process images (auto-upload local files / URLs)
+    for img_input in images {
+        let ssupload_uri = process_image_input(img_input);
+        prompts.push(json!({"type": "image", "content": ssupload_uri}));
+    }
+
+    for mat in materials {
+        let parts: Vec<&str> = mat.split(':').collect();
+        if parts.len() != 3 {
+            client::fail(
+                "client_error",
+                &format!(
+                    "Invalid material format '{}'. Expected 'name:id:version'",
+                    mat
+                ),
+                None,
+                None,
+                None,
+            );
+        }
+        prompts.push(json!({
+            "type": "material",
+            "name": parts[0],
+            "material": {"id": parts[1], "version": parts[2]}
+        }));
+    }
+
+    for (audio_input, duration) in audios.iter().zip(audio_durations) {
+        let uri = if let Some(duration) = duration {
             let mut metadata = serde_json::Map::new();
-            metadata.insert("duration".to_string(), json!(dur.to_string()));
+            metadata.insert("duration".to_string(), json!(duration.to_string()));
+            crate::commands::upload::upload_media_and_get_uri_with_metadata(
+                audio_input,
+                Some(metadata),
+            )
+        } else {
+            audio_input.clone()
+        };
+        let name = Path::new(audio_input)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("audio");
+        prompts.push(json!({"type": "audio", "content": uri, "name": name}));
+    }
+
+    // Process video inputs after validating every local clip. Existing ssupload
+    // references remain untouched so the backend can validate their full set.
+    for (video_input, duration) in videos.iter().zip(video_durations) {
+        let uri = if video_input.starts_with("ssupload:") {
+            video_input.clone()
+        } else {
+            let mut metadata = serde_json::Map::new();
+            if let Some(duration) = duration {
+                metadata.insert("duration".to_string(), json!(duration.to_string()));
+            }
             crate::commands::upload::upload_media_and_get_uri_with_metadata(
                 video_input,
                 Some(metadata),
@@ -369,32 +567,19 @@ pub fn submit(
         prompts.push(json!({"type": "video", "content": uri, "name": name}));
     }
 
-    let mut body = json!({
-        "type": task_type,
-        "input": {
-            "prompts": prompts,
-            "editor_mode": "normal",
-            "enhance": true
-        },
-        "settings": {
-            "duration": duration,
-            "model_version": model_version,
-            "sample_count": sample_count,
-            "schedule_mode": schedule_mode,
-            "codec": codec,
-            "resolution": resolution,
-        }
-    });
-
-    if let Some(ar) = aspect_ratio {
-        body["settings"]["aspect_ratio"] = json!(ar);
-    }
-    if let Some(tr) = transition {
-        body["settings"]["transition"] = json!(tr);
-    }
-    if movement_amplitude != "auto" {
-        body["settings"]["movement_amplitude"] = json!(movement_amplitude);
-    }
+    let body = build_submit_body(
+        task_type,
+        prompts,
+        settings.duration,
+        model_version,
+        settings.aspect_ratio.as_deref(),
+        transition,
+        &settings.resolution,
+        sample_count,
+        codec,
+        movement_amplitude,
+        Some(&schedule_mode),
+    );
 
     let err = validators::validate_task_body(&body);
     if !err.is_empty() {
@@ -1543,60 +1728,54 @@ pub fn query_credits(
     task_type: &str,
     model_version: &str,
     duration: Option<i64>,
-    resolution: &str,
+    resolution: Option<&str>,
     aspect_ratio: Option<&str>,
     transition: Option<&str>,
     sample_count: i64,
     codec: &str,
     schedule_mode: Option<&str>,
 ) {
+    let settings = normalize_task_settings(
+        task_type,
+        model_version,
+        duration,
+        resolution,
+        aspect_ratio,
+        Some("1080p"),
+    )
+    .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
     let schedule_mode = resolve_schedule_mode(schedule_mode, Some(model_version));
-    let is_image_type = task_type == "text2image" || task_type == "reference2image";
-    let duration = if is_image_type {
-        0
-    } else {
-        match duration {
-            Some(d) => d,
-            None => client::fail(
-                "client_error",
-                "duration is required for this task type",
-                None,
-                None,
-                None,
-            ),
-        }
-    };
 
     if model_version == "3.4" {
-        let err = validators::validate_q4_cost(task_type, duration, resolution, transition);
+        let err = validators::validate_q4_cost(
+            task_type,
+            settings.duration,
+            &settings.resolution,
+            transition,
+        );
+        if !err.is_empty() {
+            client::fail("client_error", &err, None, None, None);
+        }
+    } else if model_version == validators::DRAMA_MODEL_VERSION {
+        let err = validators::validate_drama_cost(
+            task_type,
+            settings.duration,
+            &settings.resolution,
+            transition,
+        );
         if !err.is_empty() {
             client::fail("client_error", &err, None, None, None);
         }
     }
-    let mut params = std::collections::HashMap::new();
-    params.insert("type".to_string(), task_type.to_string());
-    params.insert(
-        "settings.model_version".to_string(),
-        model_version.to_string(),
+    let params = build_credit_query_params(
+        task_type,
+        model_version,
+        &settings,
+        transition,
+        sample_count,
+        codec,
+        &schedule_mode,
     );
-    params.insert("settings.duration".to_string(), duration.to_string());
-    params.insert("settings.resolution".to_string(), resolution.to_string());
-    params.insert(
-        "settings.sample_count".to_string(),
-        sample_count.to_string(),
-    );
-    params.insert("settings.codec".to_string(), codec.to_string());
-    params.insert(
-        "settings.schedule_mode".to_string(),
-        schedule_mode.to_string(),
-    );
-
-    if let Some(ar) = aspect_ratio {
-        params.insert("settings.aspect_ratio".to_string(), ar.to_string());
-    }
-    if let Some(tr) = transition {
-        params.insert("settings.transition".to_string(), tr.to_string());
-    }
 
     let base = client::base_url();
     let data = client::request_json(
@@ -1738,6 +1917,116 @@ fn ext_from_bytes(bytes: &[u8]) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drama_submit_and_cost_build_the_same_default_settings() {
+        let submit = normalize_task_settings(
+            "text2video",
+            validators::DRAMA_MODEL_VERSION,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let cost = normalize_task_settings(
+            "text2video",
+            validators::DRAMA_MODEL_VERSION,
+            None,
+            None,
+            None,
+            Some("1080p"),
+        )
+        .unwrap();
+        assert_eq!(submit, cost);
+        assert_eq!(submit.duration, 5);
+        assert_eq!(submit.resolution, "720p");
+        assert_eq!(submit.aspect_ratio.as_deref(), Some("16:9"));
+        assert_eq!(
+            validators::preferred_schedule_mode(Some(validators::DRAMA_MODEL_VERSION), None),
+            Ok(Some("normal".into()))
+        );
+
+        let body = build_submit_body(
+            "text2video",
+            vec![json!({"type": "text", "content": "story"})],
+            submit.duration,
+            validators::DRAMA_MODEL_VERSION,
+            submit.aspect_ratio.as_deref(),
+            None,
+            &submit.resolution,
+            1,
+            "h264",
+            "auto",
+            Some("normal"),
+        );
+        assert_eq!(body["settings"]["duration"], 5);
+        assert_eq!(body["settings"]["resolution"], "720p");
+        assert_eq!(body["settings"]["aspect_ratio"], "16:9");
+
+        let params = build_credit_query_params(
+            "text2video",
+            validators::DRAMA_MODEL_VERSION,
+            &cost,
+            None,
+            1,
+            "h264",
+            "normal",
+        );
+        assert_eq!(params["settings.duration"], "5");
+        assert_eq!(params["settings.resolution"], "720p");
+        assert_eq!(params["settings.aspect_ratio"], "16:9");
+    }
+
+    #[test]
+    fn legacy_resolution_and_duration_rules_remain_unchanged() {
+        assert!(normalize_task_settings("text2video", "3.2", None, None, None, None)
+            .unwrap_err()
+            .contains("duration is required"));
+        assert!(normalize_task_settings("text2video", "3.2", Some(5), None, None, None)
+            .unwrap_err()
+            .contains("resolution is required"));
+
+        let cost = normalize_task_settings(
+            "text2video",
+            "3.2",
+            Some(5),
+            None,
+            None,
+            Some("1080p"),
+        )
+        .unwrap();
+        assert_eq!(cost.duration, 5);
+        assert_eq!(cost.resolution, "1080p");
+        assert_eq!(cost.aspect_ratio, None);
+    }
+
+    #[test]
+    fn drama_local_reference_video_duration_rules_are_checked_before_upload() {
+        assert_eq!(
+            validate_local_reference_video_durations(
+                validators::DRAMA_MODEL_VERSION,
+                &[4.0, 26.0],
+            ),
+            Ok(())
+        );
+        assert!(validate_local_reference_video_durations(
+            validators::DRAMA_MODEL_VERSION,
+            &[3.99],
+        )
+        .unwrap_err()
+        .contains("out of range [4, 30]"));
+        assert!(validate_local_reference_video_durations(
+            validators::DRAMA_MODEL_VERSION,
+            &[15.1, 15.1],
+        )
+        .unwrap_err()
+        .contains("exceeds 30s"));
+        assert_eq!(validate_local_reference_video_durations("3.2_a", &[8.0, 7.0]), Ok(()));
+        assert!(validate_local_reference_video_durations("3.2_a", &[8.0, 7.1])
+            .unwrap_err()
+            .contains("exceeds 15s"));
+    }
 
     #[test]
     fn ext_from_bytes_jpeg() {

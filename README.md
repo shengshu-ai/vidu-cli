@@ -65,31 +65,35 @@ vidu-cli upload ./photo.jpg
 #### Submit a task
 
 ```bash
-vidu-cli task submit --type <TYPE> --prompt <PROMPT> --duration <DURATION> \
-  --model-version <VERSION> --resolution <RESOLUTION> [OPTIONS]
+vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
+  --model-version <VERSION> [--duration <DURATION>] [--resolution <RESOLUTION>] [OPTIONS]
 ```
 
 **Common options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--schedule-mode` | auto | `nopeak` uses off-peak quota subject to server eligibility, remaining quota, and task/model rules; `claw_pass` uses pass quota; `normal` uses credits. When omitted, Q4 defaults to `normal`; other models auto-detect an active claw pass, otherwise use `normal`. Q4 rejects `claw_pass` and accepts `nopeak` subject to server rules |
+| `--duration` | Drama: 5; legacy video models: required | Video duration in seconds. Drama accepts 4-30. Image tasks ignore it |
+| `--resolution` | Drama: 720p; legacy submit models: required | Supported output size. Cost queries keep the legacy 1080p default |
+| `--aspect-ratio` | Drama: 16:9 | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` (not for img2video/headtailimg2video) |
+| `--schedule-mode` | auto | `nopeak` uses off-peak quota subject to server eligibility, remaining quota, and task/model rules; `claw_pass` uses pass quota; `normal` uses credits. Q4 defaults to `normal`, rejects `claw_pass`, and accepts `nopeak` subject to server rules. Drama supports only `normal` credits. Other models auto-detect an active claw pass, otherwise use `normal` |
 | `--audio` | - | Reference audio for `character2video` with `3.2_a` or `3.4` (Q4). Repeatable, max 3; local WAV/MP3 or `ssupload` URI |
 | `--transition` | - | For `img2video` / `headtailimg2video`: `3.0` uses `creative` / `stable`, `3.1` / `3.2` require `pro` / `speed`; `character2video 3.2` also requires `pro` / `speed`; `text2video` supports it only on `3.2` |
 | `--sample-count` | 1 | Number of samples to generate |
 | `--codec` | h265 | Output video codec |
 | `--movement-amplitude` | auto | Video motion intensity |
-| `--aspect-ratio` | - | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` (not for img2video/headtailimg2video) |
 
 **Task types and constraints:**
 
 | Type | Models | Duration | Resolution | Aspect Ratio |
 |------|--------|----------|------------|--------------|
 | `text2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 |
+| `text2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 |
 | `img2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — |
 | `headtailimg2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — |
 | `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `character2video` (Q4) | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
+| `character2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 |
 | `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 
@@ -100,6 +104,15 @@ audio is present. `3.2_a` keeps its per-file 2-15 second and combined
 15-second limits. Local WAV/MP3 files remain limited to 15 MB each.
 Audio validation runs before image uploads. Existing `ssupload` references
 are checked by the server.
+
+Q3.1 Drama `text2video` accepts text prompts only. Use `character2video` for
+references; it requires at least one image or video, accepts up to 9 images
+and 3 videos, and does not support materials, audio, automatic duration,
+transitions, edit, or extend inputs. It accepts only `--schedule-mode normal`
+(credits). Local MP4/MOV references must each be
+4-30 seconds and total at most 30 seconds. Existing `ssupload` videos pass
+through for full server-side validation. Submit and cost use the same Drama
+defaults; cost values are returned by the API.
 
 **Examples:**
 
@@ -112,6 +125,10 @@ vidu-cli task submit \
   --duration 8 \
   --resolution 1080p \
   --aspect-ratio 16:9
+
+# Q3.1 Drama (duration, resolution, and aspect ratio use model defaults)
+vidu-cli task submit --type text2video --prompt "A quiet street at dawn" \
+  --model-version viduq3.1-drama-std
 
 # Image to video (local file or URL)
 vidu-cli task submit \
@@ -230,6 +247,9 @@ Query credit cost before submitting a task:
 ```bash
 # Video/image tasks
 vidu-cli task cost --type text2video --model-version 3.2 --duration 8
+
+# Q3.1 Drama defaults to duration 5, resolution 720p, and aspect ratio 16:9
+vidu-cli task cost --type text2video --model-version viduq3.1-drama-std
 
 # TTS tasks (priced by character count)
 vidu-cli task tts-cost --text "Hello, this is a test." --voice-id English_Trustworth_Man --pitch 0

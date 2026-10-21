@@ -141,8 +141,79 @@ fn missing_required_lists_each_arg_with_help_tip() {
         .stderr(contains("missing required arguments:"))
         .stderr(contains("--type"))
         .stderr(contains("--model-version"))
-        .stderr(contains("--resolution"))
         .stderr(contains("`vidu-cli task submit --help`"));
+}
+
+#[test]
+fn legacy_submit_still_requires_resolution_before_auth_or_upload() {
+    cli()
+        .env_remove("VIDU_TOKEN")
+        .args([
+            "task", "submit", "--type", "text2video", "--prompt", "test",
+            "--model-version", "3.2", "--duration", "5",
+        ])
+        .assert()
+        .failure()
+        .stdout(contains("resolution is required for this model"));
+}
+
+#[test]
+fn drama_text2video_rejects_reference_inputs_before_file_access() {
+    cli()
+        .env_remove("VIDU_TOKEN")
+        .args([
+            "task", "submit", "--type", "text2video", "--prompt", "test",
+            "--model-version", "viduq3.1-drama-std", "--image", "/does/not/exist.jpg",
+        ])
+        .assert()
+        .failure()
+        .stdout(contains("text prompts only"));
+}
+
+#[test]
+fn drama_character2video_requires_an_image_or_video_reference() {
+    cli()
+        .env_remove("VIDU_TOKEN")
+        .args([
+            "task", "submit", "--type", "character2video", "--prompt", "test",
+            "--model-version", "viduq3.1-drama-std",
+        ])
+        .assert()
+        .failure()
+        .stdout(contains("requires at least one image or video"));
+}
+
+#[test]
+fn drama_cost_rejects_automatic_duration_without_network_access() {
+    cli()
+        .env_remove("VIDU_TOKEN")
+        .args([
+            "task", "cost", "--type", "text2video", "--model-version",
+            "viduq3.1-drama-std", "--duration", "-1",
+        ])
+        .assert()
+        .failure()
+        .stdout(contains("out of range [4, 30]"));
+}
+
+#[test]
+fn drama_submit_and_cost_reject_non_normal_schedule_modes_before_network_access() {
+    for action in ["submit", "cost"] {
+        for mode in ["nopeak", "claw_pass"] {
+            let mut command = cli();
+            command.env_remove("VIDU_TOKEN").args([
+                "task", action, "--type", "text2video", "--model-version",
+                "viduq3.1-drama-std", "--schedule-mode", mode,
+            ]);
+            if action == "submit" {
+                command.args(["--prompt", "test"]);
+            }
+            command
+                .assert()
+                .failure()
+                .stdout(contains("only --schedule-mode normal"));
+        }
+    }
 }
 
 #[test]
