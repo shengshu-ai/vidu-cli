@@ -290,11 +290,8 @@ pub fn validate_task_body(body: &Value) -> String {
         .count();
     let unsupported_prompt_type = prompts_arr.iter().find_map(|prompt| {
         let prompt_type = prompt.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        (![
-            "text", "image", "video", "material", "audio",
-        ]
-        .contains(&prompt_type))
-        .then_some(prompt_type)
+        (!["text", "image", "video", "material", "audio"].contains(&prompt_type))
+            .then_some(prompt_type)
     });
 
     let settings = match body.get("settings") {
@@ -345,7 +342,9 @@ pub fn validate_task_body(body: &Value) -> String {
         "character2video" if model_version == DRAMA_MODEL_VERSION && image_count > 9 => {
             return format!("{} allows max 9 images, got {}", task_type, image_count);
         }
-        "character2video" if model_version != DRAMA_MODEL_VERSION && image_count + material_count > 7 => {
+        "character2video"
+            if model_version != DRAMA_MODEL_VERSION && image_count + material_count > 7 =>
+        {
             return format!(
                 "{} allows max 7 images+materials, got {}",
                 task_type,
@@ -582,9 +581,7 @@ pub fn preferred_schedule_mode(
             );
         }
         if model_version == Some(DRAMA_MODEL_VERSION) && mode != "normal" {
-            return Err(
-                "viduq3.1-drama-std supports only --schedule-mode normal (credits)".into(),
-            );
+            return Err("viduq3.1-drama-std supports only --schedule-mode normal (credits)".into());
         }
     }
     Ok(mode.map(str::to_string))
@@ -601,7 +598,10 @@ pub fn validate_q4_cost(
         return format!("model_version 3.4 does not support {}", task_type);
     };
     if !(min..=max).contains(&duration) {
-        return format!("duration {} out of range [{}, {}] for Q4 {}", duration, min, max, task_type);
+        return format!(
+            "duration {} out of range [{}, {}] for Q4 {}",
+            duration, min, max, task_type
+        );
     }
     if !Q4_RESOLUTIONS.contains(&resolution) {
         return format!("Invalid resolution '{}' for Q4", resolution);
@@ -734,7 +734,11 @@ pub fn validate_audio_file(path: &str) -> String {
     String::new()
 }
 
-pub fn validate_reference_audio_count(task_type: &str, model_version: &str, count: usize) -> String {
+pub fn validate_reference_audio_count(
+    task_type: &str,
+    model_version: &str,
+    count: usize,
+) -> String {
     if count == 0 {
         return String::new();
     }
@@ -754,7 +758,11 @@ pub fn validate_reference_audio_count(task_type: &str, model_version: &str, coun
     String::new()
 }
 
-pub fn validate_reference_video_count(task_type: &str, model_version: &str, count: usize) -> String {
+pub fn validate_reference_video_count(
+    task_type: &str,
+    model_version: &str,
+    count: usize,
+) -> String {
     if count == 0 {
         return String::new();
     }
@@ -1285,9 +1293,16 @@ pub fn all_tts_voice_ids() -> Vec<&'static str> {
 
 pub fn validate_tts_voice_id(voice_id: &str) -> String {
     let valid: HashSet<String> = all_tts_voice_ids().iter().map(|s| s.to_string()).collect();
-    if !valid.contains(voice_id) {
+    let is_personal_voice = voice_id.strip_prefix("voice_").is_some_and(|suffix| {
+        !suffix.is_empty()
+            && suffix
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            && suffix.bytes().any(|b| b.is_ascii_alphanumeric())
+    });
+    if !valid.contains(voice_id) && !is_personal_voice {
         return format!(
-            "Invalid voice_id '{}'. Use 'vidu-cli task tts-voices' to list all available voices.",
+            "Invalid voice_id '{}'. Use 'vidu-cli task tts-voices' for official voices or 'vidu-cli voice list' for personal voices.",
             voice_id
         );
     }
@@ -1458,7 +1473,9 @@ mod tests {
                 }
             }
             for duration in [0, min - 1, 17] {
-                assert!(!validate_task_body(&make_body(task_type, "3.4", duration, 1, 0)).is_empty());
+                assert!(
+                    !validate_task_body(&make_body(task_type, "3.4", duration, 1, 0)).is_empty()
+                );
                 assert!(!validate_q4_cost(task_type, duration, "1080p", None).is_empty());
             }
         }
@@ -1485,9 +1502,16 @@ mod tests {
                 assert!(!validate_drama_cost(task_type, duration, "720p", None).is_empty());
             }
         }
-        for task_type in ["img2video", "headtailimg2video", "text2image", "reference2image"] {
-            assert!(validate_task_body(&make_body(task_type, DRAMA_MODEL_VERSION, 5, 1, 0))
-                .contains("does not support"));
+        for task_type in [
+            "img2video",
+            "headtailimg2video",
+            "text2image",
+            "reference2image",
+        ] {
+            assert!(
+                validate_task_body(&make_body(task_type, DRAMA_MODEL_VERSION, 5, 1, 0))
+                    .contains("does not support")
+            );
             assert!(!validate_drama_cost(task_type, 5, "720p", None).is_empty());
         }
     }
@@ -1496,25 +1520,45 @@ mod tests {
     fn drama_reference_rules_are_model_specific() {
         let mut character = make_body("character2video", DRAMA_MODEL_VERSION, 5, 9, 0);
         assert_eq!(validate_task_body(&character), "");
-        character["input"]["prompts"].as_array_mut().unwrap().push(json!({
-            "type": "image", "content": "ssupload:?id=extra"
-        }));
+        character["input"]["prompts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "type": "image", "content": "ssupload:?id=extra"
+            }));
         assert!(validate_task_body(&character).contains("max 9 images"));
 
-        let mut character_without_reference = make_body("character2video", DRAMA_MODEL_VERSION, 5, 0, 0);
-        assert!(validate_task_body(&character_without_reference).contains("requires at least one image, video or audio"));
-        character_without_reference["input"]["prompts"].as_array_mut().unwrap().push(json!({
-            "type": "audio", "content": "ssupload:?id=audio"
-        }));
+        let mut character_without_reference =
+            make_body("character2video", DRAMA_MODEL_VERSION, 5, 0, 0);
+        assert!(validate_task_body(&character_without_reference)
+            .contains("requires at least one image, video or audio"));
+        character_without_reference["input"]["prompts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "type": "audio", "content": "ssupload:?id=audio"
+            }));
         assert_eq!(validate_task_body(&character_without_reference), "");
-        character_without_reference["input"]["prompts"].as_array_mut().unwrap().pop();
-        character_without_reference["input"]["prompts"].as_array_mut().unwrap().push(json!({
-            "type": "video", "content": "ssupload:?id=video"
-        }));
+        character_without_reference["input"]["prompts"]
+            .as_array_mut()
+            .unwrap()
+            .pop();
+        character_without_reference["input"]["prompts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "type": "video", "content": "ssupload:?id=video"
+            }));
         assert_eq!(validate_task_body(&character_without_reference), "");
 
-        assert_eq!(validate_reference_video_count("character2video", DRAMA_MODEL_VERSION, 3), "");
-        assert!(validate_reference_video_count("character2video", DRAMA_MODEL_VERSION, 4).contains("Max: 3"));
+        assert_eq!(
+            validate_reference_video_count("character2video", DRAMA_MODEL_VERSION, 3),
+            ""
+        );
+        assert!(
+            validate_reference_video_count("character2video", DRAMA_MODEL_VERSION, 4)
+                .contains("Max: 3")
+        );
         assert!(!validate_reference_video_count("character2video", "3.2", 1).is_empty());
     }
 
@@ -1529,23 +1573,32 @@ mod tests {
         assert!(validate_task_body(&body).contains("does not support 'extend'"));
 
         let mut character = make_body("character2video", DRAMA_MODEL_VERSION, 5, 1, 0);
-        character["input"]["prompts"].as_array_mut().unwrap().push(json!({
-            "type": "material", "name": "m", "material": {"id": "1", "version": "1"}
-        }));
+        character["input"]["prompts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "type": "material", "name": "m", "material": {"id": "1", "version": "1"}
+            }));
         assert!(validate_task_body(&character).contains("does not support material"));
         character["input"]["prompts"].as_array_mut().unwrap().pop();
-        character["input"]["prompts"].as_array_mut().unwrap().push(json!({
-            "type": "audio", "content": "ssupload:?id=audio"
-        }));
+        character["input"]["prompts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "type": "audio", "content": "ssupload:?id=audio"
+            }));
         assert_eq!(validate_task_body(&character), "");
         character["input"]["prompts"].as_array_mut().unwrap().pop();
         character["settings"]["transition"] = json!("pro");
         assert!(validate_task_body(&character).contains("does not support transition"));
 
         let mut character = make_body("character2video", DRAMA_MODEL_VERSION, 5, 1, 0);
-        character["input"]["prompts"].as_array_mut().unwrap().push(json!({
-            "type": "extend", "content": "ssupload:?id=video"
-        }));
+        character["input"]["prompts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "type": "extend", "content": "ssupload:?id=video"
+            }));
         assert!(validate_task_body(&character).contains("does not support 'extend'"));
         character["input"]["prompts"].as_array_mut().unwrap().pop();
         character["input"]["editor_mode"] = json!("edit");
@@ -1614,9 +1667,11 @@ mod tests {
             preferred_schedule_mode(Some(DRAMA_MODEL_VERSION), Some("nopeak")),
             Err("viduq3.1-drama-std supports only --schedule-mode normal (credits)".into())
         );
-        assert!(preferred_schedule_mode(Some(DRAMA_MODEL_VERSION), Some("claw_pass"))
-            .unwrap_err()
-            .contains("only --schedule-mode normal"));
+        assert!(
+            preferred_schedule_mode(Some(DRAMA_MODEL_VERSION), Some("claw_pass"))
+                .unwrap_err()
+                .contains("only --schedule-mode normal")
+        );
     }
 
     #[test]
@@ -1625,10 +1680,13 @@ mod tests {
             for audio_count in [1, 3] {
                 let mut body = make_body("character2video", "3.4", 8, image_count, 0);
                 for index in 0..audio_count {
-                    body["input"]["prompts"].as_array_mut().unwrap().push(json!({
-                        "type": "audio",
-                        "content": format!("ssupload:?id=audio-{}", index),
-                    }));
+                    body["input"]["prompts"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({
+                            "type": "audio",
+                            "content": format!("ssupload:?id=audio-{}", index),
+                        }));
                 }
                 assert_eq!(validate_task_body(&body), "");
                 body["settings"]["schedule_mode"] = json!("claw_pass");
@@ -1640,34 +1698,51 @@ mod tests {
     #[test]
     fn reference_audio_count_is_model_specific() {
         for model in ["3.2_a", "3.4"] {
-            assert_eq!(validate_reference_audio_count("character2video", model, 3), "");
+            assert_eq!(
+                validate_reference_audio_count("character2video", model, 3),
+                ""
+            );
             assert!(validate_reference_audio_count("character2video", model, 4).contains("Max: 3"));
         }
-        assert_eq!(validate_reference_audio_count("character2video", DRAMA_MODEL_VERSION, 10), "");
-        assert!(validate_reference_audio_count("character2video", DRAMA_MODEL_VERSION, 11)
-            .contains("Max: 10"));
+        assert_eq!(
+            validate_reference_audio_count("character2video", DRAMA_MODEL_VERSION, 10),
+            ""
+        );
+        assert!(
+            validate_reference_audio_count("character2video", DRAMA_MODEL_VERSION, 11)
+                .contains("Max: 10")
+        );
         for (task_type, model) in [("img2video", "3.4"), ("character2video", "3.2")] {
             assert!(!validate_reference_audio_count(task_type, model, 1).is_empty());
             assert_eq!(validate_reference_audio_count(task_type, model, 0), "");
         }
         let mut body = make_body("character2video", "3.4", 8, 1, 0);
         for _ in 0..4 {
-            body["input"]["prompts"].as_array_mut().unwrap().push(json!({
-                "type": "audio", "content": "ssupload:?id=audio",
-            }));
+            body["input"]["prompts"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                    "type": "audio", "content": "ssupload:?id=audio",
+                }));
         }
         assert!(validate_task_body(&body).contains("Max: 3"));
 
         let mut drama_body = make_body("character2video", DRAMA_MODEL_VERSION, 5, 0, 0);
         for _ in 0..10 {
-            drama_body["input"]["prompts"].as_array_mut().unwrap().push(json!({
-                "type": "audio", "content": "ssupload:?id=audio",
-            }));
+            drama_body["input"]["prompts"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({
+                    "type": "audio", "content": "ssupload:?id=audio",
+                }));
         }
         assert_eq!(validate_task_body(&drama_body), "");
-        drama_body["input"]["prompts"].as_array_mut().unwrap().push(json!({
-            "type": "audio", "content": "ssupload:?id=audio",
-        }));
+        drama_body["input"]["prompts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "type": "audio", "content": "ssupload:?id=audio",
+            }));
         assert!(validate_task_body(&drama_body).contains("Max: 10"));
     }
 
@@ -1990,6 +2065,32 @@ mod tests {
     #[test]
     fn tts_voice_id_valid() {
         assert_eq!(validate_tts_voice_id("English_expressive_narrator"), "");
+    }
+
+    #[test]
+    fn tts_personal_voice_ids_are_accepted() {
+        for voice in ["voice_123", "voice_abc-123", "voice_550e8400_e29b"] {
+            assert_eq!(validate_tts_voice_id(voice), "", "{}", voice);
+        }
+    }
+
+    #[test]
+    fn tts_malformed_personal_voice_ids_are_rejected() {
+        for voice in [
+            "voice_",
+            "voice___",
+            "voice_--",
+            "voice_ id",
+            "voice_a/b",
+            "voice_你好",
+            "fake_voice",
+        ] {
+            assert!(
+                validate_tts_voice_id(voice).contains("Invalid voice_id"),
+                "{}",
+                voice
+            );
+        }
     }
 
     #[test]

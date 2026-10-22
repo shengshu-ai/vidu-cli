@@ -1,5 +1,42 @@
 use crate::client;
 use serde_json::{json, Value};
+use std::collections::HashMap;
+
+pub(crate) fn offset_params(
+    page: i64,
+    pagesz: i64,
+) -> Result<HashMap<String, String>, &'static str> {
+    if !(0..=i32::MAX as i64).contains(&page) {
+        return Err("page must be between 0 and 2147483647");
+    }
+    if !(1..=100).contains(&pagesz) {
+        return Err("pagesz must be between 1 and 100");
+    }
+    Ok(HashMap::from([
+        ("pager.page".into(), page.to_string()),
+        ("pager.pagesz".into(), pagesz.to_string()),
+    ]))
+}
+
+fn format_records(data: &Value) -> Value {
+    json!({
+        "total": data.get("total").cloned().unwrap_or(json!(0)),
+        "records": data.get("records").and_then(Value::as_array).cloned().unwrap_or_default(),
+    })
+}
+
+pub fn records(page: i64, pagesz: i64) -> Value {
+    let params = offset_params(page, pagesz)
+        .unwrap_or_else(|message| client::fail("client_error", message, None, None, None));
+    let data = client::request_json(
+        "GET",
+        &format!("{}/credit/v1/credits/records", client::base_url()),
+        None,
+        None,
+        Some(&params),
+    );
+    format_records(&data)
+}
 
 pub fn format_claw_pass_json(data: &Value) -> Value {
     json!({
@@ -48,4 +85,39 @@ pub fn credit_status() {
         "credits_purchased": data.get("credits_purchased").and_then(|v| v.as_i64()).unwrap_or(0),
         "credit_sub_expires_at": data.get("credit_sub_expires_at").and_then(|v| v.as_str()).unwrap_or(""),
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offset_pagination_validates_proto_ranges() {
+        assert_eq!(offset_params(0, 20).unwrap()["pager.page"], "0");
+        assert_eq!(offset_params(8, 100).unwrap()["pager.pagesz"], "100");
+        assert!(offset_params(i32::MAX as i64, 1).is_ok());
+        for (page, pagesz) in [
+            (-1, 20),
+            (i32::MAX as i64 + 1, 20),
+            (0, 0),
+            (0, -1),
+            (0, 101),
+        ] {
+            assert!(offset_params(page, pagesz).is_err());
+        }
+    }
+
+    #[test]
+    fn records_preserve_ledger_fields_without_inventing_a_cursor() {
+        let input =
+            json!({"total": 2, "records": [{"amount": -12, "remark": "generate"}], "extra": true});
+        assert_eq!(
+            format_records(&input),
+            json!({"total": 2, "records": input["records"]})
+        );
+        assert_eq!(
+            format_records(&json!({})),
+            json!({"total": 0, "records": []})
+        );
+    }
 }

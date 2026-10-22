@@ -20,16 +20,37 @@ fn upload_headers(reply: &serde_json::Value, mime: String) -> HashMap<String, St
             )
         }),
     };
-    if !headers.keys().any(|key| key.eq_ignore_ascii_case("content-type")) {
+    if !headers
+        .keys()
+        .any(|key| key.eq_ignore_ascii_case("content-type"))
+    {
         headers.insert("Content-Type".into(), mime);
     }
     headers
 }
 
+fn decode_image_content(
+    bytes: &[u8],
+) -> image::ImageResult<(image::DynamicImage, image::ImageFormat)> {
+    let format = image::guess_format(bytes)?;
+    let image = image::load_from_memory_with_format(bytes, format)?;
+    Ok((image, format))
+}
+
 fn compress_image_if_needed(path: &str) -> (Vec<u8>, u32, u32, String) {
-    let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let img = match image::open(path) {
-        Ok(i) => i,
+    let bytes = fs::read(path).unwrap_or_else(|error| {
+        client::fail(
+            "client_error",
+            &format!("Cannot read file: {}", error),
+            None,
+            None,
+            None,
+        )
+    });
+    let file_size = bytes.len() as u64;
+    // Remote images use extensionless temporary paths; the content also determines MIME.
+    let (img, format) = match decode_image_content(&bytes) {
+        Ok(image) => image,
         Err(e) => client::fail(
             "client_error",
             &format!("Cannot read image: {}", e),
@@ -40,27 +61,8 @@ fn compress_image_if_needed(path: &str) -> (Vec<u8>, u32, u32, String) {
     };
     let (width, height) = img.dimensions();
 
-    let mime = mime_guess::from_path(path)
-        .first_or_octet_stream()
-        .to_string();
-    let mime = if mime.starts_with("image/") {
-        mime
-    } else {
-        "image/jpeg".into()
-    };
-
     if file_size <= MAX_SIZE_MB * 1024 * 1024 {
-        let bytes = match fs::read(path) {
-            Ok(b) => b,
-            Err(e) => client::fail(
-                "client_error",
-                &format!("Cannot read file: {}", e),
-                None,
-                None,
-                None,
-            ),
-        };
-        return (bytes, width, height, mime);
+        return (bytes, width, height, format.to_mime_type().to_string());
     }
 
     // Compress with progressive quality reduction
@@ -245,6 +247,74 @@ pub fn upload_media_and_get_uri(path: &str) -> String {
     upload_media_and_get_uri_with_metadata(path, None)
 }
 
+/// Audio FinishUpload synchronously waits for moderation (at most 30 server polls).
+/// A successful finish therefore precedes voice creation; ordinary media uploads
+/// keep their existing timeout/retry behavior.
+pub fn upload_voice_audio(path: &str, duration: f64, mime: &str) -> String {
+    let bytes = fs::read(path).unwrap_or_else(|e| {
+        client::fail(
+            "client_error",
+            &format!("Cannot read audio: {e}"),
+            None,
+            None,
+            None,
+        )
+    });
+    let base = client::base_url();
+    let data = client::request_json(
+        "POST",
+        &format!("{base}/tools/v1/files/uploads"),
+        Some("create_voice_upload"),
+        Some(&json!({"scene":"vidu", "metadata":{"duration":duration.to_string()}})),
+        None,
+    );
+    let id = match &data["id"] {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    };
+    let put_url = data["put_url"].as_str().unwrap_or("");
+    if id.is_empty() || !id.bytes().all(|c| c.is_ascii_digit()) || put_url.is_empty() {
+        client::fail(
+            "parse_error",
+            "Invalid voice upload response",
+            None,
+            None,
+            Some("create_voice_upload"),
+        );
+    }
+    eprintln!("录音上传 ID: {id}；正在上传并等待审核");
+    let step = format!("voice_upload:{id}");
+    let (etag,) = client::put_raw_large(
+        put_url,
+        bytes,
+        &upload_headers(&data, mime.to_string()),
+        Some(&step),
+    );
+    // No retry: a transport timeout must not restart moderation or create a clone.
+    let result = client::request_json_with_timeout_context(
+        "PUT",
+        &format!("{base}/tools/v1/files/uploads/{id}/finish"),
+        Some(&step),
+        Some(&json!({"id":id,"etag":etag})),
+        None,
+        std::time::Duration::from_secs(60),
+        &json!({"upload_id":id}),
+    );
+    let expected = format!("ssupload:?id={id}");
+    if result["uri"].as_str() != Some(expected.as_str()) {
+        client::fail(
+            "parse_error",
+            &format!("Unexpected finish URI for upload {id}: {result}"),
+            None,
+            None,
+            Some(&step),
+        );
+    }
+    eprintln!("录音审核通过，上传 ID: {id}");
+    expected
+}
+
 pub fn upload_media_and_get_uri_with_metadata(
     path: &str,
     metadata: Option<serde_json::Map<String, serde_json::Value>>,
@@ -334,6 +404,45 @@ pub fn upload_media_and_get_uri_with_metadata(
 
 #[cfg(test)]
 mod tests {
+    fn png_fixture() -> Vec<u8> {
+        let image = image::DynamicImage::new_rgb8(3, 2);
+        let mut bytes = Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn extensionless_download_detects_image_and_mime_from_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vidu_download");
+        let original = png_fixture();
+        fs::write(&path, &original).unwrap();
+
+        let (bytes, width, height, mime) = compress_image_if_needed(path.to_str().unwrap());
+        assert_eq!(bytes, original);
+        assert_eq!((width, height), (3, 2));
+        assert_eq!(mime, "image/png");
+    }
+
+    #[test]
+    fn misleading_extension_does_not_override_image_content_or_mime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("download.jpg");
+        let original = png_fixture();
+        fs::write(&path, &original).unwrap();
+
+        let (bytes, width, height, mime) = compress_image_if_needed(path.to_str().unwrap());
+        assert_eq!(bytes, original);
+        assert_eq!((width, height), (3, 2));
+        assert_eq!(mime, "image/png");
+    }
+
+    #[test]
+    fn invalid_or_truncated_image_content_returns_decode_error() {
+        assert!(decode_image_content(b"not an image").is_err());
+        let png = png_fixture();
+        assert!(decode_image_content(&png[..16]).is_err());
+    }
     use super::*;
 
     #[test]

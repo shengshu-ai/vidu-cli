@@ -1,6 +1,6 @@
 # vidu-cli
 
-[中文文档](./README.zh.md)
+[中文文档](README.zh.md)
 
 A command-line client for the [Vidu](https://www.vidu.io) video generation API.
 
@@ -40,13 +40,20 @@ export VIDU_BASE_URL=https://service.vidu.cn  # China: service.vidu.cn, Global: 
 ## Usage
 
 ```
-vidu-cli <COMMAND>
+vidu-cli [--format json|table] <COMMAND>
 
 Commands:
   upload   Upload image → get ssupload URI
   task     Task operations
   element  Element (reference material) operations
+  creation Creation lists and favorites
+  voice    Personal cloned voices
+  quota    Quota, balance, and credit records
 ```
+
+Output defaults to the existing JSON `ok` envelope. Use the global `--format table` for terminal summaries; scripts can keep the default JSON.
+
+Replace `TASK_ID`, `VOICE_ID`, and pagination tokens below with values returned by the API. Numeric element ID `42`, creation ID `123`, and label IDs `1` and `2` are also examples; use real IDs you can access. Task IDs and creation IDs are separate resources.
 
 ---
 
@@ -145,6 +152,7 @@ vidu-cli task submit \
   --model-version 3.1 \
   --duration 4 \
   --resolution 1080p \
+  --transition pro \
   --image ./scene.jpg
 
 # First-last frame video
@@ -154,6 +162,7 @@ vidu-cli task submit \
   --model-version 3.2 \
   --duration 5 \
   --resolution 1080p \
+  --transition pro \
   --image ./start.jpg \
   --image ./end.jpg
 
@@ -166,24 +175,60 @@ vidu-cli task submit \
   --resolution 1080p \
   --transition pro \
   --image ./character.jpg \
-  --material "mychar:element-id:1"
+  --material "mychar:42:1"
 ```
 
 #### Get task result
 
 ```bash
-vidu-cli task get <TASK_ID> [--output <DIR>]
+vidu-cli task get <TASK_ID> [--details] [--output <DIR>]
 ```
 
-Returns: `task_id`, `state`, `type`, `model`, `err_code`, `err_msg`.
+Returns `task_id`, `state`, `type`, and `model`; failed tasks also include `err_code` and `err_msg`.
 
 Use `--output` / `-o` to download media files to a local directory when the task is complete:
 
 ```bash
-vidu-cli task get <TASK_ID> --output ./results
+vidu-cli task get "$TASK_ID" --output ./results
 ```
 
-If the task state is not `success`, the download is skipped and the response includes `download_skipped: true`.
+If the task state is not `success`, the download is skipped and the response includes `download_skipped: "task not ready"`.
+
+#### History, details, and waiting
+
+```bash
+vidu-cli task list --state success --pagesz 20
+vidu-cli task get "$TASK_ID" --details
+vidu-cli task wait "$TASK_ID" --timeout 1800 --poll-interval 5 --output ./results
+vidu-cli --format table task list
+```
+
+Repeat `--state`, `--type`, or `--scene` to filter history; continue cursor pagination with `--page-token`. `get --details` adds raw `input`, `settings`, and `creations` containing actual `creation_id` values.
+
+`submit`, `tts`, `lip-sync`, `compose`, `extend`, `upscale-image`, and `rerun` accept `--wait [--timeout 1800] [--output DIR]`. On submission commands, `--timeout` and `--output` require `--wait`. For example:
+
+```bash
+vidu-cli task submit --type text2video --prompt "A quiet street at dawn" \
+  --model-version viduq3.1-drama-std --wait --output ./results
+```
+
+Progress goes to stderr and the final result goes to stdout. A timeout or interruption stops local waiting without canceling the server task; failure or timeout exits nonzero. `task get` remains a single query.
+
+#### Manage tasks and reuse creations
+
+```bash
+vidu-cli task cancel "$TASK_ID"
+vidu-cli task delete "$TASK_ID"
+vidu-cli task rerun "$TASK_ID" --prompt "Change the scene to a rainy day" --wait
+vidu-cli task extend --creation-id 123 --duration 4 --transition extendspeed --wait
+vidu-cli task upscale-image --creation-id 123 --resolution 2k --wait
+```
+
+Cancellation is allowed before `processing`, except for `clip_compose`. Deletion soft-deletes history and rejects `queueing` or `processing` tasks. The server checks permissions and state.
+
+`rerun` creates a new paid task from one of the six existing image/video submit types. Override the prompt (including `--prompt-path` / `--prompt-file`), model (`--model-version` / `--model`), duration, or resolution; historical references stay in place and a seed does not guarantee identical output. Extension requires an accessible completed 1080p video creation, uses model 3.1 and 1080p, and adds 1–7 seconds. The transition defaults to `extendspeed`, with `extendpro` also available; subscription and total-duration rules apply. Image upscaling takes an existing image creation and defaults to 2k; 720p, 1080p, 2k, and 4k are supported.
+
+When `--model-version` actually changes, rerun preserves a transition accepted by the target type/model. Otherwise it selects `stable` for 3.0 image/first-last-frame video, selects `speed` where 3.1/3.2 requires `pro` or `speed`, or removes unsupported transitions. Incompatible scheduling falls back to the target model default (Q4/Drama: `normal`); the inherited vendor model is cleared for server selection. Historical style is preserved, with `general` used when switching to 3.0 without a style. Duration and resolution stay unchanged unless overridden, so adjust them when the target model requires different values.
 
 #### Lip sync
 
@@ -276,6 +321,9 @@ vidu-cli quota pass
 
 # Query user credit balance
 vidu-cli quota credit
+
+# Credit transaction records (zero-based numeric pages)
+vidu-cli quota records --page 0 --pagesz 20
 ```
 
 ---
@@ -301,6 +349,48 @@ vidu-cli element list --keyword "char" --page 0 --pagesz 20
 # Search community elements
 vidu-cli element search --keyword "anime girl" --sort-by recommend --pagesz 20
 ```
+
+Personal element lists support `--keyword`. Use the returned `next_page_token` with `--page-token`, which conflicts with an explicit `--page`. Numeric page compatibility walks cursors sequentially, so deeper pages require more requests. Personal list `--pagesz` accepts 10–100 and defaults to 20.
+
+```bash
+vidu-cli element list --keyword "char" --page-token "$NEXT_PAGE_TOKEN" --pagesz 20
+vidu-cli element get 42
+vidu-cli element update 42 --name "New character" --label 1 --label 2 --recaption "A new character description"
+vidu-cli element update 42 --clear-labels
+vidu-cli element delete 42
+vidu-cli element search --keyword "summer" --category "character" --topic "summer"
+vidu-cli element favorite 42
+vidu-cli element favorites --pagesz 20
+vidu-cli element unfavorite 42
+```
+
+`--label` takes numeric label IDs and replaces the label set; it conflicts with `--clear-labels`. `--recaption` changes the description while preserving its style. Updates require at least one change; the server checks sharing, version, and deletion rules. Favorites take an element ID and resolve the share ID internally. `element favorites` is a separate cursor list accepting pagination only, without search filters.
+
+### Creations
+
+```bash
+vidu-cli creation list --page 0 --pagesz 20
+vidu-cli creation list --favorites-only --page 0 --pagesz 20
+vidu-cli creation favorite 123
+vidu-cli creation unfavorite 123
+```
+
+Lists use numeric pages (offset pagination) and return `total`. Favorites include creations you can access, including other creators' work. Use creation IDs returned by `task get --details` or creation lists.
+
+### Personal cloned voices
+
+```bash
+vidu-cli voice create --audio ./voice-sample.wav --name "My narrator" --wait --timeout 1800
+vidu-cli voice list --pagesz 20
+vidu-cli voice get "$VOICE_ID"
+vidu-cli voice update "$VOICE_ID" --name "New narrator" --description "Story narration"
+vidu-cli voice wait "$VOICE_ID" --timeout 1800
+vidu-cli task tts --prompt "Hello" --voice-id "$VOICE_ID" --wait
+```
+
+Set `VOICE_ID` to the personal `voice_...` ID returned by create/list. Supply a local recording of 10–300 seconds, at most 20 MiB. Upload completion performs synchronous moderation; only approved audio is submitted for cloning using its `ssupload` URI. Cloning is paid by default. `--use-trial` explicitly requests a trial and never automatically falls back to a paid submission.
+
+Without `--wait`, create returns the ID after upload moderation and clone submission. With it, create also waits for cloning. `--timeout` requires `--wait`, applies only to clone waiting, and defaults to 1800 seconds. `voice wait` uses SSE and has no polling interval; timeout or interruption leaves server cloning running. Lists use `--page-token` cursors. Create does not accept a description; change it afterward with update. There is no voice delete command. Existing `task tts-voices` and `task lip-sync-voices` continue to list official static voices.
 
 ## License
 
