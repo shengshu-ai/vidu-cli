@@ -72,7 +72,7 @@ fn typo_quota_subcommand_lists_pass_and_credit() {
         .assert()
         .code(2)
         .stderr(contains("under 'vidu-cli quota'"))
-        .stderr(contains("available: credit, pass"));
+        .stderr(contains("available: credit, pass, records"));
 }
 
 // --- InvalidValue (PossibleValuesParser) ---------------------------------
@@ -81,11 +81,16 @@ fn typo_quota_subcommand_lists_pass_and_credit() {
 fn invalid_type_value_lists_possible_values_and_suggestion() {
     cli()
         .args([
-            "task", "submit",
-            "--type", "img2img",
-            "--prompt", "x",
-            "--model-version", "3.2",
-            "--resolution", "1080p",
+            "task",
+            "submit",
+            "--type",
+            "img2img",
+            "--prompt",
+            "x",
+            "--model-version",
+            "3.2",
+            "--resolution",
+            "1080p",
         ])
         .assert()
         .code(2)
@@ -98,11 +103,16 @@ fn invalid_type_value_lists_possible_values_and_suggestion() {
 fn invalid_resolution_value_caught_at_parse_time() {
     cli()
         .args([
-            "task", "submit",
-            "--type", "text2video",
-            "--prompt", "x",
-            "--model-version", "3.2",
-            "--resolution", "8k",
+            "task",
+            "submit",
+            "--type",
+            "text2video",
+            "--prompt",
+            "x",
+            "--model-version",
+            "3.2",
+            "--resolution",
+            "8k",
         ])
         .assert()
         .code(2)
@@ -118,10 +128,14 @@ fn invalid_language_boost_caught_at_parse_time() {
     // It must now be caught by PossibleValuesParser at parse time.
     cli()
         .args([
-            "task", "tts",
-            "--prompt", "hello",
-            "--voice-id", "x",
-            "--language-boost", "Klingon",
+            "task",
+            "tts",
+            "--prompt",
+            "hello",
+            "--voice-id",
+            "x",
+            "--language-boost",
+            "Klingon",
         ])
         .assert()
         .code(2)
@@ -149,8 +163,16 @@ fn legacy_submit_still_requires_resolution_before_auth_or_upload() {
     cli()
         .env_remove("VIDU_TOKEN")
         .args([
-            "task", "submit", "--type", "text2video", "--prompt", "test",
-            "--model-version", "3.2", "--duration", "5",
+            "task",
+            "submit",
+            "--type",
+            "text2video",
+            "--prompt",
+            "test",
+            "--model-version",
+            "3.2",
+            "--duration",
+            "5",
         ])
         .assert()
         .failure()
@@ -162,8 +184,16 @@ fn drama_text2video_rejects_reference_inputs_before_file_access() {
     cli()
         .env_remove("VIDU_TOKEN")
         .args([
-            "task", "submit", "--type", "text2video", "--prompt", "test",
-            "--model-version", "viduq3.1-drama-std", "--image", "/does/not/exist.jpg",
+            "task",
+            "submit",
+            "--type",
+            "text2video",
+            "--prompt",
+            "test",
+            "--model-version",
+            "viduq3.1-drama-std",
+            "--image",
+            "/does/not/exist.jpg",
         ])
         .assert()
         .failure()
@@ -175,8 +205,14 @@ fn drama_character2video_requires_at_least_one_reference() {
     cli()
         .env_remove("VIDU_TOKEN")
         .args([
-            "task", "submit", "--type", "character2video", "--prompt", "test",
-            "--model-version", "viduq3.1-drama-std",
+            "task",
+            "submit",
+            "--type",
+            "character2video",
+            "--prompt",
+            "test",
+            "--model-version",
+            "viduq3.1-drama-std",
         ])
         .assert()
         .failure()
@@ -188,8 +224,16 @@ fn drama_character2video_allows_audio_only_preflight() {
     cli()
         .env_remove("VIDU_TOKEN")
         .args([
-            "task", "submit", "--type", "character2video", "--prompt", "test",
-            "--model-version", "viduq3.1-drama-std", "--audio", "ssupload:?id=audio",
+            "task",
+            "submit",
+            "--type",
+            "character2video",
+            "--prompt",
+            "test",
+            "--model-version",
+            "viduq3.1-drama-std",
+            "--audio",
+            "ssupload:?id=audio",
         ])
         .assert()
         .failure()
@@ -201,8 +245,14 @@ fn drama_cost_rejects_automatic_duration_without_network_access() {
     cli()
         .env_remove("VIDU_TOKEN")
         .args([
-            "task", "cost", "--type", "text2video", "--model-version",
-            "viduq3.1-drama-std", "--duration", "-1",
+            "task",
+            "cost",
+            "--type",
+            "text2video",
+            "--model-version",
+            "viduq3.1-drama-std",
+            "--duration",
+            "-1",
         ])
         .assert()
         .failure()
@@ -215,8 +265,14 @@ fn drama_submit_and_cost_reject_non_normal_schedule_modes_before_network_access(
         for mode in ["nopeak", "claw_pass"] {
             let mut command = cli();
             command.env_remove("VIDU_TOKEN").args([
-                "task", action, "--type", "text2video", "--model-version",
-                "viduq3.1-drama-std", "--schedule-mode", mode,
+                "task",
+                action,
+                "--type",
+                "text2video",
+                "--model-version",
+                "viduq3.1-drama-std",
+                "--schedule-mode",
+                mode,
             ]);
             if action == "submit" {
                 command.args(["--prompt", "test"]);
@@ -234,8 +290,18 @@ fn q4_pass_is_rejected_before_auth_or_upload() {
     for action in ["submit", "cost"] {
         let mut command = cli();
         command.env_remove("VIDU_TOKEN").args([
-            "task", action, "--type", "img2video", "--model-version", "3.4",
-            "--duration", "3", "--resolution", "1080p", "--schedule-mode", "claw_pass",
+            "task",
+            action,
+            "--type",
+            "img2video",
+            "--model-version",
+            "3.4",
+            "--duration",
+            "3",
+            "--resolution",
+            "1080p",
+            "--schedule-mode",
+            "claw_pass",
         ]);
         if action == "submit" {
             command.args(["--prompt", "test", "--image", "/does/not/exist.jpg"]);

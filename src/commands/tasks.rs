@@ -45,6 +45,8 @@ fn normalize_task_settings(
     })
 }
 
+// Keep the established CLI option mapping and shared call signature.
+#[allow(clippy::too_many_arguments)]
 fn build_submit_body(
     task_type: &str,
     prompts: Vec<Value>,
@@ -104,7 +106,10 @@ fn build_credit_query_params(
         "settings.model_version".to_string(),
         model_version.to_string(),
     );
-    params.insert("settings.duration".to_string(), settings.duration.to_string());
+    params.insert(
+        "settings.duration".to_string(),
+        settings.duration.to_string(),
+    );
     params.insert(
         "settings.resolution".to_string(),
         settings.resolution.clone(),
@@ -114,7 +119,10 @@ fn build_credit_query_params(
         sample_count.to_string(),
     );
     params.insert("settings.codec".to_string(), codec.to_string());
-    params.insert("settings.schedule_mode".to_string(), schedule_mode.to_string());
+    params.insert(
+        "settings.schedule_mode".to_string(),
+        schedule_mode.to_string(),
+    );
     if let Some(ar) = settings.aspect_ratio.as_deref() {
         params.insert("settings.aspect_ratio".to_string(), ar.to_string());
     }
@@ -198,7 +206,10 @@ fn download_and_upload(url: &str) -> String {
         Err(e) => {
             client::fail(
                 "client_error",
-                &format!("Failed to download image: {}", e),
+                &format!(
+                    "Failed to download image: {}",
+                    client::network_error_message(e, url)
+                ),
                 None,
                 None,
                 None,
@@ -326,7 +337,8 @@ fn inspect_reference_videos(
     model_version: &str,
     videos: &[String],
 ) -> Vec<Option<f64>> {
-    let video_error = validators::validate_reference_video_count(task_type, model_version, videos.len());
+    let video_error =
+        validators::validate_reference_video_count(task_type, model_version, videos.len());
     if !video_error.is_empty() {
         client::fail("client_error", &video_error, None, None, None);
     }
@@ -403,6 +415,8 @@ fn inspect_reference_videos(
     durations
 }
 
+// Keep the established CLI option mapping and shared call signature.
+#[allow(clippy::too_many_arguments)]
 pub fn submit(
     task_type: &str,
     prompt: Option<&str>,
@@ -420,7 +434,7 @@ pub fn submit(
     codec: &str,
     movement_amplitude: &str,
     schedule_mode: Option<&str>,
-) {
+) -> Value {
     let prompt = resolve_prompt_inputs(prompt, prompt_path).unwrap_or_else(|| {
         client::fail(
             "client_error",
@@ -448,10 +462,16 @@ pub fn submit(
 
     // Validate all model-specific options and reference counts before performing uploads.
     let mut preflight_prompts = vec![json!({"type": "text", "content": "preflight"})];
-    preflight_prompts.extend((0..images.len()).map(|_| json!({"type": "image", "content": "ssupload:?id=preflight"})));
+    preflight_prompts.extend(
+        (0..images.len()).map(|_| json!({"type": "image", "content": "ssupload:?id=preflight"})),
+    );
     preflight_prompts.extend((0..materials.len()).map(|_| json!({"type": "material", "name": "preflight", "material": {"id": "preflight", "version": "preflight"}})));
-    preflight_prompts.extend((0..audios.len()).map(|_| json!({"type": "audio", "content": "ssupload:?id=preflight"})));
-    preflight_prompts.extend((0..videos.len()).map(|_| json!({"type": "video", "content": "ssupload:?id=preflight"})));
+    preflight_prompts.extend(
+        (0..audios.len()).map(|_| json!({"type": "audio", "content": "ssupload:?id=preflight"})),
+    );
+    preflight_prompts.extend(
+        (0..videos.len()).map(|_| json!({"type": "video", "content": "ssupload:?id=preflight"})),
+    );
     let preflight_body = build_submit_body(
         task_type,
         preflight_prompts,
@@ -501,12 +521,8 @@ pub fn submit(
     }
 
     let video_durations = inspect_reference_videos(task_type, model_version, videos);
-    let audio_durations = reference_audio_durations(
-        task_type,
-        model_version,
-        audios,
-        !videos.is_empty(),
-    );
+    let audio_durations =
+        reference_audio_durations(task_type, model_version, audios, !videos.is_empty());
     let mut prompts = vec![json!({"type": "text", "content": prompt})];
 
     // Process images (auto-upload local files / URLs)
@@ -620,10 +636,10 @@ pub fn submit(
             None,
         );
     }
-    client::ok(json!({"task_id": task_id}));
+    json!({"task_id": task_id})
 }
 
-pub fn get(task_id: &str, output: Option<&str>) {
+pub fn get_result(task_id: &str, output: Option<&str>, details: bool) -> Value {
     let base = client::base_url();
     let data = client::request_json(
         "GET",
@@ -632,6 +648,11 @@ pub fn get(task_id: &str, output: Option<&str>) {
         None,
         None,
     );
+    task_result(task_id, &data, output, details)
+}
+
+/// Format a fetched task and optionally download its artifacts.
+pub fn task_result(task_id: &str, data: &Value, output: Option<&str>, details: bool) -> Value {
     let state = data.get("state").and_then(|v| v.as_str()).unwrap_or("");
     let task_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let model = data
@@ -646,6 +667,16 @@ pub fn get(task_id: &str, output: Option<&str>) {
         "type": task_type,
         "model": model,
     });
+
+    if details {
+        result["input"] = data.get("input").cloned().unwrap_or(Value::Null);
+        result["settings"] = data.get("settings").cloned().unwrap_or(Value::Null);
+        result["creations"] = json!(data
+            .get("creations")
+            .and_then(Value::as_array)
+            .map(|creations| creations.iter().map(normalize_creation).collect::<Vec<_>>())
+            .unwrap_or_default());
+    }
 
     if state == "failed" {
         result["err_code"] = json!(data.get("err_code").and_then(|v| v.as_str()).unwrap_or(""));
@@ -690,7 +721,7 @@ pub fn get(task_id: &str, output: Option<&str>) {
                         if status >= 400 {
                             client::fail(
                                 "http_error",
-                                &format!("Download failed for {}: HTTP {}", url, status),
+                                &format!("Download failed: HTTP {}", status),
                                 Some(status),
                                 None,
                                 None,
@@ -699,7 +730,10 @@ pub fn get(task_id: &str, output: Option<&str>) {
                         let bytes = resp.bytes().unwrap_or_else(|e| {
                             client::fail(
                                 "client_error",
-                                &format!("Failed to read response bytes: {}", e),
+                                &format!(
+                                    "Failed to read response bytes: {}",
+                                    client::network_error_message(e, url)
+                                ),
                                 None,
                                 None,
                                 None,
@@ -731,7 +765,10 @@ pub fn get(task_id: &str, output: Option<&str>) {
                     Err(e) => {
                         client::fail(
                             "network_error",
-                            &format!("Failed to download {}: {}", url, e),
+                            &format!(
+                                "Failed to download: {}",
+                                client::network_error_message(e, url)
+                            ),
                             None,
                             None,
                             None,
@@ -745,7 +782,26 @@ pub fn get(task_id: &str, output: Option<&str>) {
         }
     }
 
-    client::ok(result);
+    result
+}
+
+fn normalize_creation(creation: &Value) -> Value {
+    let mut normalized = creation.clone();
+    if let Some(fields) = normalized.as_object_mut() {
+        let id = fields
+            .get("creation_id")
+            .filter(|id| id.is_string() || id.is_number())
+            .or_else(|| {
+                fields
+                    .get("id")
+                    .filter(|id| id.is_string() || id.is_number())
+            })
+            .cloned();
+        if let Some(id) = id {
+            fields.insert("creation_id".to_string(), id);
+        }
+    }
+    normalized
 }
 
 enum DownloadOutputTarget {
@@ -843,10 +899,6 @@ fn subtitle_url_for_creation(creation: &Value) -> Option<&str> {
         .filter(|uri| !uri.is_empty())
 }
 
-fn download_filename(task_id: &str, creation_index: usize, bytes: &[u8]) -> String {
-    format!("{}_{}.{}", task_id, creation_index, ext_from_bytes(bytes))
-}
-
 fn subtitle_download_filename(task_id: &str) -> String {
     format!("{}_subtitle.json", task_id)
 }
@@ -913,6 +965,8 @@ fn normalize_tts_text_arg(text: &str) -> String {
     text.replace("\\n", "\n")
 }
 
+// Keep the established CLI option mapping and shared call signature.
+#[allow(clippy::too_many_arguments)]
 pub fn submit_lip_sync(
     video: &str,
     text: Option<&str>,
@@ -923,7 +977,7 @@ pub fn submit_lip_sync(
     enhance: bool,
     codec: &str,
     schedule_mode: Option<&str>,
-) {
+) -> Value {
     match (text, audio) {
         (Some(_), Some(_)) => client::fail(
             "client_error",
@@ -1058,7 +1112,7 @@ pub fn submit_lip_sync(
             None,
         );
     }
-    client::ok(json!({"task_id": task_id}));
+    json!({"task_id": task_id})
 }
 
 fn calculate_text_duration(text: &str) -> i64 {
@@ -1117,6 +1171,8 @@ pub fn list_voices() {
     list_tts_voices();
 }
 
+// Keep the established CLI option mapping and shared call signature.
+#[allow(clippy::too_many_arguments)]
 pub fn submit_tts(
     prompt: Option<&str>,
     prompt_path: Option<&str>,
@@ -1128,7 +1184,7 @@ pub fn submit_tts(
     language_boost: Option<&str>,
     subtitle_enable: bool,
     schedule_mode: Option<&str>,
-) {
+) -> Value {
     // subtitle only supports single segment (--prompt or single --text)
     if subtitle_enable && texts.len() > 1 {
         client::fail(
@@ -1321,7 +1377,7 @@ pub fn submit_tts(
         );
     }
 
-    client::ok(json!({"task_id": task_id}));
+    json!({"task_id": task_id})
 }
 
 pub fn list_tts_voices() {
@@ -1350,7 +1406,7 @@ pub fn compose(
     width: Option<i32>,
     height: Option<i32>,
     schedule_mode: Option<&str>,
-) {
+) -> Value {
     let schedule_mode = resolve_schedule_mode(schedule_mode, None);
     let mut timeline = parse_timeline(timeline_input);
     validate_timeline_clips(&timeline);
@@ -1382,8 +1438,12 @@ pub fn compose(
     let task_id = data
         .get("job")
         .and_then(|j| j.get("task_id"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            _ => String::new(),
+        })
+        .unwrap_or_default();
 
     if task_id.is_empty() {
         client::fail(
@@ -1394,7 +1454,7 @@ pub fn compose(
             None,
         );
     }
-    client::ok(json!({"task_id": task_id}));
+    json!({"task_id": task_id})
 }
 
 fn parse_timeline(input: &str) -> Value {
@@ -1879,7 +1939,7 @@ fn validate_local_reference_video_geometry(
         .map(|ratio| format!("{:.2}", ratio))
         .unwrap_or_else(|| "undefined".to_string());
 
-    let violation = if aspect.map_or(true, |ratio| !(0.4..=2.5).contains(&ratio)) {
+    let violation = if aspect.is_none_or(|ratio| !(0.4..=2.5).contains(&ratio)) {
         Some("aspect ratio must be in [0.4, 2.5]")
     } else if !(300..=60000).contains(&width) {
         Some("width must be in [300, 60000]")
@@ -1934,6 +1994,8 @@ fn upload_compose_media(path: &str, dims: Option<(u32, u32)>) -> String {
     crate::commands::upload::upload_media_and_get_uri_with_metadata(path, metadata)
 }
 
+// Keep the established CLI option mapping and shared call signature.
+#[allow(clippy::too_many_arguments)]
 pub fn query_credits(
     task_type: &str,
     model_version: &str,
@@ -2126,6 +2188,102 @@ fn ext_from_bytes(bytes: &[u8]) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn task_result_default_preserves_existing_summary() {
+        let data = json!({
+            "state": "success", "type": "text2video",
+            "input": {"model_name": "Vidu Q4", "prompts": []},
+            "settings": {"duration": 5},
+            "creations": [{"id": 123, "uri": "https://example.com/video.mp4"}]
+        });
+        assert_eq!(
+            task_result("task_1", &data, None, false),
+            json!({
+                "task_id": "task_1", "state": "success", "type": "text2video", "model": "Vidu Q4"
+            })
+        );
+    }
+
+    #[test]
+    fn task_result_details_preserves_fields_and_backend_creation_ids() {
+        let data = json!({
+            "state": "success", "input": {"prompts": []}, "settings": {"duration": 5},
+            "creations": [
+                {"id": 123, "uri": "media", "extra": {"width": 1920}},
+                {"creation_id": "creation_2", "id": "legacy", "nomark_uri": "clean"},
+                {"id": "creation_3"},
+                {"uri": "no-id"}
+            ]
+        });
+        let result = task_result("task_1", &data, None, true);
+        assert_eq!(result["input"], data["input"]);
+        assert_eq!(result["settings"], data["settings"]);
+        assert_eq!(
+            result["creations"][0],
+            json!({"id": 123, "creation_id": 123, "uri": "media", "extra": {"width": 1920}})
+        );
+        assert_eq!(result["creations"][1]["creation_id"], "creation_2");
+        assert_eq!(result["creations"][2]["creation_id"], "creation_3");
+        assert!(result["creations"][3].get("creation_id").is_none());
+    }
+
+    #[test]
+    fn task_result_no_creations_does_not_invent_ids() {
+        for data in [
+            json!({}),
+            json!({"creations": null}),
+            json!({"creations": []}),
+        ] {
+            assert_eq!(
+                task_result("task_1", &data, None, true)["creations"],
+                json!([])
+            );
+        }
+    }
+
+    #[test]
+    fn task_result_pending_skips_download_and_preserves_failure_details() {
+        let pending = task_result(
+            "task_1",
+            &json!({"state": "queueing"}),
+            Some("unused"),
+            false,
+        );
+        assert_eq!(pending["download_skipped"], "task not ready");
+        let failed = task_result(
+            "task_1",
+            &json!({"state": "failed", "err_code": "denied", "err_msg": "rejected"}),
+            None,
+            false,
+        );
+        assert_eq!(failed["err_code"], "denied");
+        assert_eq!(failed["err_msg"], "rejected");
+    }
+
+    #[test]
+    fn single_subtitle_artifact_can_target_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("nested/subtitle.json");
+        let target = resolve_download_output_target(file.to_str().unwrap(), 1);
+        assert_eq!(target.path_for_name("task_1_subtitle.json"), file);
+        assert!(dir.path().join("nested").is_dir());
+    }
+
+    #[test]
+    fn existing_directory_with_extension_keeps_artifact_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("results.v1");
+        std::fs::create_dir(&output).unwrap();
+        let target = resolve_download_output_target(output.to_str().unwrap(), 2);
+        assert_eq!(
+            target.path_for("task_1", 0, "mp4"),
+            output.join("task_1_0.mp4")
+        );
+        assert_eq!(
+            target.path_for_name("task_1_subtitle.json"),
+            output.join("task_1_subtitle.json")
+        );
+    }
     use super::*;
 
     #[test]
@@ -2141,7 +2299,8 @@ mod tests {
         let damaged = temp_dir.path().join("damaged.mp4");
         std::fs::write(&damaged, b"not a valid MP4").unwrap();
         let parse_error = read_local_video_metadata(damaged.to_str().unwrap()).unwrap_err();
-        let parse_message = format_local_video_metadata_error(damaged.to_str().unwrap(), parse_error);
+        let parse_message =
+            format_local_video_metadata_error(damaged.to_str().unwrap(), parse_error);
         assert!(parse_message.contains("Cannot parse MP4/MOV metadata"));
         assert!(parse_message.contains(damaged.to_str().unwrap()));
         assert!(parse_message.contains("Re-export as MP4/MOV and retry"));
@@ -2163,10 +2322,12 @@ mod tests {
         ));
 
         let mut context = mp4parse::MediaContext::default();
-        let mut video_track = mp4parse::Track::default();
-        video_track.track_type = mp4parse::TrackType::Video;
-        video_track.duration = Some(mp4parse::TrackScaledTime(4, 1));
-        video_track.timescale = Some(mp4parse::TrackTimeScale(1, 1));
+        let video_track = mp4parse::Track {
+            track_type: mp4parse::TrackType::Video,
+            duration: Some(mp4parse::TrackScaledTime(4, 1)),
+            timescale: Some(mp4parse::TrackTimeScale(1, 1)),
+            ..Default::default()
+        };
         context.tracks.push(video_track).unwrap();
         let metadata = local_video_metadata_from_context(&context).unwrap();
         assert_eq!(metadata.dimensions, None);
@@ -2426,9 +2587,14 @@ mod tests {
             validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 4.0, 30.0, false),
             Ok(())
         );
-        assert!(validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 3.9, 3.9, false)
-            .unwrap_err()
-            .contains("out of range [4, 30]"));
+        assert!(validate_reference_audio_duration(
+            validators::DRAMA_MODEL_VERSION,
+            3.9,
+            3.9,
+            false
+        )
+        .unwrap_err()
+        .contains("out of range [4, 30]"));
         assert_eq!(
             validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 2.0, 30.0, true),
             Ok(())
@@ -2442,12 +2608,7 @@ mod tests {
         .unwrap_err()
         .contains("out of range [2, 30]"));
         assert_eq!(
-            validate_reference_audio_duration(
-                validators::DRAMA_MODEL_VERSION,
-                30.0,
-                30.0,
-                true
-            ),
+            validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 30.0, 30.0, true),
             Ok(())
         );
         assert!(validate_reference_audio_duration(
@@ -2458,15 +2619,22 @@ mod tests {
         )
         .unwrap_err()
         .contains("out of range [2, 30]"));
-        assert!(validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 30.0, 30.1, true)
-            .unwrap_err()
-            .contains("Total audio duration 30.1s exceeds 30s"));
+        assert!(validate_reference_audio_duration(
+            validators::DRAMA_MODEL_VERSION,
+            30.0,
+            30.1,
+            true
+        )
+        .unwrap_err()
+        .contains("Total audio duration 30.1s exceeds 30s"));
         assert!(validate_reference_audio_duration("3.4", 30.0, 30.0, false)
             .unwrap_err()
             .contains("out of range [1, 16]"));
-        assert!(validate_reference_audio_duration("3.2_a", 10.0, 16.0, false)
-            .unwrap_err()
-            .contains("Total audio duration 16.0s exceeds 15s"));
+        assert!(
+            validate_reference_audio_duration("3.2_a", 10.0, 16.0, false)
+                .unwrap_err()
+                .contains("Total audio duration 16.0s exceeds 15s")
+        );
 
         let mut total = 0.0;
         for duration in [15.0, 15.1] {
@@ -2489,22 +2657,19 @@ mod tests {
 
     #[test]
     fn legacy_resolution_and_duration_rules_remain_unchanged() {
-        assert!(normalize_task_settings("text2video", "3.2", None, None, None, None)
-            .unwrap_err()
-            .contains("duration is required"));
-        assert!(normalize_task_settings("text2video", "3.2", Some(5), None, None, None)
-            .unwrap_err()
-            .contains("resolution is required"));
+        assert!(
+            normalize_task_settings("text2video", "3.2", None, None, None, None)
+                .unwrap_err()
+                .contains("duration is required")
+        );
+        assert!(
+            normalize_task_settings("text2video", "3.2", Some(5), None, None, None)
+                .unwrap_err()
+                .contains("resolution is required")
+        );
 
-        let cost = normalize_task_settings(
-            "text2video",
-            "3.2",
-            Some(5),
-            None,
-            None,
-            Some("1080p"),
-        )
-        .unwrap();
+        let cost = normalize_task_settings("text2video", "3.2", Some(5), None, None, Some("1080p"))
+            .unwrap();
         assert_eq!(cost.duration, 5);
         assert_eq!(cost.resolution, "1080p");
         assert_eq!(cost.aspect_ratio, None);
@@ -2513,28 +2678,29 @@ mod tests {
     #[test]
     fn drama_local_reference_video_duration_rules_are_checked_before_upload() {
         assert_eq!(
-            validate_local_reference_video_durations(
-                validators::DRAMA_MODEL_VERSION,
-                &[4.0, 26.0],
-            ),
+            validate_local_reference_video_durations(validators::DRAMA_MODEL_VERSION, &[4.0, 26.0],),
             Ok(())
         );
-        assert!(validate_local_reference_video_durations(
-            validators::DRAMA_MODEL_VERSION,
-            &[3.99],
-        )
-        .unwrap_err()
-        .contains("out of range [4, 30]"));
+        assert!(
+            validate_local_reference_video_durations(validators::DRAMA_MODEL_VERSION, &[3.99],)
+                .unwrap_err()
+                .contains("out of range [4, 30]")
+        );
         assert!(validate_local_reference_video_durations(
             validators::DRAMA_MODEL_VERSION,
             &[15.1, 15.1],
         )
         .unwrap_err()
         .contains("exceeds 30s"));
-        assert_eq!(validate_local_reference_video_durations("3.2_a", &[8.0, 7.0]), Ok(()));
-        assert!(validate_local_reference_video_durations("3.2_a", &[8.0, 7.1])
-            .unwrap_err()
-            .contains("exceeds 15s"));
+        assert_eq!(
+            validate_local_reference_video_durations("3.2_a", &[8.0, 7.0]),
+            Ok(())
+        );
+        assert!(
+            validate_local_reference_video_durations("3.2_a", &[8.0, 7.1])
+                .unwrap_err()
+                .contains("exceeds 15s")
+        );
     }
 
     #[test]

@@ -4,12 +4,14 @@ mod commands;
 mod validators;
 
 use clap::builder::PossibleValuesParser;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(name = "vidu-cli", about = "Vidu API CLI", version = env!("VIDU_CLI_VERSION"), propagate_version = true)]
 struct Cli {
+    #[arg(long, global = true, default_value = "json", value_parser = ["json", "table"])]
+    format: String,
     #[command(subcommand)]
     group: Option<Group>,
 }
@@ -21,18 +23,49 @@ enum Group {
     /// Task operations
     Task {
         #[command(subcommand)]
-        action: TaskAction,
+        action: Box<TaskAction>,
     },
     /// Element (主体) operations
     Element {
         #[command(subcommand)]
         action: ElementAction,
     },
+    /// Creation operations
+    Creation {
+        #[command(subcommand)]
+        action: CreationAction,
+    },
+    /// Personal cloned voice operations
+    Voice {
+        #[command(subcommand)]
+        action: VoiceAction,
+    },
     /// Quota / billing operations
     Quota {
         #[command(subcommand)]
         action: QuotaAction,
     },
+}
+
+#[derive(Args)]
+struct SubmissionOptions {
+    #[arg(long)]
+    wait: bool,
+    #[arg(long, requires = "wait", value_parser = clap::value_parser!(u64).range(1..))]
+    timeout: Option<u64>,
+    #[arg(long, short = 'o', requires = "wait")]
+    output: Option<String>,
+}
+
+impl SubmissionOptions {
+    fn finish(self, data: serde_json::Value) {
+        client::ok(commands::task_ops::finish_submission(
+            data,
+            self.wait,
+            self.timeout.unwrap_or(1800),
+            self.output.as_deref(),
+        ));
+    }
 }
 
 #[derive(Subcommand)]
@@ -131,7 +164,7 @@ enum TaskAction {
             value_parser = PossibleValuesParser::new(validators::RESOLUTIONS),
             help = "Resolution: required for legacy submit models; Drama defaults to 720p (480p/720p/1080p), Q4 supports 540p/720p/1080p/2k/4k")]
         resolution: Option<String>,
-        #[arg(long, default_value = "1")]
+        #[arg(long, default_value = "1", value_parser = clap::value_parser!(i64).range(1..))]
         sample_count: i64,
         #[arg(long, default_value = "h265",
             value_parser = PossibleValuesParser::new(validators::CODECS))]
@@ -142,10 +175,77 @@ enum TaskAction {
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
             help = "Q4 defaults to normal, allows nopeak subject to server rules, and rejects claw_pass; Drama supports only normal credits. Other models auto-detect pass status if omitted.")]
         schedule_mode: Option<String>,
+        #[command(flatten)]
+        submission: SubmissionOptions,
+    },
+    /// List task history
+    List {
+        #[arg(long = "state", action = clap::ArgAction::Append)]
+        states: Vec<String>,
+        #[arg(long = "type", action = clap::ArgAction::Append)]
+        types: Vec<String>,
+        #[arg(long = "scene", action = clap::ArgAction::Append)]
+        scenes: Vec<String>,
+        #[arg(long, default_value = "")]
+        page_token: String,
+        #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(1..=100))]
+        pagesz: i64,
+    },
+    /// Cancel a queued task
+    Cancel { task_id: String },
+    /// Delete task history
+    Delete { task_id: String },
+    /// Wait for completion and optionally download results
+    Wait {
+        task_id: String,
+        #[arg(long, default_value = "1800", value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: u64,
+        #[arg(long, default_value = "5", value_parser = clap::value_parser!(u64).range(1..))]
+        poll_interval: u64,
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+    },
+    /// Extend a completed video creation
+    Extend {
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+        creation_id: i64,
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=7))]
+        duration: i64,
+        #[arg(long, default_value = "extendspeed", value_parser = ["extendspeed", "extendpro"])]
+        transition: String,
+        #[command(flatten)]
+        submission: SubmissionOptions,
+    },
+    /// Upscale an image creation
+    UpscaleImage {
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+        creation_id: i64,
+        #[arg(long, default_value = "2k", value_parser = ["720p", "1080p", "2k", "4k"])]
+        resolution: String,
+        #[command(flatten)]
+        submission: SubmissionOptions,
+    },
+    /// Submit a new task using historical inputs
+    Rerun {
+        task_id: String,
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long = "prompt-path", alias = "prompt-file")]
+        prompt_path: Option<String>,
+        #[arg(long = "model-version", alias = "model", value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS))]
+        model: Option<String>,
+        #[arg(long, allow_negative_numbers = true)]
+        duration: Option<i64>,
+        #[arg(long, value_parser = PossibleValuesParser::new(validators::RESOLUTIONS))]
+        resolution: Option<String>,
+        #[command(flatten)]
+        submission: SubmissionOptions,
     },
     /// Get task result
     Get {
         task_id: String,
+        #[arg(long)]
+        details: bool,
         #[arg(
             long,
             short = 'o',
@@ -191,6 +291,8 @@ enum TaskAction {
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
             help = "Schedule mode: nopeak (off-peak quota; server checks eligibility, remaining quota and task/model rules), claw_pass (pass quota), or normal (credits). If omitted, an active claw pass is auto-detected; otherwise normal is used.")]
         schedule_mode: Option<String>,
+        #[command(flatten)]
+        submission: SubmissionOptions,
     },
     /// List available voice IDs for lip-sync
     LipSyncVoices,
@@ -240,6 +342,8 @@ enum TaskAction {
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
             help = "Schedule mode: nopeak (off-peak quota; server checks eligibility, remaining quota and task/model rules), claw_pass (pass quota), or normal (credits). If omitted, an active claw pass is auto-detected; otherwise normal is used.")]
         schedule_mode: Option<String>,
+        #[command(flatten)]
+        submission: SubmissionOptions,
     },
     /// List available TTS voice IDs
     TtsVoices,
@@ -261,6 +365,8 @@ enum TaskAction {
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
             help = "Schedule mode: nopeak (off-peak quota; server checks eligibility, remaining quota and task/model rules), claw_pass (pass quota), or normal (credits). If omitted, an active claw pass is auto-detected; otherwise normal is used.")]
         schedule_mode: Option<String>,
+        #[command(flatten)]
+        submission: SubmissionOptions,
     },
     /// Query credit cost for a task before submitting
     Cost {
@@ -289,7 +395,7 @@ enum TaskAction {
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::TRANSITIONS))]
         transition: Option<String>,
-        #[arg(long, default_value = "1")]
+        #[arg(long, default_value = "1", value_parser = clap::value_parser!(i64).range(1..))]
         sample_count: i64,
         #[arg(long, default_value = "h265",
             value_parser = PossibleValuesParser::new(validators::CODECS))]
@@ -351,6 +457,35 @@ enum TaskAction {
 
 #[derive(Subcommand)]
 enum ElementAction {
+    /// Get latest visible element
+    Get { element_id: String },
+    /// Update personal element metadata
+    #[command(group(clap::ArgGroup::new("changes").required(true).multiple(true).args(["name", "labels", "clear_labels", "recaption"])))]
+    Update {
+        element_id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long = "label", value_name = "LABEL_ID", help = "Replace labels with these label IDs. Repeatable.", action = clap::ArgAction::Append, conflicts_with = "clear_labels")]
+        labels: Vec<String>,
+        #[arg(long)]
+        clear_labels: bool,
+        #[arg(long)]
+        recaption: Option<String>,
+    },
+    /// Delete personal element
+    Delete { element_id: String },
+    /// List favorite community elements
+    Favorites {
+        #[arg(long, default_value = "")]
+        page_token: String,
+        #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(1..=100))]
+        pagesz: i64,
+    },
+    /// Favorite community element
+    Favorite { element_id: String },
+    /// Unfavorite community element
+    Unfavorite { element_id: String },
+
     /// Check if element name exists
     Check {
         #[arg(long)]
@@ -384,16 +519,22 @@ enum ElementAction {
     List {
         #[arg(long)]
         keyword: Option<String>,
-        #[arg(long, default_value = "0")]
-        page: i64,
-        #[arg(long, default_value = "20")]
+        #[arg(long, value_parser = clap::value_parser!(i64).range(0..=i32::MAX as i64), conflicts_with = "page_token")]
+        page: Option<i64>,
+        #[arg(long)]
+        page_token: Option<String>,
+        #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(10..=100))]
         pagesz: i64,
     },
     /// Search community elements
     Search {
         #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        topic: Option<String>,
+        #[arg(long)]
         keyword: String,
-        #[arg(long, default_value = "20")]
+        #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(1..=100))]
         pagesz: i64,
         #[arg(long, default_value = "recommend")]
         sort_by: String,
@@ -404,10 +545,78 @@ enum ElementAction {
 
 #[derive(Subcommand)]
 enum QuotaAction {
+    /// List credit transaction records
+    Records {
+        #[arg(long, default_value = "0", value_parser = clap::value_parser!(i64).range(0..=i32::MAX as i64))]
+        page: i64,
+        #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(1..=100))]
+        pagesz: i64,
+    },
     /// Query claw-pass daily quota status
     Pass,
     /// Query user credit balance
     Credit,
+}
+
+#[derive(Subcommand)]
+enum CreationAction {
+    /// List personal or favorite creations
+    List {
+        #[arg(long)]
+        favorites_only: bool,
+        #[arg(long, default_value = "0", value_parser = clap::value_parser!(i64).range(0..=i32::MAX as i64))]
+        page: i64,
+        #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(1..=100))]
+        pagesz: i64,
+    },
+    Favorite {
+        #[arg(value_parser = clap::value_parser!(i64).range(1..))]
+        creation_id: i64,
+    },
+    Unfavorite {
+        #[arg(value_parser = clap::value_parser!(i64).range(1..))]
+        creation_id: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum VoiceAction {
+    /// Create a personal cloned voice
+    Create {
+        #[arg(long)]
+        audio: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        use_trial: bool,
+        #[arg(long)]
+        wait: bool,
+        #[arg(long, requires = "wait", value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
+    },
+    /// List personal cloned voices
+    List {
+        #[arg(long, default_value = "")]
+        page_token: String,
+        #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(1..=100))]
+        pagesz: i64,
+    },
+    Get {
+        voice_id: String,
+    },
+    #[command(group(clap::ArgGroup::new("changes").required(true).multiple(true).args(["name", "description"])))]
+    Update {
+        voice_id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    Wait {
+        voice_id: String,
+        #[arg(long, default_value = "1800", value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: u64,
+    },
 }
 
 fn main() -> ExitCode {
@@ -415,6 +624,8 @@ fn main() -> ExitCode {
         Ok(c) => c,
         Err(code) => return code,
     };
+
+    client::set_output_format(cli.format == "table");
 
     let group = match cli.group {
         Some(g) => g,
@@ -430,7 +641,7 @@ fn main() -> ExitCode {
         Group::Upload { image_path } => {
             commands::upload::run(&image_path);
         }
-        Group::Task { action } => match action {
+        Group::Task { action } => match *action {
             TaskAction::Submit {
                 task_type,
                 prompt,
@@ -448,8 +659,9 @@ fn main() -> ExitCode {
                 codec,
                 movement_amplitude,
                 schedule_mode,
+                submission,
             } => {
-                commands::tasks::submit(
+                let data = commands::tasks::submit(
                     &task_type,
                     prompt.as_deref(),
                     prompt_path.as_deref(),
@@ -467,10 +679,76 @@ fn main() -> ExitCode {
                     &movement_amplitude,
                     schedule_mode.as_deref(),
                 );
+                submission.finish(data);
             }
-            TaskAction::Get { task_id, output } => {
-                commands::tasks::get(&task_id, output.as_deref())
+            TaskAction::Get {
+                task_id,
+                output,
+                details,
+            } => {
+                client::ok(commands::tasks::get_result(
+                    &task_id,
+                    output.as_deref(),
+                    details,
+                ));
             }
+            TaskAction::List {
+                states,
+                types,
+                scenes,
+                page_token,
+                pagesz,
+            } => client::ok(commands::task_ops::list(
+                &states,
+                &types,
+                &scenes,
+                &page_token,
+                pagesz,
+            )),
+            TaskAction::Cancel { task_id } => client::ok(commands::task_ops::cancel(&task_id)),
+            TaskAction::Delete { task_id } => client::ok(commands::task_ops::delete(&task_id)),
+            TaskAction::Wait {
+                task_id,
+                timeout,
+                poll_interval,
+                output,
+            } => client::ok(commands::task_ops::wait(
+                &task_id,
+                timeout,
+                poll_interval,
+                output.as_deref(),
+            )),
+            TaskAction::Extend {
+                creation_id,
+                duration,
+                transition,
+                submission,
+            } => submission.finish(commands::task_ops::extend(
+                creation_id,
+                duration,
+                &transition,
+            )),
+            TaskAction::UpscaleImage {
+                creation_id,
+                resolution,
+                submission,
+            } => submission.finish(commands::task_ops::upscale_image(creation_id, &resolution)),
+            TaskAction::Rerun {
+                task_id,
+                prompt,
+                prompt_path,
+                model,
+                duration,
+                resolution,
+                submission,
+            } => submission.finish(commands::task_ops::rerun(
+                &task_id,
+                prompt.as_deref(),
+                prompt_path.as_deref(),
+                model.as_deref(),
+                duration,
+                resolution.as_deref(),
+            )),
             TaskAction::LipSync {
                 video,
                 text,
@@ -481,8 +759,9 @@ fn main() -> ExitCode {
                 enhance,
                 codec,
                 schedule_mode,
+                submission,
             } => {
-                commands::tasks::submit_lip_sync(
+                let data = commands::tasks::submit_lip_sync(
                     &video,
                     text.as_deref(),
                     audio.as_deref(),
@@ -493,6 +772,7 @@ fn main() -> ExitCode {
                     &codec,
                     schedule_mode.as_deref(),
                 );
+                submission.finish(data);
             }
             TaskAction::LipSyncVoices => {
                 commands::tasks::list_voices();
@@ -508,8 +788,9 @@ fn main() -> ExitCode {
                 language_boost,
                 subtitle_enable,
                 schedule_mode,
+                submission,
             } => {
-                commands::tasks::submit_tts(
+                let data = commands::tasks::submit_tts(
                     prompt.as_deref(),
                     prompt_path.as_deref(),
                     &texts,
@@ -521,6 +802,7 @@ fn main() -> ExitCode {
                     subtitle_enable,
                     schedule_mode.as_deref(),
                 );
+                submission.finish(data);
             }
             TaskAction::TtsVoices => {
                 commands::tasks::list_tts_voices();
@@ -530,8 +812,11 @@ fn main() -> ExitCode {
                 width,
                 height,
                 schedule_mode,
+                submission,
             } => {
-                commands::tasks::compose(&timeline, width, height, schedule_mode.as_deref());
+                let data =
+                    commands::tasks::compose(&timeline, width, height, schedule_mode.as_deref());
+                submission.finish(data);
             }
             TaskAction::Cost {
                 task_type,
@@ -592,6 +877,32 @@ fn main() -> ExitCode {
             }
         },
         Group::Element { action } => match action {
+            ElementAction::Get { element_id } => client::ok(commands::elements::get(&element_id)),
+            ElementAction::Update {
+                element_id,
+                name,
+                labels,
+                clear_labels,
+                recaption,
+            } => client::ok(commands::elements::update(
+                &element_id,
+                name.as_deref(),
+                &labels,
+                clear_labels,
+                recaption.as_deref(),
+            )),
+            ElementAction::Delete { element_id } => {
+                client::ok(commands::elements::delete(&element_id))
+            }
+            ElementAction::Favorites { page_token, pagesz } => {
+                client::ok(commands::elements::favorites(&page_token, pagesz))
+            }
+            ElementAction::Favorite { element_id } => {
+                client::ok(commands::elements::favorite(&element_id, true))
+            }
+            ElementAction::Unfavorite { element_id } => {
+                client::ok(commands::elements::favorite(&element_id, false))
+            }
             ElementAction::Check { name } => {
                 commands::elements::check(&name);
             }
@@ -623,19 +934,81 @@ fn main() -> ExitCode {
                 keyword,
                 page,
                 pagesz,
+                page_token,
             } => {
-                commands::elements::list_elements(keyword.as_deref(), page, pagesz);
+                commands::elements::list_elements(
+                    keyword.as_deref(),
+                    page.unwrap_or(0),
+                    pagesz,
+                    page_token.as_deref(),
+                );
             }
             ElementAction::Search {
+                category,
+                topic,
                 keyword,
                 pagesz,
                 sort_by,
                 page_token,
             } => {
-                commands::elements::search(&keyword, pagesz, &sort_by, &page_token);
+                commands::elements::search(
+                    &keyword,
+                    pagesz,
+                    &sort_by,
+                    &page_token,
+                    category.as_deref(),
+                    topic.as_deref(),
+                );
+            }
+        },
+        Group::Creation { action } => match action {
+            CreationAction::List {
+                favorites_only,
+                page,
+                pagesz,
+            } => client::ok(commands::creations::list(favorites_only, page, pagesz)),
+            CreationAction::Favorite { creation_id } => {
+                client::ok(commands::creations::favorite(creation_id, true))
+            }
+            CreationAction::Unfavorite { creation_id } => {
+                client::ok(commands::creations::favorite(creation_id, false))
+            }
+        },
+        Group::Voice { action } => match action {
+            VoiceAction::Create {
+                audio,
+                name,
+                use_trial,
+                wait,
+                timeout,
+            } => client::ok(commands::voices::create(
+                &audio,
+                name.as_deref(),
+                use_trial,
+                wait,
+                timeout.unwrap_or(1800),
+            )),
+            VoiceAction::List { page_token, pagesz } => {
+                client::ok(commands::voices::list(&page_token, pagesz))
+            }
+            VoiceAction::Get { voice_id } => client::ok(commands::voices::get(&voice_id)),
+            VoiceAction::Update {
+                voice_id,
+                name,
+                description,
+            } => client::ok(commands::voices::update(
+                &voice_id,
+                name.as_deref(),
+                description.as_deref(),
+            )),
+            VoiceAction::Wait { voice_id, timeout } => {
+                client::ok(commands::voices::wait(&voice_id, timeout))
             }
         },
         Group::Quota { action } => match action {
+            QuotaAction::Records { page, pagesz } => {
+                client::ok(commands::quota::records(page, pagesz))
+            }
             QuotaAction::Pass => commands::quota::claw_pass_status(),
             QuotaAction::Credit => commands::quota::credit_status(),
         },
@@ -651,7 +1024,7 @@ mod tests {
     fn parse_tts(args: &[&str]) -> TaskAction {
         let cli = Cli::try_parse_from(args).expect("parse cli");
         match cli.group.expect("group") {
-            Group::Task { action } => action,
+            Group::Task { action } => *action,
             _ => unreachable!(),
         }
     }
@@ -766,5 +1139,162 @@ mod tests {
     #[test]
     fn clap_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn new_root_commands_and_global_format_parse() {
+        for args in [
+            vec!["vidu-cli", "--format", "table", "creation", "list"],
+            vec![
+                "vidu-cli", "creation", "favorite", "123", "--format", "table",
+            ],
+            vec!["vidu-cli", "voice", "get", "voice_123", "--format", "table"],
+            vec!["vidu-cli", "task", "list", "--format", "table"],
+        ] {
+            assert_eq!(Cli::try_parse_from(args).unwrap().format, "table");
+        }
+        assert_eq!(
+            Cli::try_parse_from(["vidu-cli", "quota", "records"])
+                .unwrap()
+                .format,
+            "json"
+        );
+    }
+
+    #[test]
+    fn element_cursor_conflicts_only_with_explicit_page() {
+        assert!(
+            Cli::try_parse_from(["vidu-cli", "element", "list", "--page-token", "next"]).is_ok()
+        );
+        assert!(Cli::try_parse_from([
+            "vidu-cli",
+            "element",
+            "list",
+            "--page",
+            "0",
+            "--page-token",
+            "next"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn submission_wait_requirements_and_aliases_parse() {
+        for command in ["rerun", "tts"] {
+            let base = if command == "rerun" {
+                vec![
+                    "vidu-cli",
+                    "task",
+                    "rerun",
+                    "task_1",
+                    "--model",
+                    "3.1",
+                    "--prompt-file",
+                    "prompt.txt",
+                ]
+            } else {
+                vec![
+                    "vidu-cli",
+                    "task",
+                    "tts",
+                    "--voice",
+                    "voice_1",
+                    "--prompt-file",
+                    "prompt.txt",
+                ]
+            };
+            assert!(Cli::try_parse_from(base.clone()).is_ok());
+            for flag in ["--output", "--timeout"] {
+                let value = if flag == "--output" { "renders" } else { "10" };
+                let mut args = base.clone();
+                args.extend([flag, value]);
+                assert!(Cli::try_parse_from(args.clone()).is_err());
+                args.push("--wait");
+                assert!(Cli::try_parse_from(args).is_ok());
+            }
+        }
+        assert!(
+            Cli::try_parse_from(["vidu-cli", "voice", "create", "--audio", "voice.wav"]).is_ok()
+        );
+        assert!(Cli::try_parse_from([
+            "vidu-cli",
+            "voice",
+            "create",
+            "--audio",
+            "voice.wav",
+            "--timeout",
+            "10"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn metadata_updates_require_changes_and_label_clear_conflicts() {
+        for args in [
+            vec!["vidu-cli", "element", "update", "element_1"],
+            vec!["vidu-cli", "voice", "update", "voice_1"],
+            vec![
+                "vidu-cli",
+                "element",
+                "update",
+                "element_1",
+                "--label",
+                "1",
+                "--clear-labels",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        assert!(Cli::try_parse_from([
+            "vidu-cli",
+            "element",
+            "update",
+            "element_1",
+            "--recaption",
+            "new caption",
+            "--label",
+            "1",
+            "--label",
+            "2"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "vidu-cli",
+            "voice",
+            "update",
+            "voice_1",
+            "--description",
+            "new description"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn numeric_ranges_are_rejected_during_parsing() {
+        for args in [
+            vec!["vidu-cli", "creation", "favorite", "0"],
+            vec!["vidu-cli", "creation", "favorite", "-1"],
+            vec![
+                "vidu-cli",
+                "task",
+                "extend",
+                "--creation-id",
+                "1",
+                "--duration",
+                "8",
+            ],
+            vec!["vidu-cli", "task", "wait", "task_1", "--timeout", "0"],
+            vec!["vidu-cli", "task", "wait", "task_1", "--poll-interval", "0"],
+            vec!["vidu-cli", "quota", "records", "--page", "-1"],
+            vec!["vidu-cli", "task", "list", "--pagesz", "0"],
+            vec!["vidu-cli", "voice", "list", "--pagesz", "101"],
+            vec!["vidu-cli", "element", "list", "--pagesz", "9"],
+            vec!["vidu-cli", "voice", "wait", "voice_1", "--timeout", "0"],
+        ] {
+            assert!(
+                Cli::try_parse_from(args.clone()).is_err(),
+                "unexpectedly accepted: {args:?}"
+            );
+        }
     }
 }

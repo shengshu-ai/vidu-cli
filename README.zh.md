@@ -1,6 +1,6 @@
 # vidu-cli
 
-[English](./README.md)
+[English](README.md)
 
 [Vidu](https://www.vidu.cn) 视频生成 API 的命令行客户端。
 
@@ -40,13 +40,20 @@ export VIDU_BASE_URL=https://service.vidu.cn  # 中国大陆: service.vidu.cn，
 ## 用法
 
 ```
-vidu-cli <COMMAND>
+vidu-cli [--format json|table] <COMMAND>
 
 Commands:
   upload   上传图片 → 获取 ssupload URI
   task     任务操作
   element  素材（参考元素）操作
+  creation 作品列表与收藏
+  voice    个人克隆音色
+  quota    配额、余额与积分流水
 ```
+
+默认输出保持 JSON `ok` 信封。手动查看时可加全局 `--format table`；脚本可继续使用默认 JSON。
+
+下文的 `TASK_ID`、`VOICE_ID` 和分页 token 必须替换为响应中的实际值；数字素材 ID `42`、作品 ID `123` 和标签 ID `1`、`2` 也是示例，请替换为有权限使用的真实 ID。任务 ID 与作品 ID 不能互换。
 
 ---
 
@@ -68,8 +75,6 @@ vidu-cli upload ./photo.jpg
 vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
   --model-version <VERSION> [--duration <DURATION>] [--resolution <RESOLUTION>] [OPTIONS]
 ```
-
-<!-- PLACEHOLDER_PART2 -->
 
 **常用选项：**
 
@@ -141,6 +146,7 @@ vidu-cli task submit \
   --model-version 3.1 \
   --duration 4 \
   --resolution 1080p \
+  --transition pro \
   --image ./scene.jpg
 
 # 首尾帧生视频
@@ -150,6 +156,7 @@ vidu-cli task submit \
   --model-version 3.2 \
   --duration 5 \
   --resolution 1080p \
+  --transition pro \
   --image ./start.jpg \
   --image ./end.jpg
 
@@ -162,26 +169,60 @@ vidu-cli task submit \
   --resolution 1080p \
   --transition pro \
   --image ./character.jpg \
-  --material "mychar:element-id:1"
+  --material "mychar:42:1"
 ```
 
 #### 查询任务结果
 
 ```bash
-vidu-cli task get <TASK_ID> [--output <DIR>]
+vidu-cli task get <TASK_ID> [--details] [--output <DIR>]
 ```
 
-返回：`task_id`、`state`、`type`、`model`、`err_code`、`err_msg`。
+返回 `task_id`、`state`、`type`、`model`；失败任务还包含 `err_code`、`err_msg`。
 
 使用 `--output` / `-o` 在任务完成时下载媒体文件到本地目录：
 
 ```bash
-vidu-cli task get <TASK_ID> --output ./results
+vidu-cli task get "$TASK_ID" --output ./results
 ```
 
-如果任务状态不是 `success`，下载会跳过，响应中包含 `download_skipped: true`。
+如果任务状态不是 `success`，下载会跳过，响应中包含 `download_skipped: "task not ready"`。
 
-<!-- PLACEHOLDER_PART3 -->
+#### 历史、详情与等待
+
+```bash
+vidu-cli task list --state success --pagesz 20
+vidu-cli task get "$TASK_ID" --details
+vidu-cli task wait "$TASK_ID" --timeout 1800 --poll-interval 5 --output ./results
+vidu-cli --format table task list
+```
+
+`task list` 的 `--state`、`--type`、`--scene` 可重复；用 `--page-token` 继续游标翻页。`get --details` 增加原始 `input`、`settings` 与包含实际 `creation_id` 的 `creations`。
+
+`submit`、`tts`、`lip-sync`、`compose`、`extend`、`upscale-image`、`rerun` 都支持 `--wait [--timeout 1800] [--output DIR]`。提交命令上的 `--timeout`、`--output` 需要同时使用 `--wait`。例如：
+
+```bash
+vidu-cli task submit --type text2video --prompt "黎明时安静的街道" \
+  --model-version viduq3.1-drama-std --wait --output ./results
+```
+
+等待进度写入 stderr，最终结果写入 stdout。超时或中断只结束本地等待，不取消服务端任务；失败或超时返回非零状态。`task get` 仍只查询一次。
+
+#### 管理任务与复用作品
+
+```bash
+vidu-cli task cancel "$TASK_ID"
+vidu-cli task delete "$TASK_ID"
+vidu-cli task rerun "$TASK_ID" --prompt "改成雨天" --wait
+vidu-cli task extend --creation-id 123 --duration 4 --transition extendspeed --wait
+vidu-cli task upscale-image --creation-id 123 --resolution 2k --wait
+```
+
+取消只适用于进入 `processing` 前的任务，且不支持 `clip_compose`；删除是历史记录软删除，`queueing`、`processing` 状态不允许删除。具体权限由服务端校验。
+
+`rerun` 从历史输入创建新的付费任务，支持原有六类图片/视频 submit 任务；可覆盖 prompt（含 `--prompt-path` / `--prompt-file`）、模型（`--model-version` / `--model`）、时长和分辨率，保留参考素材，不保证相同 seed 复现。延长要求已完成、可访问的 1080p 视频作品，固定模型 3.1、1080p，延长 1–7 秒，默认 `extendspeed`；也可选 `extendpro`，套餐和总时长仍由服务端校验。图片增强以已有图片作品为输入，默认 2k，可选 720p、1080p、2k、4k。
+
+仅当 `--model-version` 实际改变时，rerun 保留目标类型/模型接受的转场；否则，3.0 图生/首尾帧使用 `stable`，需要 `pro` / `speed` 的 3.1/3.2 使用 `speed`，不支持转场的目标移除转场。不兼容的计费模式回到目标模型默认值（Q4/Drama 为 `normal`）；历史 vendor model 交由服务端重新选择。原 style 保留，切到 3.0 且 style 为空或缺失时使用 `general`。时长和分辨率继续沿用历史值，需要时请显式覆盖以符合新模型约束。
 
 #### 口型同步
 
@@ -272,6 +313,9 @@ vidu-cli quota pass
 
 # 查询用户积分余额
 vidu-cli quota credit
+
+# 积分流水（数字页，从 0 开始）
+vidu-cli quota records --page 0 --pagesz 20
 ```
 
 ---
@@ -297,6 +341,48 @@ vidu-cli element list --keyword "char" --page 0 --pagesz 20
 # 搜索社区素材
 vidu-cli element search --keyword "动漫女孩" --sort-by recommend --pagesz 20
 ```
+
+个人素材列表支持 `--keyword`，默认第一页；`--page-token` 使用响应中的 `next_page_token`，与显式 `--page` 互斥。数字页兼容模式由 CLI 顺序获取游标，较深页会产生多次请求。个人素材的 `--pagesz` 范围为 10–100，默认 20。
+
+```bash
+vidu-cli element list --keyword "char" --page-token "$NEXT_PAGE_TOKEN" --pagesz 20
+vidu-cli element get 42
+vidu-cli element update 42 --name "新角色" --label 1 --label 2 --recaption "新的角色描述"
+vidu-cli element update 42 --clear-labels
+vidu-cli element delete 42
+vidu-cli element search --keyword "夏日" --category "character" --topic "summer"
+vidu-cli element favorite 42
+vidu-cli element favorites --pagesz 20
+vidu-cli element unfavorite 42
+```
+
+`--label` 接收数字标签 ID 并整体替换标签集合，与 `--clear-labels` 互斥。`--recaption` 修改描述并保留原 style。更新至少需要一项变更；共享投稿、版本和删除权限由服务端校验。收藏命令接收素材 ID，由 CLI 内部查询 share ID。`element favorites` 是独立的游标列表，只接收分页参数，不接收搜索条件。
+
+### 作品
+
+```bash
+vidu-cli creation list --page 0 --pagesz 20
+vidu-cli creation list --favorites-only --page 0 --pagesz 20
+vidu-cli creation favorite 123
+vidu-cli creation unfavorite 123
+```
+
+列表使用数字页（offset）并返回 `total`；收藏列表包含当前用户有权访问的收藏作品，不限于本人作品。使用 `task get --details` 或作品列表返回的作品 ID。
+
+### 个人克隆音色
+
+```bash
+vidu-cli voice create --audio ./voice-sample.wav --name "我的旁白" --wait --timeout 1800
+vidu-cli voice list --pagesz 20
+vidu-cli voice get "$VOICE_ID"
+vidu-cli voice update "$VOICE_ID" --name "新旁白" --description "适合故事讲述"
+vidu-cli voice wait "$VOICE_ID" --timeout 1800
+vidu-cli task tts --prompt "你好" --voice-id "$VOICE_ID" --wait
+```
+
+`VOICE_ID` 须设为 create/list 返回的个人 `voice_...` ID。录音为本地文件，须为 10–300 秒、不超过 20 MiB。上传完成接口同步审核，通过后才使用 `ssupload` URI 发起复刻。默认付费；`--use-trial` 显式申请试用，失败不会自动改为付费重提。
+
+不加 `--wait` 时，create 在上传审核后提交复刻并返回 ID；加上后继续等待复刻。`--timeout` 需要 `--wait`，只控制复刻等待，默认 1800 秒。`voice wait` 通过 SSE 等待，无轮询间隔参数；超时或中断不取消服务端复刻。列表使用 `--page-token` 游标。create 不接受 description，创建后用 update 修改。没有音色删除命令；原有 `task tts-voices`、`task lip-sync-voices` 继续列官方静态音色。
 
 ## 许可证
 
