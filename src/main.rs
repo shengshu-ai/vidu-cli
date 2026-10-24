@@ -68,8 +68,35 @@ impl SubmissionOptions {
     }
 }
 
+#[derive(Args)]
+struct UpscaleOptions {
+    /// Completed video creation (mutually exclusive with --video)
+    #[arg(long, required_unless_present = "video", conflicts_with = "video", value_parser = clap::value_parser!(i64).range(1..))]
+    creation_id: Option<i64>,
+    /// Local MP4/MOV/AVI, HTTP/HTTPS URL, or ssupload:?id=...
+    #[arg(long, required_unless_present = "creation_id")]
+    video: Option<String>,
+    #[arg(long, value_parser = ["720p", "1080p", "2k", "4k"])]
+    resolution: String,
+    /// Source duration in seconds: required only for URL/ssupload; does not trim video
+    #[arg(long, conflicts_with = "creation_id", value_parser = clap::value_parser!(i32).range(1..))]
+    duration: Option<i32>,
+}
+
 #[derive(Subcommand)]
 enum TaskAction {
+    /// Upscale a video creation or video file/URL/upload
+    Upscale {
+        #[command(flatten)]
+        input: UpscaleOptions,
+        #[command(flatten)]
+        submission: SubmissionOptions,
+    },
+    /// Estimate video upscale credits without uploading or creating a task
+    UpscaleCost {
+        #[command(flatten)]
+        input: UpscaleOptions,
+    },
     /// Submit task (see parameter constraints by type below)
     ///
     /// TYPE: text2image
@@ -728,6 +755,20 @@ fn main() -> ExitCode {
                 duration,
                 &transition,
             )),
+            TaskAction::Upscale { input, submission } => {
+                submission.finish(commands::upscale::submit(
+                    input.creation_id,
+                    input.video.as_deref(),
+                    &input.resolution,
+                    input.duration,
+                ));
+            }
+            TaskAction::UpscaleCost { input } => commands::upscale::cost(
+                input.creation_id,
+                input.video.as_deref(),
+                &input.resolution,
+                input.duration,
+            ),
             TaskAction::UpscaleImage {
                 creation_id,
                 resolution,

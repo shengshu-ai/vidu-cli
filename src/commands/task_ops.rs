@@ -167,7 +167,7 @@ pub fn delete(task_id: &str) -> Value {
     result
 }
 
-fn submission(data: Value) -> Value {
+pub(super) fn submission(data: Value) -> Value {
     let id = data
         .get("id")
         .or_else(|| data.get("task_id"))

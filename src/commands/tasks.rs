@@ -1924,7 +1924,7 @@ fn read_mp4_dimensions(path: &str) -> Option<(u32, u32)> {
     read_local_video_metadata(path).ok()?.dimensions
 }
 
-fn read_video_duration_f64(path: &str) -> Option<f64> {
+pub(super) fn read_video_duration_f64(path: &str) -> Option<f64> {
     read_local_video_metadata(path).ok()?.duration
 }
 
@@ -2128,7 +2128,7 @@ pub fn query_lip_sync_credits(
     output_credits_result(&data);
 }
 
-fn output_credits_result(data: &serde_json::Value) {
+pub(super) fn output_credits_result(data: &serde_json::Value) {
     let mut result = json!({
         "cost_credits": data.get("cost_credits").and_then(|v| v.as_i64()).unwrap_or(0),
         "can_submit": data.get("can_submit").and_then(|v| v.as_bool()).unwrap_or(false),
