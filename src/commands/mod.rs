@@ -4,4 +4,5 @@ pub mod quota;
 pub mod task_ops;
 pub mod tasks;
 pub mod upload;
+pub mod upscale;
 pub mod voices;

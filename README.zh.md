@@ -199,7 +199,7 @@ vidu-cli --format table task list
 
 `task list` 的 `--state`、`--type`、`--scene` 可重复；用 `--page-token` 继续游标翻页。`get --details` 增加原始 `input`、`settings` 与包含实际 `creation_id` 的 `creations`。
 
-`submit`、`tts`、`lip-sync`、`compose`、`extend`、`upscale-image`、`rerun` 都支持 `--wait [--timeout 1800] [--output DIR]`。提交命令上的 `--timeout`、`--output` 需要同时使用 `--wait`。例如：
+`submit`、`tts`、`lip-sync`、`compose`、`extend`、`upscale`、`upscale-image`、`rerun` 都支持 `--wait [--timeout 1800] [--output DIR]`。提交命令上的 `--timeout`、`--output` 需要同时使用 `--wait`。例如：
 
 ```bash
 vidu-cli task submit --type text2video --prompt "黎明时安静的街道" \
@@ -223,6 +223,33 @@ vidu-cli task upscale-image --creation-id 123 --resolution 2k --wait
 `rerun` 从历史输入创建新的付费任务，支持原有六类图片/视频 submit 任务；可覆盖 prompt（含 `--prompt-path` / `--prompt-file`）、模型（`--model-version` / `--model`）、时长和分辨率，保留参考素材，不保证相同 seed 复现。延长要求已完成、可访问的 1080p 视频作品，固定模型 3.1、1080p，延长 1–7 秒，默认 `extendspeed`；也可选 `extendpro`，套餐和总时长仍由服务端校验。图片增强以已有图片作品为输入，默认 2k，可选 720p、1080p、2k、4k。
 
 仅当 `--model-version` 实际改变时，rerun 保留目标类型/模型接受的转场；否则，3.0 图生/首尾帧使用 `stable`，需要 `pro` / `speed` 的 3.1/3.2 使用 `speed`，不支持转场的目标移除转场。不兼容的计费模式回到目标模型默认值（Q4/Drama 为 `normal`）；历史 vendor model 交由服务端重新选择。原 style 保留，切到 3.0 且 style 为空或缺失时使用 `general`。时长和分辨率继续沿用历史值，需要时请显式覆盖以符合新模型约束。
+
+#### 视频超分与积分预估
+
+`task upscale` 接受已有视频作品或单个视频素材；`--creation-id` 和 `--video` 必须二选一。`--resolution` 必填，支持 `720p`、`1080p`、`2k`、`4k`，源作品无需是 1080p。
+
+```bash
+# 已有作品：自动读取时长，等待完成并下载
+vidu-cli task upscale --creation-id 123 --resolution 2k --wait --output ./results
+
+# 本地视频：自动读取时长并上传，默认返回 task_id
+vidu-cli task upscale --video ./input.mp4 --resolution 4k
+
+# 远程素材：必须填写完整源视频的时长（正整数秒，不负责裁剪）
+vidu-cli task upscale --video 'https://example.com/input.mp4' --duration 8 --resolution 2k
+vidu-cli task upscale --video 'ssupload:?id=123' --duration 8 --resolution 1080p
+
+# 预估与提交使用相同输入、分辨率和时长规则
+vidu-cli task upscale-cost --creation-id 123 --resolution 2k
+vidu-cli task upscale-cost --video ./input.mp4 --resolution 4k
+vidu-cli task upscale-cost --video 'ssupload:?id=123' --duration 8 --resolution 2k
+```
+
+本地文件支持 MP4/MOV/AVI，大小不超过 500 MiB，必须包含视频轨且非空。优先使用内置 MP4 解析器读取时长，无法解析时使用本机 `ffprobe`；两者都无法读取时会报错。自动读取的时长四舍五入为整数秒，必须处于 `1..2147483647` 范围，作品和本地输入不允许通过 `--duration` 覆盖。URL/ssupload 不做远程时长探测，调用者负责提供准确的完整源视频时长，且须在上述整数范围内。
+
+`upscale-cost` 只查询报价，不上传本地文件、不创建任务，也不接受 `--wait`、`--timeout`、`--output`。输出沿用 `cost_credits`、`current_credits`、`can_submit` 和 `original_cost_credits`；价格由服务端返回，`can_submit` 仅表示报价时的余额判断，不保证素材一定通过任务校验。
+
+超分使用普通积分模式，供应商由服务端选择。提交失败不会自动重提；`--wait` 默认等待 1800 秒，超时不会取消后台任务，可使用返回的任务 ID 继续执行 `vidu-cli task wait "$TASK_ID" --timeout 1800 --output ./results`。图片超分仍使用原有 `upscale-image` 命令。
 
 #### 口型同步
 

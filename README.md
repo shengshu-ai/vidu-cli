@@ -205,7 +205,7 @@ vidu-cli --format table task list
 
 Repeat `--state`, `--type`, or `--scene` to filter history; continue cursor pagination with `--page-token`. `get --details` adds raw `input`, `settings`, and `creations` containing actual `creation_id` values.
 
-`submit`, `tts`, `lip-sync`, `compose`, `extend`, `upscale-image`, and `rerun` accept `--wait [--timeout 1800] [--output DIR]`. On submission commands, `--timeout` and `--output` require `--wait`. For example:
+`submit`, `tts`, `lip-sync`, `compose`, `extend`, `upscale`, `upscale-image`, and `rerun` accept `--wait [--timeout 1800] [--output DIR]`. On submission commands, `--timeout` and `--output` require `--wait`. For example:
 
 ```bash
 vidu-cli task submit --type text2video --prompt "A quiet street at dawn" \
@@ -229,6 +229,33 @@ Cancellation is allowed before `processing`, except for `clip_compose`. Deletion
 `rerun` creates a new paid task from one of the six existing image/video submit types. Override the prompt (including `--prompt-path` / `--prompt-file`), model (`--model-version` / `--model`), duration, or resolution; historical references stay in place and a seed does not guarantee identical output. Extension requires an accessible completed 1080p video creation, uses model 3.1 and 1080p, and adds 1–7 seconds. The transition defaults to `extendspeed`, with `extendpro` also available; subscription and total-duration rules apply. Image upscaling takes an existing image creation and defaults to 2k; 720p, 1080p, 2k, and 4k are supported.
 
 When `--model-version` actually changes, rerun preserves a transition accepted by the target type/model. Otherwise it selects `stable` for 3.0 image/first-last-frame video, selects `speed` where 3.1/3.2 requires `pro` or `speed`, or removes unsupported transitions. Incompatible scheduling falls back to the target model default (Q4/Drama: `normal`); the inherited vendor model is cleared for server selection. Historical style is preserved, with `general` used when switching to 3.0 without a style. Duration and resolution stay unchanged unless overridden, so adjust them when the target model requires different values.
+
+#### Video upscaling and credit estimates
+
+`task upscale` accepts an existing video creation or one video source. Exactly one of `--creation-id` and `--video` is required. `--resolution` is required and accepts `720p`, `1080p`, `2k`, or `4k`; source creations do not have to be 1080p.
+
+```bash
+# Existing creation: read duration automatically, wait, and download
+vidu-cli task upscale --creation-id 123 --resolution 2k --wait --output ./results
+
+# Local video: read duration and upload; returns task_id by default
+vidu-cli task upscale --video ./input.mp4 --resolution 4k
+
+# Remote source: specify the full source duration in positive integer seconds
+vidu-cli task upscale --video 'https://example.com/input.mp4' --duration 8 --resolution 2k
+vidu-cli task upscale --video 'ssupload:?id=123' --duration 8 --resolution 1080p
+
+# Estimate with the same source, resolution, and duration rules
+vidu-cli task upscale-cost --creation-id 123 --resolution 2k
+vidu-cli task upscale-cost --video ./input.mp4 --resolution 4k
+vidu-cli task upscale-cost --video 'ssupload:?id=123' --duration 8 --resolution 2k
+```
+
+Local files must be nonempty MP4/MOV/AVI videos, at most 500 MiB. Duration is read using the built-in MP4 parser, falling back to local `ffprobe`; an unreadable duration or missing video track is an error. Automatic durations round to integer seconds and must be in `1..2147483647`. `--duration` cannot override a creation or local file's duration. URL/ssupload inputs are not probed remotely: callers must supply the full source duration in that integer range. This value does not trim the video.
+
+`upscale-cost` only requests a quote: it does not upload local files or create tasks, and does not accept `--wait`, `--timeout`, or `--output`. It returns the existing `cost_credits`, `current_credits`, `can_submit`, and `original_cost_credits` fields. Prices come from the server; `can_submit` reflects the balance at quote time and does not guarantee that source validation will pass.
+
+Upscaling uses normal credit scheduling, with the provider selected by the server. Failed submissions are not automatically resubmitted. `--wait` defaults to 1800 seconds; a timeout leaves the task running and preserves its ID. Continue with `vidu-cli task wait "$TASK_ID" --timeout 1800 --output ./results`. Image upscaling remains available through the existing `upscale-image` command.
 
 #### Lip sync
 

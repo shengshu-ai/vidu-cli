@@ -134,11 +134,15 @@ impl Mock {
         Self { base, stop, join }
     }
     fn run(&self, args: &[&str]) -> Output {
+        self.run_env(args, &[])
+    }
+    fn run_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         Command::cargo_bin("vidu-cli")
             .unwrap()
             .env("VIDU_BASE_URL", &self.base)
             .env("VIDU_TOKEN", "e2e-test-token")
             .env_remove("VIDU_DEBUG")
+            .envs(env.iter().copied())
             .timeout(Duration::from_secs(12))
             .args(args)
             .output()
@@ -202,6 +206,404 @@ fn envelope(output: &Output, success: bool) -> Value {
 }
 fn get(path: &'static str, value: Value) -> Step {
     Step::json("GET", path, value)
+}
+
+fn upscale_body(input: Value, resolution: &str, duration: i32) -> Value {
+    json!({"type":"upscale","input":input,"settings":{"resolution":resolution,"duration":duration,"sample_count":1,"schedule_mode":"normal"}})
+}
+
+fn upscale_quote(resolution: &str, duration: &str) -> Step {
+    get("/vidu/v1/tasks/credits", json!({"cost_credits":48,"current_credits":100,"can_submit":true,"original_cost_credits":60}))
+        .query(&[("type","upscale"),("settings.resolution",resolution),("settings.duration",duration),("settings.sample_count","1"),("settings.schedule_mode","normal")])
+}
+
+#[test]
+fn upscale_creation_submit_and_cost_use_same_rounded_duration() {
+    let detail = json!({"creation":{"type":"video","duration":5.5,"resolution":{"resolution":"720p"}},"task":{"state":"success"}});
+    let server = Mock::new(|_| {
+        vec![
+            get("/vidu/v1/creations/77/detail", detail.clone()),
+            upscale_quote("4k", "6"),
+            get("/vidu/v1/creations/77/detail", detail),
+            Step::json("POST", "/vidu/v1/tasks/tool", json!({"id":123})).body(upscale_body(
+                json!({"creation_id":77}),
+                "4k",
+                6,
+            )),
+        ]
+    });
+    let quote = envelope(
+        &server.run(&[
+            "task",
+            "upscale-cost",
+            "--creation-id",
+            "77",
+            "--resolution",
+            "4k",
+        ]),
+        true,
+    );
+    assert_eq!(quote["cost_credits"], 48);
+    assert_eq!(quote["original_cost_credits"], 60);
+    assert_eq!(quote["current_credits"], 100);
+    assert_eq!(quote["can_submit"], true);
+    assert_eq!(
+        envelope(
+            &server.run(&[
+                "task",
+                "upscale",
+                "--creation-id",
+                "77",
+                "--resolution",
+                "4k"
+            ]),
+            true
+        )["task_id"],
+        "123"
+    );
+    server.finish();
+}
+
+#[test]
+fn upscale_remote_sources_preserve_uri_and_match_quote() {
+    for (uri, resolution) in [
+        ("https://example.com/video.mp4?sig=a%2Bb&token=x", "720p"),
+        ("http://example.com/video", "1080p"),
+        ("ssupload:?id=123", "2k"),
+    ] {
+        let server = Mock::new(|_| {
+            vec![
+                upscale_quote(resolution, "8"),
+                Step::json(
+                    "POST",
+                    "/vidu/v1/tasks/tool",
+                    json!({"task_id":"up_remote"}),
+                )
+                .body(upscale_body(
+                    json!({"prompts":[{"type":"video","content":uri}]}),
+                    resolution,
+                    8,
+                )),
+            ]
+        });
+        envelope(
+            &server.run(&[
+                "task",
+                "upscale-cost",
+                "--video",
+                uri,
+                "--duration",
+                "8",
+                "--resolution",
+                resolution,
+            ]),
+            true,
+        );
+        assert_eq!(
+            envelope(
+                &server.run(&[
+                    "task",
+                    "upscale",
+                    "--video",
+                    uri,
+                    "--duration",
+                    "8",
+                    "--resolution",
+                    resolution
+                ]),
+                true
+            )["task_id"],
+            "up_remote"
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn upscale_local_cost_does_not_upload_and_submit_sends_metadata() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/hevc_640x360_rotated.mp4"
+    );
+    let empty_path = tempfile::tempdir().unwrap();
+    let server = Mock::new(|base| {
+        vec![
+            upscale_quote("2k", "1"),
+            Step::json(
+                "POST",
+                "/tools/v1/files/uploads",
+                json!({"id":"123","put_url":format!("{base}/blob/video")}),
+            )
+            .body(json!({"scene":"vidu","metadata":{"duration":"1"}})),
+            Step::json("PUT", "/blob/video", json!({}))
+                .check(|r| assert_eq!(r.body, include_bytes!("fixtures/hevc_640x360_rotated.mp4"))),
+            Step::json("PUT", "/tools/v1/files/uploads/123/finish", json!({}))
+                .body(json!({"etag":"test-etag","id":"123"})),
+            Step::json("POST", "/vidu/v1/tasks/tool", json!({"id":"up_local"})).body(upscale_body(
+                json!({"prompts":[{"type":"video","content":"ssupload:?id=123"}]}),
+                "2k",
+                1,
+            )),
+        ]
+    });
+    for action in ["upscale-cost", "upscale"] {
+        envelope(
+            &server.run_env(
+                &["task", action, "--video", fixture, "--resolution", "2k"],
+                &[("PATH", empty_path.path().to_str().unwrap())],
+            ),
+            true,
+        );
+    }
+    server.finish();
+}
+
+#[cfg(unix)]
+#[test]
+fn upscale_ffprobe_fallback_and_missing_or_invalid_metadata() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let video = dir.path().join("fallback.avi");
+    std::fs::write(&video, b"fixture for mocked ffprobe").unwrap();
+    let probe = dir.path().join("ffprobe");
+    let cases = [
+        (
+            Some(r#"{"streams":[{"codec_type":"video"}],"format":{"duration":"7.5"}}"#),
+            true,
+        ),
+        (
+            Some(r#"{"streams":[{"codec_type":"audio"}],"format":{"duration":"8"}}"#),
+            false,
+        ),
+        (
+            Some(r#"{"streams":[{"codec_type":"video","duration":"NaN"}]}"#),
+            false,
+        ),
+        (None, false),
+    ];
+    for (result, success) in cases {
+        if let Some(result) = result {
+            std::fs::write(&probe, format!("#!/bin/sh\nprintf '%s' '{result}'\n")).unwrap();
+            std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        } else {
+            std::fs::remove_file(&probe).unwrap();
+        }
+        let server = Mock::new(|_| {
+            if success {
+                vec![upscale_quote("4k", "8")]
+            } else {
+                vec![]
+            }
+        });
+        envelope(
+            &server.run_env(
+                &[
+                    "task",
+                    "upscale-cost",
+                    "--video",
+                    video.to_str().unwrap(),
+                    "--resolution",
+                    "4k",
+                ],
+                &[("PATH", dir.path().to_str().unwrap())],
+            ),
+            success,
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn upscale_invalid_arguments_and_files_never_reach_http() {
+    let server = Mock::new(|_| vec![]);
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("empty.mp4");
+    std::fs::write(&empty, []).unwrap();
+    let oversized = dir.path().join("large.mp4");
+    std::fs::File::create(&oversized)
+        .unwrap()
+        .set_len(500 * 1024 * 1024 + 1)
+        .unwrap();
+    let invalid = dir.path().join("invalid.mp4");
+    std::fs::write(&invalid, b"not a video").unwrap();
+    for action in ["upscale", "upscale-cost"] {
+        for tail in [
+            vec![],
+            vec!["--creation-id", "77", "--video", "ssupload:?id=123"],
+            vec!["--creation-id", "0"],
+            vec!["--creation-id", "77", "--duration", "8"],
+            vec!["--video", "ssupload:?id=123"],
+            vec!["--video", "https://example.com/v"],
+            vec!["--video", "ssupload:?id=123", "--duration", "0"],
+            vec!["--video", "ssupload:?id=123", "--duration", "2147483648"],
+            vec!["--video", "ssupload:?id=123", "--duration", "1.5"],
+            vec!["--video", "ssupload:?id=", "--duration", "8"],
+            vec!["--video", "https:///v", "--duration", "8"],
+            vec!["--video", "https://", "--duration", "8"],
+            vec!["--video", "missing.mp4"],
+            vec!["--video", ""],
+            vec!["--video", empty.to_str().unwrap()],
+            vec!["--video", oversized.to_str().unwrap()],
+            vec!["--video", invalid.to_str().unwrap()],
+            vec!["--video", invalid.to_str().unwrap(), "--duration", "8"],
+        ] {
+            let mut args = vec!["task", action, "--resolution", "2k"];
+            args.extend(tail);
+            assert!(
+                !server
+                    .run_env(&args, &[("PATH", dir.path().to_str().unwrap())])
+                    .status
+                    .success(),
+                "{args:?}"
+            );
+        }
+        for extra in [
+            vec![],
+            vec!["--resolution", "8k"],
+            vec!["--resolution", "2k", "--output", "out"],
+            vec!["--resolution", "2k", "--timeout", "1"],
+        ] {
+            let mut args = vec!["task", action, "--creation-id", "77"];
+            args.extend(extra);
+            assert!(!server.run(&args).status.success(), "{args:?}");
+        }
+    }
+    assert!(!server
+        .run(&[
+            "task",
+            "upscale-cost",
+            "--creation-id",
+            "77",
+            "--resolution",
+            "2k",
+            "--wait"
+        ])
+        .status
+        .success());
+    server.finish();
+}
+
+#[test]
+fn upscale_rejects_invalid_creations_and_permission_errors() {
+    for detail in [
+        json!({"creation":{"type":"image","duration":8},"task":{"state":"success"}}),
+        json!({"creation":{"type":"video","duration":8},"task":{"state":"processing"}}),
+        json!({"creation":{"type":"video","duration":8,"is_deleted":true},"task":{"state":"success"}}),
+        json!({"creation":{"type":"video","duration":8,"err_code":"FAILED"},"task":{"state":"success"}}),
+        json!({"creation":{"type":"video","duration":0},"task":{"state":"success"}}),
+        json!({"creation":{"type":"video"},"task":{"state":"success"}}),
+    ] {
+        let server = Mock::new(|_| vec![get("/vidu/v1/creations/77/detail", detail)]);
+        envelope(
+            &server.run(&[
+                "task",
+                "upscale",
+                "--creation-id",
+                "77",
+                "--resolution",
+                "2k",
+            ]),
+            false,
+        );
+        server.finish();
+    }
+    let server = Mock::new(|_| {
+        vec![get(
+            "/vidu/v1/creations/77/detail",
+            json!({"reason":"FORBIDDEN","message":"No access"}),
+        )
+        .status(403)]
+    });
+    envelope(
+        &server.run(&[
+            "task",
+            "upscale-cost",
+            "--creation-id",
+            "77",
+            "--resolution",
+            "2k",
+        ]),
+        false,
+    );
+    server.finish();
+}
+
+#[test]
+fn upscale_submit_failures_are_not_retried() {
+    for status in [400, 500] {
+        let server = Mock::new(|_| {
+            vec![Step::json("POST","/vidu/v1/tasks/tool",json!({"reason":"REJECTED","message":"Insufficient credits or ambiguous server failure"})).status(status).body(upscale_body(json!({"prompts":[{"type":"video","content":"ssupload:?id=123"}]}),"2k",8))]
+        });
+        envelope(
+            &server.run(&[
+                "task",
+                "upscale",
+                "--video",
+                "ssupload:?id=123",
+                "--duration",
+                "8",
+                "--resolution",
+                "2k",
+            ]),
+            false,
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn upscale_wait_download_and_terminal_errors() {
+    for state in ["success", "failed", "canceled", "processing"] {
+        let dir = tempfile::tempdir().unwrap();
+        let server = Mock::new(|base| {
+            let mut steps = vec![
+                Step::json("POST", "/vidu/v1/tasks/tool", json!({"id":"up_wait"})).body(
+                    upscale_body(
+                        json!({"prompts":[{"type":"video","content":"ssupload:?id=123"}]}),
+                        "2k",
+                        8,
+                    ),
+                ),
+                get(
+                    "/vidu/v1/tasks/up_wait",
+                    json!({"state":state,"type":"upscale","creations":[{"id":"77","uri":format!("{base}/blob/video.mp4")}]}),
+                ),
+            ];
+            if state == "success" {
+                steps.push(get("/blob/video.mp4", json!({})).raw("video/mp4", b"video result"));
+            }
+            steps
+        });
+        let data = envelope(
+            &server.run(&[
+                "task",
+                "upscale",
+                "--video",
+                "ssupload:?id=123",
+                "--duration",
+                "8",
+                "--resolution",
+                "2k",
+                "--wait",
+                "--timeout",
+                "1",
+                "--output",
+                dir.path().to_str().unwrap(),
+            ]),
+            state == "success",
+        );
+        if state == "success" {
+            assert_eq!(data["task_id"], "up_wait");
+            assert_eq!(
+                std::fs::read(data["downloaded_files"][0].as_str().unwrap()).unwrap(),
+                b"video result"
+            );
+        } else {
+            assert_eq!(data["error"]["fields"]["task_id"], "up_wait");
+            assert_eq!(data["error"]["fields"]["state"], state);
+        }
+        server.finish();
+    }
 }
 
 #[test]
