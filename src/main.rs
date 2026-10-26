@@ -69,6 +69,19 @@ impl SubmissionOptions {
 }
 
 #[derive(Args)]
+struct OutputAudioOptions {
+    #[arg(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set,
+        help = "Generate output audio for supported video models. --with-audio enables; --with-audio=false disables. Omit to preserve existing behavior (historical choice for rerun). --audio supplies reference audio."
+    )]
+    with_audio: Option<bool>,
+}
+
+#[derive(Args)]
 struct UpscaleOptions {
     /// Completed video creation (mutually exclusive with --video)
     #[arg(long, required_unless_present = "video", conflicts_with = "video", value_parser = clap::value_parser!(i64).range(1..))]
@@ -173,6 +186,8 @@ enum TaskAction {
             help = "Reference audio for character2video + 3.2_a, 3.4 (Q4), Drama, or Wan 3. Local WAV/MP3 (max 15MB) or ssupload URI. 3.2_a: max 3, each 2-15s (15s total). Q4: max 3, each 1-16s. Drama: max 10, total 30s; local audio 4-30s without --video, 2-30s with --video. With --video the server determines task type and enforces 4s for non-edit tasks. Wan 3: max 5, each 1-15s, total 15s."
         )]
         audios: Vec<String>,
+        #[command(flatten)]
+        audio_output: OutputAudioOptions,
         #[arg(long = "video", action = clap::ArgAction::Append, help = "Video input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a, viduq3.1-drama-std, or viduq2-drama-std. Legacy/Drama: max 3; Drama local MP4/MOV clips: 4-30s each, total ≤30s. Wan 3: max 5, each 1-15s, total ≤15s, ≤100MB, ≥16 fps; input video + output ≤30s.")]
         videos: Vec<String>,
         #[arg(
@@ -272,6 +287,8 @@ enum TaskAction {
         duration: Option<i64>,
         #[arg(long, value_parser = PossibleValuesParser::new(validators::RESOLUTIONS))]
         resolution: Option<String>,
+        #[command(flatten)]
+        audio_output: OutputAudioOptions,
         #[command(flatten)]
         submission: SubmissionOptions,
     },
@@ -413,6 +430,8 @@ enum TaskAction {
             value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
             help = "Model version (per-type compatibility enforced after parse)")]
         model_version: String,
+        #[command(flatten)]
+        audio_output: OutputAudioOptions,
         #[arg(
             long,
             allow_negative_numbers = true,
@@ -683,6 +702,7 @@ fn main() -> ExitCode {
                 images,
                 materials,
                 audios,
+                audio_output,
                 videos,
                 duration,
                 model_version,
@@ -712,6 +732,7 @@ fn main() -> ExitCode {
                     &codec,
                     &movement_amplitude,
                     schedule_mode.as_deref(),
+                    audio_output.with_audio,
                 );
                 submission.finish(data);
             }
@@ -788,6 +809,7 @@ fn main() -> ExitCode {
                 model,
                 duration,
                 resolution,
+                audio_output,
                 submission,
             } => submission.finish(commands::task_ops::rerun(
                 &task_id,
@@ -796,6 +818,7 @@ fn main() -> ExitCode {
                 model.as_deref(),
                 duration,
                 resolution.as_deref(),
+                audio_output.with_audio,
             )),
             TaskAction::LipSync {
                 video,
@@ -869,6 +892,7 @@ fn main() -> ExitCode {
             TaskAction::Cost {
                 task_type,
                 model_version,
+                audio_output,
                 duration,
                 resolution,
                 aspect_ratio,
@@ -887,6 +911,7 @@ fn main() -> ExitCode {
                     sample_count,
                     &codec,
                     schedule_mode.as_deref(),
+                    audio_output.with_audio,
                 );
             }
             TaskAction::TtsCost {

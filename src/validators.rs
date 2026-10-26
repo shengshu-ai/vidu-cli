@@ -37,6 +37,21 @@ const WAN_TASK_TYPES: &[&str] = &[
 ];
 const WAN_ASPECT_RATIOS: &[&str] = &["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
 
+pub fn validate_output_audio(task_type: &str, with_audio: Option<bool>) -> Result<(), String> {
+    if with_audio.is_some()
+        && ![
+            "text2video",
+            "img2video",
+            "headtailimg2video",
+            "character2video",
+        ]
+        .contains(&task_type)
+    {
+        return Err("--with-audio is only supported for video tasks".into());
+    }
+    Ok(())
+}
+
 /// Parse and normalize task type (handles aliases)
 pub fn parse_task_type(input: &str) -> Result<String, String> {
     // Check aliases first

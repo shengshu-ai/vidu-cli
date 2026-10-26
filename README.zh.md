@@ -84,11 +84,14 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `--resolution` | Drama/Wan 3：720p；旧版 submit 模型：必填 | 输出分辨率。旧模型的 cost 查询仍默认 1080p |
 | `--aspect-ratio` | Drama/Wan 3：16:9 | `16:9`、`9:16`、`1:1`、`4:3`、`3:4`；Wan 3 另支持 `21:9`、`adaptive`，包括图生/首尾帧模式 |
 | `--schedule-mode` | auto | `nopeak` 使用闲时额度，资格、剩余额度及任务/模型限制由服务端校验；`claw_pass` 使用通行证额度；`normal` 使用积分。Q4 默认 `normal`，不支持 `claw_pass`，并可按服务端规则使用 `nopeak`。Drama 只支持积分模式 `normal`。其他模型省略时自动检测有效 claw pass，否则使用 `normal` |
+| `--with-audio` | 保持现有行为 | 控制支持模型的视频输出是否生成音频。`--with-audio` 开启，`--with-audio=false` 关闭；支持 `submit`、`cost`、`rerun`，与参考音频输入 `--audio` 分开使用 |
 | `--audio` | - | `character2video` 的 `3.2_a`、`3.4`（Q4）或 Q3.1 Drama 参考音频。`3.2_a`/Q4 最多 3 个（`3.2_a` 每个 2–15 秒、合计不超过 15 秒；Q4 每个 1–16 秒）；Drama 最多 10 个、合计 30 秒。本地 Drama 音频：未传 `--video` 时每段 4–30 秒，传了 `--video` 时每段 2–30 秒；有视频时任务类型由服务端判断，非 edit 任务仍要求至少 4 秒。本地 WAV/MP3 文件最大 15MB；`ssupload` 时长由服务端校验 |
 | `--transition` | - | `img2video` / `headtailimg2video`：`3.0` 使用 `creative` / `stable`，`3.1` / `3.2` 必须传 `pro` / `speed`；`character2video 3.2` 也必须传 `pro` / `speed`；`text2video` 仅 `3.2` 支持 |
 | `--sample-count` | 1 | 生成样本数 |
 | `--codec` | h265 | 输出视频编码 |
 | `--movement-amplitude` | auto | 视频运动幅度 |
+
+`--with-audio` 控制输出视频生成音频；`--audio` 仅提供参考文件，不会自动开启输出音频。查询 `task cost` 与提交 `task submit` 时请使用相同的音频选项。不传开关时保持现有行为；`task rerun` 默认保留历史音频选择，传开关可覆盖，`task rerun --with-audio=false` 也会关闭历史唇音同步设置。音频能力取决于模型，报价由后端返回。
 
 **任务类型与约束：**
 
@@ -140,10 +143,14 @@ Wan 3 默认 5 秒、720p、16:9、`normal` 积分模式。
 vidu-cli task submit --type text2video --prompt "一只猫在雨中行走" \
   --model-version viduq2-drama-std --duration 2 --resolution 480p --wait
 
+# Wan 3 生成有声视频
+vidu-cli task submit --type text2video --prompt "海浪拍打沙滩的声音" \
+  --model-version viduq2-drama-std --duration 3 --with-audio --wait
+
 # Wan 3 多模态参考：本地文件会自动上传
 vidu-cli task submit --type character2video --prompt "参考人物、镜头和配乐生成视频" \
   --model-version viduq2-drama-std --image ./character.jpg \
-  --video ./reference.mp4 --audio ./soundtrack.wav
+  --video ./reference.mp4 --audio ./soundtrack.wav --with-audio
 
 # 使用与生成相同的默认参数报价，不创建任务或上传素材
 vidu-cli task cost --type text2video --model-version viduq2-drama-std

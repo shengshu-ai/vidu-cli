@@ -206,6 +206,231 @@ fn envelope(output: &Output, success: bool) -> Value {
 }
 
 #[test]
+fn output_audio_switch_reaches_submit_and_quote_without_changing_reference_inputs() {
+    for (model, kinds) in [
+        (
+            "viduq2-drama-std",
+            vec![
+                "text2video",
+                "img2video",
+                "headtailimg2video",
+                "character2video",
+            ],
+        ),
+        ("viduq3.1-drama-std", vec!["text2video", "character2video"]),
+        ("3.2_a", vec!["character2video"]),
+    ] {
+        for kind in kinds {
+            for (option, with_audio) in [
+                (None, None),
+                (Some("--with-audio"), Some(true)),
+                (Some("--with-audio=true"), Some(true)),
+                (Some("--with-audio=false"), Some(false)),
+            ] {
+                let server = Mock::new(|_| {
+                    let mut query = vec![
+                        ("type", kind),
+                        ("settings.model_version", model),
+                        ("settings.duration", "5"),
+                        ("settings.resolution", "720p"),
+                        ("settings.sample_count", "1"),
+                        ("settings.codec", "h264"),
+                        ("settings.schedule_mode", "normal"),
+                    ];
+                    if model != "3.2_a" {
+                        query.push(("settings.aspect_ratio", "16:9"));
+                    }
+                    if let Some(with_audio) = with_audio {
+                        query.push((
+                            "settings.with_audio",
+                            if with_audio { "true" } else { "false" },
+                        ));
+                    }
+                    vec![
+                        Step::json("POST", "/vidu/v1/tasks", json!({"id":"audio-task"})).check(
+                            move |request| {
+                                let body = request.json();
+                                for params in [&body["input"], &body["settings"]] {
+                                    assert_eq!(
+                                        params.get("with_audio").and_then(Value::as_bool),
+                                        with_audio
+                                    );
+                                    if with_audio.is_none() {
+                                        assert!(params.get("with_audio").is_none());
+                                    }
+                                }
+                                let prompts = body["input"]["prompts"].as_array().unwrap();
+                                assert_eq!(
+                                    prompts.iter().filter(|p| p["type"] == "audio").count(),
+                                    usize::from(kind == "character2video")
+                                );
+                                if kind == "character2video" {
+                                    assert!(prompts.iter().any(|p| p["type"] == "audio"
+                                        && p["content"] == "ssupload:?id=audio"));
+                                }
+                            },
+                        ),
+                        get(
+                            "/vidu/v1/tasks/credits",
+                            json!({"credits":12,"current_credits":100}),
+                        )
+                        .query(&query),
+                    ]
+                });
+                let mut args = vec![
+                    "task",
+                    "submit",
+                    "--type",
+                    kind,
+                    "--model-version",
+                    model,
+                    "--prompt",
+                    "sound of waves",
+                    "--duration",
+                    "5",
+                    "--resolution",
+                    "720p",
+                    "--schedule-mode",
+                    "normal",
+                    "--codec",
+                    "h264",
+                ];
+                if let Some(option) = option {
+                    args.push(option);
+                }
+                if kind != "text2video" {
+                    args.extend(["--image", "ssupload:?id=first"]);
+                }
+                if kind == "headtailimg2video" {
+                    args.extend(["--image", "ssupload:?id=last"]);
+                }
+                if kind == "character2video" {
+                    args.extend(["--audio", "ssupload:?id=audio"]);
+                }
+                envelope(&server.run(&args), true);
+                let mut cost_args = vec![
+                    "task",
+                    "cost",
+                    "--type",
+                    kind,
+                    "--model-version",
+                    model,
+                    "--duration",
+                    "5",
+                    "--resolution",
+                    "720p",
+                    "--schedule-mode",
+                    "normal",
+                    "--codec",
+                    "h264",
+                ];
+                if let Some(option) = option {
+                    cost_args.push(option);
+                }
+                envelope(&server.run(&cost_args), true);
+                server.finish();
+            }
+        }
+    }
+}
+
+#[test]
+fn rerun_audio_override_replaces_both_historical_fields_and_preserves_choice_when_omitted() {
+    for model in ["viduq2-drama-std", "viduq3.1-drama-std", "3.2_a"] {
+        for (option, with_audio) in [
+            (None, None),
+            (Some("--with-audio"), Some(true)),
+            (Some("--with-audio=false"), Some(false)),
+        ] {
+            let raw = json!({"id":"old","state":"success","type":"character2video","input":{"with_audio":false,"lip_sync":true,"prompts":[{"type":"text","content":"test"},{"type":"image","content":"ssupload:?id=image"}]},"settings":{"with_audio":true,"lip_sync":true,"model_version":model,"duration":5,"resolution":"720p","sample_count":1,"schedule_mode":"normal","codec":"h264"}});
+            let server = Mock::new(|_| {
+                vec![
+                    get("/vidu/v1/tasks/old", raw.clone()),
+                    Step::json("POST", "/vidu/v1/tasks", json!({"id":"rerun-audio"})).check(
+                        move |request| {
+                            let body = request.json();
+                            assert_eq!(body["input"]["prompts"], raw["input"]["prompts"]);
+                            assert_eq!(body["input"]["with_audio"], with_audio.unwrap_or(false));
+                            assert_eq!(body["settings"]["with_audio"], with_audio.unwrap_or(true));
+                            for params in [&body["input"], &body["settings"]] {
+                                assert_eq!(params["lip_sync"], with_audio != Some(false));
+                            }
+                        },
+                    ),
+                ]
+            });
+            let mut args = vec!["task", "rerun", "old"];
+            if let Some(option) = option {
+                args.push(option);
+            }
+            envelope(&server.run(&args), true);
+            server.finish();
+        }
+    }
+}
+
+#[test]
+fn output_audio_switch_rejects_image_tasks_before_upload_or_quote() {
+    let server = Mock::new(|_| vec![]);
+    for command in ["submit", "cost"] {
+        for kind in ["text2image", "reference2image"] {
+            for option in ["--with-audio", "--with-audio=false"] {
+                let mut args = vec![
+                    "task",
+                    command,
+                    "--type",
+                    kind,
+                    "--model-version",
+                    "3.2_image_2",
+                    "--resolution",
+                    "1080p",
+                    option,
+                ];
+                if command == "submit" {
+                    args.extend(["--prompt", "test", "--image", "missing-image.png"]);
+                }
+                let result = envelope(&server.run(&args), false);
+                assert_eq!(result["error"]["type"], "client_error");
+                assert_eq!(
+                    result["error"]["message"],
+                    "--with-audio is only supported for video tasks"
+                );
+            }
+        }
+    }
+    let output = server.run(&[
+        "task",
+        "cost",
+        "--type",
+        "text2video",
+        "--model-version",
+        "viduq2-drama-std",
+        "--with-audio=invalid",
+    ]);
+    assert!(!output.status.success());
+    server.finish();
+}
+
+#[test]
+fn rerun_image_rejects_output_audio_before_creating_task() {
+    let server = Mock::new(|_| {
+        vec![get(
+            "/vidu/v1/tasks/image-task",
+            json!({"type":"text2image"}),
+        )]
+    });
+    let result = envelope(
+        &server.run(&["task", "rerun", "image-task", "--with-audio"]),
+        false,
+    );
+    assert_eq!(
+        result["error"]["message"],
+        "--with-audio is only supported for video tasks"
+    );
+    server.finish();
+}
+
+#[test]
 fn wan_submit_four_types_and_multimodal_references_use_main_site_task_api() {
     for (kind, media) in [
         ("text2video", vec![]),

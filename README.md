@@ -84,11 +84,14 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `--resolution` | Drama/Wan 3: 720p; legacy submit models: required | Supported output size. Cost queries keep the legacy 1080p default |
 | `--aspect-ratio` | Drama/Wan 3: 16:9 | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`; Wan 3 also supports `21:9` and `adaptive`, including img2video/headtailimg2video |
 | `--schedule-mode` | auto | `nopeak` uses off-peak quota subject to server eligibility, remaining quota, and task/model rules; `claw_pass` uses pass quota; `normal` uses credits. Q4 defaults to `normal`, rejects `claw_pass`, and accepts `nopeak` subject to server rules. Drama supports only `normal` credits. Other models auto-detect an active claw pass, otherwise use `normal` |
+| `--with-audio` | unchanged | Generate audio in video output on supported models. `--with-audio` enables; `--with-audio=false` disables. Available on `submit`, `cost` and `rerun`; separate from reference input `--audio` |
 | `--audio` | - | Reference audio for `character2video` with `3.2_a`, `3.4` (Q4), or Q3.1 Drama. `3.2_a`/Q4 allow up to 3 (2–15s each, 15s total for `3.2_a`; 1–16s each for Q4). Drama allows up to 10 and 30s total. Local Drama audio: 4–30s each without `--video`, 2–30s each with `--video`; the server determines edit/reference task type and enforces the 4s minimum for non-edit tasks. Local WAV/MP3 files are limited to 15MB; `ssupload` durations are validated by the server |
 | `--transition` | - | For `img2video` / `headtailimg2video`: `3.0` uses `creative` / `stable`, `3.1` / `3.2` require `pro` / `speed`; `character2video 3.2` also requires `pro` / `speed`; `text2video` supports it only on `3.2` |
 | `--sample-count` | 1 | Number of samples to generate |
 | `--codec` | h265 | Output video codec |
 | `--movement-amplitude` | auto | Video motion intensity |
+
+`--with-audio` controls generated output audio; `--audio` supplies a reference file and does not enable output audio by itself. Use the same audio choice for `task cost` and `task submit`. Omit the switch to keep current behavior; `task rerun` preserves the historical choice unless overridden. `task rerun --with-audio=false` also disables historical lip-sync settings. Audio support and quotes are determined by the model and backend.
 
 **Task types and constraints:**
 
@@ -150,10 +153,14 @@ Quotes are returned by the backend.
 vidu-cli task submit --type text2video --prompt "a cat walking in the rain" \
   --model-version viduq2-drama-std --duration 2 --resolution 480p --wait
 
+# Wan 3 with generated sound
+vidu-cli task submit --type text2video --prompt "waves crashing on a beach" \
+  --model-version viduq2-drama-std --duration 3 --with-audio --wait
+
 # Wan 3 multimodal references (local files are uploaded automatically)
 vidu-cli task submit --type character2video --prompt "use the character and soundtrack" \
   --model-version viduq2-drama-std --image ./character.jpg \
-  --video ./reference.mp4 --audio ./soundtrack.wav
+  --video ./reference.mp4 --audio ./soundtrack.wav --with-audio
 
 # Quote uses identical model defaults; no generation or upload
 vidu-cli task cost --type text2video --model-version viduq2-drama-std
