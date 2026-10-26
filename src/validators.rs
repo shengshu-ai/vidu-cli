@@ -27,6 +27,15 @@ pub const TYPE_ALIASES: &[(&str, &str)] = &[("img2image", "reference2image")];
 
 /// Vidu Q3.1 Drama model, exposed as an additional model version rather than a type alias.
 pub const DRAMA_MODEL_VERSION: &str = "viduq3.1-drama-std";
+/// Wan 3 standard, routed through the main-site task API.
+pub const WAN_MODEL_VERSION: &str = "viduq2-drama-std";
+const WAN_TASK_TYPES: &[&str] = &[
+    "text2video",
+    "img2video",
+    "headtailimg2video",
+    "character2video",
+];
+const WAN_ASPECT_RATIOS: &[&str] = &["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
 
 /// Parse and normalize task type (handles aliases)
 pub fn parse_task_type(input: &str) -> Result<String, String> {
@@ -65,13 +74,14 @@ pub const MODEL_VERSIONS: &[&str] = &[
     "3.2_image_2_5_fast",
     "3.2_image_2_5_pro",
     DRAMA_MODEL_VERSION,
+    WAN_MODEL_VERSION,
 ];
 
 pub const RESOLUTIONS: &[&str] = &["480p", "540p", "720p", "1080p", "2k", "4k"];
 const Q4_RESOLUTIONS: &[&str] = &["540p", "720p", "1080p", "2k", "4k"];
 
 /// All accepted `--aspect-ratio` values.
-pub const ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4"];
+pub const ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"];
 
 /// All accepted `--transition` values across task types.
 pub const TRANSITIONS: &[&str] = &["creative", "stable", "pro", "speed"];
@@ -309,6 +319,18 @@ pub fn validate_task_body(body: &Value) -> String {
             model_version,
             sorted_join(&valid_model_versions())
         );
+    }
+
+    if model_version == WAN_MODEL_VERSION {
+        return validate_wan_task_body(body);
+    }
+    // The new Wan ratios must not widen legacy models' accepted inputs.
+    if settings
+        .get("aspect_ratio")
+        .and_then(Value::as_str)
+        .is_some_and(|ratio| ["adaptive", "21:9"].contains(&ratio))
+    {
+        return "Invalid aspect_ratio: adaptive and 21:9 are supported only for Wan 3".into();
     }
 
     let ms = model_support();
@@ -566,9 +588,13 @@ pub fn preferred_schedule_mode(
     explicit: Option<&str>,
 ) -> Result<Option<String>, String> {
     let mode = explicit.or_else(|| {
-        [Some("3.4"), Some(DRAMA_MODEL_VERSION)]
-            .contains(&model_version)
-            .then_some("normal")
+        [
+            Some("3.4"),
+            Some(DRAMA_MODEL_VERSION),
+            Some(WAN_MODEL_VERSION),
+        ]
+        .contains(&model_version)
+        .then_some("normal")
     });
     if let Some(mode) = mode {
         let err = validate_schedule_mode(mode);
@@ -582,6 +608,9 @@ pub fn preferred_schedule_mode(
         }
         if model_version == Some(DRAMA_MODEL_VERSION) && mode != "normal" {
             return Err("viduq3.1-drama-std supports only --schedule-mode normal (credits)".into());
+        }
+        if model_version == Some(WAN_MODEL_VERSION) && mode != "normal" {
+            return Err("Wan 3 supports only --schedule-mode normal (credits)".into());
         }
     }
     Ok(mode.map(str::to_string))
@@ -634,6 +663,109 @@ pub fn validate_drama_cost(
         return "viduq3.1-drama-std does not support transition".into();
     }
     String::new()
+}
+
+pub fn validate_wan_cost(
+    task_type: &str,
+    duration: i64,
+    resolution: &str,
+    aspect_ratio: Option<&str>,
+    transition: Option<&str>,
+    sample_count: i64,
+) -> String {
+    if !WAN_TASK_TYPES.contains(&task_type) {
+        return format!(
+            "model_version {} does not support {}",
+            WAN_MODEL_VERSION, task_type
+        );
+    }
+    if !(2..=30).contains(&duration) {
+        return format!(
+            "Wan 3 duration {} out of range [2, 30]; automatic duration is not supported",
+            duration
+        );
+    }
+    if !["480p", "720p", "1080p"].contains(&resolution) {
+        return format!("Invalid resolution '{}' for Wan 3", resolution);
+    }
+    if aspect_ratio.is_some_and(|ratio| !WAN_ASPECT_RATIOS.contains(&ratio)) {
+        return "Invalid aspect_ratio for Wan 3".into();
+    }
+    if transition.is_some() {
+        return "Wan 3 does not support transition".into();
+    }
+    if !(1..=4).contains(&sample_count) {
+        return "Wan 3 sample_count must be 1-4".into();
+    }
+    String::new()
+}
+
+fn validate_wan_task_body(body: &Value) -> String {
+    let settings = &body["settings"];
+    let task_type = body["type"].as_str().unwrap_or("");
+    let error = validate_wan_cost(
+        task_type,
+        settings["duration"].as_i64().unwrap_or(0),
+        settings["resolution"].as_str().unwrap_or(""),
+        settings["aspect_ratio"].as_str(),
+        settings["transition"].as_str(),
+        settings["sample_count"].as_i64().unwrap_or(1),
+    );
+    if !error.is_empty() {
+        return error;
+    }
+    if let Err(error) =
+        preferred_schedule_mode(Some(WAN_MODEL_VERSION), settings["schedule_mode"].as_str())
+    {
+        return error;
+    }
+    let input = &body["input"];
+    if input
+        .get("editor_mode")
+        .is_some_and(|mode| mode.as_str() != Some("normal"))
+    {
+        return "Wan 3 supports only normal generation mode".into();
+    }
+    if input.get("enhance").is_none() {
+        return "input.enhance is required (true or false)".into();
+    }
+    let mut counts = [0usize; 4];
+    for prompt in input["prompts"].as_array().unwrap() {
+        let kind = prompt["type"].as_str().unwrap_or("");
+        let Some(index) = ["text", "image", "video", "audio"]
+            .iter()
+            .position(|&value| value == kind)
+        else {
+            return format!("Wan 3 does not support '{}' prompt references", kind);
+        };
+        if prompt["content"].as_str().unwrap_or("").trim().is_empty() {
+            return "Wan 3 prompt content must not be empty".into();
+        }
+        counts[index] += 1;
+    }
+    let [text, images, videos, audios] = counts;
+    if text != 1 {
+        return "Wan 3 requires exactly one text prompt".into();
+    }
+    if images > 10 || videos > 5 || audios > 5 || images + videos + audios > 20 {
+        return "Wan 3 allows max 10 images, 5 videos, 5 audios and 20 media inputs total".into();
+    }
+    let media_count = images + videos + audios;
+    match task_type {
+        "text2video" if media_count > 0 => {
+            "Wan 3 text2video accepts text prompts only; use character2video for references".into()
+        }
+        "img2video" if images != 1 || videos + audios > 0 => {
+            "Wan 3 img2video requires exactly 1 image and no video/audio references".into()
+        }
+        "headtailimg2video" if images != 2 || videos + audios > 0 => {
+            "Wan 3 headtailimg2video requires exactly 2 images and no video/audio references".into()
+        }
+        "character2video" if media_count == 0 => {
+            "Wan 3 character2video requires at least one image, video or audio reference".into()
+        }
+        _ => String::new(),
+    }
 }
 
 pub fn validate_schedule_mode(mode: &str) -> String {
@@ -743,12 +875,14 @@ pub fn validate_reference_audio_count(
         return String::new();
     }
     if task_type != "character2video"
-        || !["3.2_a", "3.4", DRAMA_MODEL_VERSION].contains(&model_version)
+        || !["3.2_a", "3.4", DRAMA_MODEL_VERSION, WAN_MODEL_VERSION].contains(&model_version)
     {
-        return "Audio input is only supported for character2video with model_version 3.2_a, 3.4, or viduq3.1-drama-std".into();
+        return "Audio input is only supported for character2video with model_version 3.2_a, 3.4, viduq3.1-drama-std, or viduq2-drama-std".into();
     }
     let max_count = if model_version == DRAMA_MODEL_VERSION {
         10
+    } else if model_version == WAN_MODEL_VERSION {
+        5
     } else {
         3
     };
@@ -766,11 +900,18 @@ pub fn validate_reference_video_count(
     if count == 0 {
         return String::new();
     }
-    if task_type != "character2video" || !["3.2_a", DRAMA_MODEL_VERSION].contains(&model_version) {
-        return "Video input is only supported for character2video with model_version 3.2_a or viduq3.1-drama-std".into();
+    if task_type != "character2video"
+        || !["3.2_a", DRAMA_MODEL_VERSION, WAN_MODEL_VERSION].contains(&model_version)
+    {
+        return "Video input is only supported for character2video with model_version 3.2_a, viduq3.1-drama-std, or viduq2-drama-std".into();
     }
-    if count > 3 {
-        return format!("Too many video inputs: {}. Max: 3", count);
+    let max_count = if model_version == WAN_MODEL_VERSION {
+        5
+    } else {
+        3
+    };
+    if count > max_count {
+        return format!("Too many video inputs: {}. Max: {}", count, max_count);
     }
     String::new()
 }
@@ -817,6 +958,69 @@ pub fn validate_reference_video_file(path: &str) -> String {
             "Video file too large ({:.1}MB). Max: 50MB",
             size as f64 / 1024.0 / 1024.0
         );
+    }
+    String::new()
+}
+
+pub fn validate_wan_media_dimensions(width: u32, height: u32, max: u32) -> Result<(), String> {
+    if width < 240
+        || height < 240
+        || width > max
+        || height > max
+        || u64::from(width) > 8 * u64::from(height)
+        || u64::from(height) > 8 * u64::from(width)
+    {
+        return Err(format!(
+            "Wan 3 media dimensions {}x{} require sides 240-{} and aspect ratio 1:8-8:1",
+            width, height, max
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_wan_image_file(path: &str) -> String {
+    let p = Path::new(path);
+    let ext = p
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !["jpg", "jpeg", "png", "bmp", "webp"].contains(&ext.as_str()) {
+        return "Wan 3 images must be JPEG, PNG, BMP or WEBP".into();
+    }
+    let size = match std::fs::metadata(p) {
+        Ok(metadata) => metadata.len(),
+        Err(_) => return format!("Image file not found: {}", path),
+    };
+    if size == 0 || size > 20 * 1024 * 1024 {
+        return "Wan 3 image size must be greater than zero and at most 20MB".into();
+    }
+    match image::image_dimensions(p) {
+        Ok((width, height)) => validate_wan_media_dimensions(width, height, 8000)
+            .err()
+            .unwrap_or_default(),
+        Err(_) => "Cannot read Wan 3 image dimensions".into(),
+    }
+}
+
+pub fn validate_wan_video_file(path: &str) -> String {
+    let p = Path::new(path);
+    if !p.is_file() {
+        return format!("Video file not found: {}", path);
+    }
+    let ext = p
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !["mp4", "mov"].contains(&ext.as_str()) {
+        return "Wan 3 video format must be MP4 or MOV".into();
+    }
+    let size = std::fs::metadata(p)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if size == 0 || size > 100 * 1024 * 1024 {
+        return "Wan 3 video size must be greater than zero and at most 100MB".into();
     }
     String::new()
 }
@@ -1484,6 +1688,97 @@ mod tests {
         assert!(!validate_q4_cost("img2video", 5, "8k", None).is_empty());
         assert!(!validate_q4_cost("img2video", 5, "1080p", Some("pro")).is_empty());
         assert!(!validate_task_body(&make_body("character2video", "3.4", 5, 0, 0)).is_empty());
+    }
+
+    #[test]
+    fn wan_models_settings_and_references_follow_backend_contract() {
+        for (kind, images) in [
+            ("text2video", 0),
+            ("img2video", 1),
+            ("headtailimg2video", 2),
+            ("character2video", 10),
+        ] {
+            for duration in [2, 30] {
+                for ratio in WAN_ASPECT_RATIOS {
+                    let mut body = make_body(kind, WAN_MODEL_VERSION, duration, images, 0);
+                    body["settings"]["resolution"] = json!("480p");
+                    body["settings"]["aspect_ratio"] = json!(ratio);
+                    assert_eq!(validate_task_body(&body), "");
+                }
+            }
+        }
+        for duration in [-1, 0, 1, 31] {
+            assert!(
+                validate_wan_cost("text2video", duration, "720p", None, None, 1)
+                    .contains("out of range")
+            );
+        }
+        for resolution in ["540p", "4k"] {
+            assert!(!validate_wan_cost("text2video", 5, resolution, None, None, 1).is_empty());
+        }
+        for count in [0, 5] {
+            assert!(!validate_wan_cost("text2video", 5, "720p", None, None, count).is_empty());
+        }
+        assert!(!validate_wan_cost("text2image", 5, "720p", None, None, 1).is_empty());
+        assert!(!validate_wan_cost("text2video", 5, "720p", None, Some("speed"), 1).is_empty());
+        assert_eq!(
+            preferred_schedule_mode(Some(WAN_MODEL_VERSION), None),
+            Ok(Some("normal".into()))
+        );
+        for mode in ["claw_pass", "nopeak"] {
+            assert!(preferred_schedule_mode(Some(WAN_MODEL_VERSION), Some(mode)).is_err());
+        }
+        let mut body = make_body("character2video", WAN_MODEL_VERSION, 5, 10, 0);
+        for kind in ["video", "audio"] {
+            for _ in 0..5 {
+                body["input"]["prompts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"type":kind,"content":"ssupload:?id=ref"}));
+            }
+        }
+        assert_eq!(validate_task_body(&body), "");
+        body["input"]["prompts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"video","content":"ssupload:?id=extra"}));
+        assert!(validate_task_body(&body).contains("max 10 images"));
+        for (kind, images, material, expected) in [
+            ("text2video", 1, 0, "text prompts only"),
+            ("img2video", 2, 0, "exactly 1 image"),
+            ("headtailimg2video", 1, 0, "exactly 2 images"),
+            ("character2video", 0, 0, "at least one"),
+            ("character2video", 0, 1, "does not support"),
+        ] {
+            assert!(
+                validate_task_body(&make_body(kind, WAN_MODEL_VERSION, 5, images, material))
+                    .contains(expected)
+            );
+        }
+        let mut legacy = make_body("text2video", DRAMA_MODEL_VERSION, 5, 0, 0);
+        legacy["settings"]["aspect_ratio"] = json!("adaptive");
+        assert!(validate_task_body(&legacy).contains("only for Wan 3"));
+    }
+
+    #[test]
+    fn wan_local_media_limits_do_not_use_drama_geometry_or_file_size() {
+        assert!(validate_wan_media_dimensions(240, 1920, 4096).is_ok());
+        for (width, height) in [(239, 240), (4097, 240), (240, 1921)] {
+            assert!(validate_wan_media_dimensions(width, height, 4096).is_err());
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let video = directory.path().join("large.mp4");
+        std::fs::File::create(&video)
+            .unwrap()
+            .set_len(60 * 1024 * 1024)
+            .unwrap();
+        assert_eq!(validate_wan_video_file(video.to_str().unwrap()), "");
+        assert!(validate_reference_video_file(video.to_str().unwrap()).contains("50MB"));
+        let image = directory.path().join("small.png");
+        image::RgbImage::new(240, 240).save(&image).unwrap();
+        assert_eq!(validate_wan_image_file(image.to_str().unwrap()), "");
+        image::RgbImage::new(239, 240).save(&image).unwrap();
+        assert!(!validate_wan_image_file(image.to_str().unwrap()).is_empty());
     }
 
     #[test]

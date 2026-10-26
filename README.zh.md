@@ -80,9 +80,9 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--duration` | Drama：5；旧视频模型：必填 | 视频时长（秒）。Drama 支持 4–30 秒；图片任务忽略此项 |
-| `--resolution` | Drama：720p；旧版 submit 模型：必填 | 输出分辨率。旧模型的 cost 查询仍默认 1080p |
-| `--aspect-ratio` | Drama：16:9 | `16:9`、`9:16`、`1:1`、`4:3`、`3:4`（img2video/headtailimg2video 不适用） |
+| `--duration` | Drama/Wan 3：5；旧视频模型：必填 | 视频时长（秒）。Drama 支持 4–30 秒；Wan 3 支持 2–30 秒；图片任务忽略此项 |
+| `--resolution` | Drama/Wan 3：720p；旧版 submit 模型：必填 | 输出分辨率。旧模型的 cost 查询仍默认 1080p |
+| `--aspect-ratio` | Drama/Wan 3：16:9 | `16:9`、`9:16`、`1:1`、`4:3`、`3:4`；Wan 3 另支持 `21:9`、`adaptive`，包括图生/首尾帧模式 |
 | `--schedule-mode` | auto | `nopeak` 使用闲时额度，资格、剩余额度及任务/模型限制由服务端校验；`claw_pass` 使用通行证额度；`normal` 使用积分。Q4 默认 `normal`，不支持 `claw_pass`，并可按服务端规则使用 `nopeak`。Drama 只支持积分模式 `normal`。其他模型省略时自动检测有效 claw pass，否则使用 `normal` |
 | `--audio` | - | `character2video` 的 `3.2_a`、`3.4`（Q4）或 Q3.1 Drama 参考音频。`3.2_a`/Q4 最多 3 个（`3.2_a` 每个 2–15 秒、合计不超过 15 秒；Q4 每个 1–16 秒）；Drama 最多 10 个、合计 30 秒。本地 Drama 音频：未传 `--video` 时每段 4–30 秒，传了 `--video` 时每段 2–30 秒；有视频时任务类型由服务端判断，非 edit 任务仍要求至少 4 秒。本地 WAV/MP3 文件最大 15MB；`ssupload` 时长由服务端校验 |
 | `--transition` | - | `img2video` / `headtailimg2video`：`3.0` 使用 `creative` / `stable`，`3.1` / `3.2` 必须传 `pro` / `speed`；`character2video 3.2` 也必须传 `pro` / `speed`；`text2video` 仅 `3.2` 支持 |
@@ -101,6 +101,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `character2video`（Q4） | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `character2video`（Q3.1 Drama） | `viduq3.1-drama-std` | 4–30 秒（默认 5 秒） | 480p、720p（默认）、1080p | 16:9（默认）、9:16、1:1、4:3、3:4 |
+| `text2video`、`img2video`、`headtailimg2video`、`character2video`（Wan 3） | `viduq2-drama-std` | 2–30 秒（默认 5 秒） | 480p、720p（默认）、1080p | 16:9（默认）、9:16、1:1、4:3、3:4、21:9、adaptive |
 | `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0（图片） | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0（图片） | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 
@@ -122,6 +123,31 @@ MP4/MOV 参考视频须为 4–30 秒、平均帧率为 24–60 fps，合计不�
 CLI 会在提交前检查每段本地视频的平均帧率。已有 `ssupload` 视频直接透传，
 由服务端校验完整集合。submit 和 cost 使用相同的 Drama 默认参数，
 报价由后端返回。
+
+Wan 3 默认 5 秒、720p、16:9、`normal` 积分模式。
+支持 1–4 个样本，不支持自动时长 `-1`、转场、角色素材、闲时或通行证模式。
+`text2video` 只接受文本；`img2video` 必须有一张图片；`headtailimg2video` 必须有两张图片，
+顺序为首帧、尾帧。首帧/首尾帧模式不能混入视频或音频参考。
+`character2video` 至少提供一个参考，最多 10 张图、5 段视频、5 段音频，总计 20 个媒体，支持纯音频参考。
+本地图片支持 JPEG/PNG/BMP/WEBP，最大 20MB，边长 240–8000px，宽高比 1:8–8:1。
+本地 MP4/MOV 视频最大 100MB，边长 240–4096px，宽高比 1:8–8:1，平均帧率至少 16fps。
+视频/音频每段 1–15 秒，每类总时长最多 15 秒；输入视频总时长加输出时长最多 30 秒。
+本地音频支持 WAV/MP3，最大 15MB。已有 `ssupload` 素材由服务端校验；混合输入时也由服务端校验完整时长集合。
+报价由后端返回。
+
+```bash
+# Wan 3 文生视频：2 秒、480p
+vidu-cli task submit --type text2video --prompt "一只猫在雨中行走" \
+  --model-version viduq2-drama-std --duration 2 --resolution 480p --wait
+
+# Wan 3 多模态参考：本地文件会自动上传
+vidu-cli task submit --type character2video --prompt "参考人物、镜头和配乐生成视频" \
+  --model-version viduq2-drama-std --image ./character.jpg \
+  --video ./reference.mp4 --audio ./soundtrack.wav
+
+# 使用与生成相同的默认参数报价，不创建任务或上传素材
+vidu-cli task cost --type text2video --model-version viduq2-drama-std
+```
 
 **示例：**
 

@@ -313,6 +313,7 @@ fn normalize_model_override(
     let accepts_transition = !["text2image", "reference2image"].contains(&task_type)
         && new_model != "3.4"
         && new_model != validators::DRAMA_MODEL_VERSION
+        && new_model != validators::WAN_MODEL_VERSION
         && (["img2video", "headtailimg2video"].contains(&task_type)
             || (["text2video", "character2video"].contains(&task_type) && new_model == "3.2"));
     if !accepts_transition {

@@ -80,9 +80,9 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--duration` | Drama: 5; legacy video models: required | Video duration in seconds. Drama accepts 4-30. Image tasks ignore it |
-| `--resolution` | Drama: 720p; legacy submit models: required | Supported output size. Cost queries keep the legacy 1080p default |
-| `--aspect-ratio` | Drama: 16:9 | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` (not for img2video/headtailimg2video) |
+| `--duration` | Drama/Wan 3: 5; legacy video models: required | Video duration in seconds. Drama accepts 4-30; Wan 3 accepts 2-30. Image tasks ignore it |
+| `--resolution` | Drama/Wan 3: 720p; legacy submit models: required | Supported output size. Cost queries keep the legacy 1080p default |
+| `--aspect-ratio` | Drama/Wan 3: 16:9 | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`; Wan 3 also supports `21:9` and `adaptive`, including img2video/headtailimg2video |
 | `--schedule-mode` | auto | `nopeak` uses off-peak quota subject to server eligibility, remaining quota, and task/model rules; `claw_pass` uses pass quota; `normal` uses credits. Q4 defaults to `normal`, rejects `claw_pass`, and accepts `nopeak` subject to server rules. Drama supports only `normal` credits. Other models auto-detect an active claw pass, otherwise use `normal` |
 | `--audio` | - | Reference audio for `character2video` with `3.2_a`, `3.4` (Q4), or Q3.1 Drama. `3.2_a`/Q4 allow up to 3 (2–15s each, 15s total for `3.2_a`; 1–16s each for Q4). Drama allows up to 10 and 30s total. Local Drama audio: 4–30s each without `--video`, 2–30s each with `--video`; the server determines edit/reference task type and enforces the 4s minimum for non-edit tasks. Local WAV/MP3 files are limited to 15MB; `ssupload` durations are validated by the server |
 | `--transition` | - | For `img2video` / `headtailimg2video`: `3.0` uses `creative` / `stable`, `3.1` / `3.2` require `pro` / `speed`; `character2video 3.2` also requires `pro` / `speed`; `text2video` supports it only on `3.2` |
@@ -101,6 +101,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `character2video` (Q4) | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `character2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 |
+| `text2video`, `img2video`, `headtailimg2video`, `character2video` (Wan 3) | `viduq2-drama-std` | 2-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive |
 | `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 | `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
 
@@ -128,6 +129,35 @@ validated by the server. It accepts only `--schedule-mode normal`
 the average frame rate of each local video before submission. Existing `ssupload`
 videos pass through for full server-side validation. Submit and cost use the same Drama
 defaults; cost values are returned by the API.
+
+Wan 3 defaults to 5 seconds, 720p, 16:9 and `normal` credits.
+It accepts 1-4 samples and rejects
+automatic duration (`-1`), transitions, materials, off-peak and pass modes.
+`text2video` accepts text only; `img2video` requires one image;
+`headtailimg2video` requires two images, in first/last order. Frame modes do not
+accept audio/video references. `character2video` requires at least one reference
+and allows up to 10 images, 5 videos and 5 audio files (20 media total), including
+audio-only references. Local images must be JPEG/PNG/BMP/WEBP, ≤20MB, sides
+240-8000 px and ratio 1:8-8:1. Local MP4/MOV videos must be ≤100MB, sides
+240-4096 px, ratio 1:8-8:1 and average ≥16 fps. Each video/audio must be 1-15s,
+with at most 15s total per kind; input video plus output duration must be ≤30s.
+Local audio is WAV/MP3, ≤15MB. Existing `ssupload` references are checked by the
+server, including the complete duration set when local and uploaded inputs mix.
+Quotes are returned by the backend.
+
+```bash
+# Wan 3 text generation: 2 seconds, 480p
+vidu-cli task submit --type text2video --prompt "a cat walking in the rain" \
+  --model-version viduq2-drama-std --duration 2 --resolution 480p --wait
+
+# Wan 3 multimodal references (local files are uploaded automatically)
+vidu-cli task submit --type character2video --prompt "use the character and soundtrack" \
+  --model-version viduq2-drama-std --image ./character.jpg \
+  --video ./reference.mp4 --audio ./soundtrack.wav
+
+# Quote uses identical model defaults; no generation or upload
+vidu-cli task cost --type text2video --model-version viduq2-drama-std
+```
 
 **Examples:**
 

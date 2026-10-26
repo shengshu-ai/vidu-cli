@@ -139,6 +139,13 @@ enum TaskAction {
     ///   Resolution: 1080p; Q4 also supports 540p, 720p, 2k, 4k; Drama supports 480p/720p/1080p (default 720p)
     ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
     ///   Inputs: image + material ≤ 7 (Drama: image ≤ 9, video ≤ 3, audio ≤ 10; no material)
+    ///
+    /// WAN 3: viduq2-drama-std
+    ///   Types: text2video, img2video, headtailimg2video, character2video
+    ///   Duration: 2-30s (default 5); resolution: 480p/720p/1080p (default 720p)
+    ///   Aspect Ratio: 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive
+    ///   Credits only; no transition. References: max 10 images, 5 videos, 5 audios, 20 total
+    ///   Each video/audio: 1-15s; total 15s per kind; input video + output ≤30s
     Submit {
         #[arg(long = "type", value_name = "TYPE",
             value_parser = validators::parse_task_type,
@@ -163,25 +170,25 @@ enum TaskAction {
         #[arg(
             long = "audio",
             action = clap::ArgAction::Append,
-            help = "Reference audio for character2video + 3.2_a, 3.4 (Q4), or Drama. Local WAV/MP3 (max 15MB) or ssupload URI. 3.2_a: max 3, each 2-15s (15s total). Q4: max 3, each 1-16s. Drama: max 10, total 30s; local audio 4-30s without --video, 2-30s with --video. With --video the server determines task type and enforces 4s for non-edit tasks."
+            help = "Reference audio for character2video + 3.2_a, 3.4 (Q4), Drama, or Wan 3. Local WAV/MP3 (max 15MB) or ssupload URI. 3.2_a: max 3, each 2-15s (15s total). Q4: max 3, each 1-16s. Drama: max 10, total 30s; local audio 4-30s without --video, 2-30s with --video. With --video the server determines task type and enforces 4s for non-edit tasks. Wan 3: max 5, each 1-15s, total 15s."
         )]
         audios: Vec<String>,
-        #[arg(long = "video", action = clap::ArgAction::Append, help = "Video input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a or viduq3.1-drama-std. Max 3; Drama local MP4/MOV clips: 4-30s each, total ≤30s.")]
+        #[arg(long = "video", action = clap::ArgAction::Append, help = "Video input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a, viduq3.1-drama-std, or viduq2-drama-std. Legacy/Drama: max 3; Drama local MP4/MOV clips: 4-30s each, total ≤30s. Wan 3: max 5, each 1-15s, total ≤15s, ≤100MB, ≥16 fps; input video + output ≤30s.")]
         videos: Vec<String>,
         #[arg(
             long,
             allow_negative_numbers = true,
-            help = "Video duration: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(4-15), Q4 img2video(3-16)/character2video(1-16), Drama(4-30, default 5). Ignored for images."
+            help = "Video duration: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(4-15), Q4 img2video(3-16)/character2video(1-16), Drama(4-30, default 5), Wan 3(2-30, default 5). Ignored for images."
         )]
         duration: Option<i64>,
         #[arg(long,
             alias = "model",
             value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
-            help = "Model version (per-type compatibility enforced after parse): 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.4 (Q4), viduq3.1-drama-std, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro")]
+            help = "Model version (per-type compatibility enforced after parse): 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.4 (Q4), viduq3.1-drama-std, viduq2-drama-std (Wan 3), 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro")]
         model_version: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::ASPECT_RATIOS),
-            help = "Aspect ratio: 16:9, 9:16, 1:1, 4:3, 3:4 (not for img2video/headtailimg2video)")]
+            help = "Aspect ratio: 16:9, 9:16, 1:1, 4:3, 3:4; Wan 3 also supports 21:9 and adaptive, including img2video/headtailimg2video")]
         aspect_ratio: Option<String>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::TRANSITIONS),
@@ -189,7 +196,7 @@ enum TaskAction {
         transition: Option<String>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::RESOLUTIONS),
-            help = "Resolution: required for legacy submit models; Drama defaults to 720p (480p/720p/1080p), Q4 supports 540p/720p/1080p/2k/4k")]
+            help = "Resolution: required for legacy submit models; Drama/Wan 3 default to 720p (480p/720p/1080p), Q4 supports 540p/720p/1080p/2k/4k")]
         resolution: Option<String>,
         #[arg(long, default_value = "1", value_parser = clap::value_parser!(i64).range(1..))]
         sample_count: i64,
@@ -200,7 +207,7 @@ enum TaskAction {
         movement_amplitude: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Q4 defaults to normal, allows nopeak subject to server rules, and rejects claw_pass; Drama supports only normal credits. Other models auto-detect pass status if omitted.")]
+            help = "Q4 defaults to normal, allows nopeak subject to server rules, and rejects claw_pass; Drama/Wan 3 support only normal credits. Other models auto-detect pass status if omitted.")]
         schedule_mode: Option<String>,
         #[command(flatten)]
         submission: SubmissionOptions,
@@ -409,12 +416,12 @@ enum TaskAction {
         #[arg(
             long,
             allow_negative_numbers = true,
-            help = "Duration in seconds. Required for legacy video models; Drama defaults to 5 (range 4-30). Ignored for image tasks."
+            help = "Duration in seconds. Required for legacy video models; Drama defaults to 5 (range 4-30); Wan 3 defaults to 5 (range 2-30). Ignored for image tasks."
         )]
         duration: Option<i64>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::RESOLUTIONS),
-            help = "Resolution. Defaults to 1080p for legacy models and 720p for Drama.")]
+            help = "Resolution. Defaults to 1080p for legacy models and 720p for Drama/Wan 3.")]
         resolution: Option<String>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::ASPECT_RATIOS))]
@@ -429,7 +436,7 @@ enum TaskAction {
         codec: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Q4 defaults to normal, allows nopeak subject to server rules, and rejects claw_pass; Drama supports only normal credits. Other models auto-detect pass status if omitted.")]
+            help = "Q4 defaults to normal, allows nopeak subject to server rules, and rejects claw_pass; Drama/Wan 3 support only normal credits. Other models auto-detect pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// Query credit cost for a TTS task before submitting

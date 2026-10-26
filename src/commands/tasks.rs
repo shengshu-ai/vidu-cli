@@ -19,23 +19,28 @@ fn normalize_task_settings(
     legacy_resolution_default: Option<&str>,
 ) -> Result<NormalizedTaskSettings, String> {
     let is_image_type = task_type == "text2image" || task_type == "reference2image";
+    let has_video_defaults = [
+        validators::DRAMA_MODEL_VERSION,
+        validators::WAN_MODEL_VERSION,
+    ]
+    .contains(&model_version);
     let duration = if is_image_type {
         0
     } else {
         duration
-            .or_else(|| (model_version == validators::DRAMA_MODEL_VERSION).then_some(5))
+            .or_else(|| has_video_defaults.then_some(5))
             .ok_or_else(|| "duration is required for this task type".to_string())?
     };
     let resolution = resolution
         .or_else(|| {
-            (model_version == validators::DRAMA_MODEL_VERSION)
+            has_video_defaults
                 .then_some("720p")
                 .or(legacy_resolution_default)
         })
         .ok_or_else(|| "resolution is required for this model".to_string())?
         .to_string();
     let aspect_ratio = aspect_ratio
-        .or_else(|| (model_version == validators::DRAMA_MODEL_VERSION).then_some("16:9"))
+        .or_else(|| has_video_defaults.then_some("16:9"))
         .map(str::to_string);
 
     Ok(NormalizedTaskSettings {
@@ -281,6 +286,7 @@ fn validate_reference_audio_duration(
         "3.4" => Some((1.0, 16.0)),
         validators::DRAMA_MODEL_VERSION if has_reference_video => Some((2.0, 30.0)),
         validators::DRAMA_MODEL_VERSION => Some((4.0, 30.0)),
+        validators::WAN_MODEL_VERSION => Some((1.0, 15.0)),
         _ => None,
     };
     if let Some((min, max)) = range {
@@ -291,7 +297,7 @@ fn validate_reference_audio_duration(
             ));
         }
     }
-    if model_version == "3.2_a" && total_duration > 15.0 {
+    if ["3.2_a", validators::WAN_MODEL_VERSION].contains(&model_version) && total_duration > 15.0 {
         return Err(format!(
             "Total audio duration {:.1}s exceeds 15s",
             total_duration
@@ -311,6 +317,14 @@ fn validate_local_reference_video_durations(
     durations: &[f64],
 ) -> Result<(), String> {
     let is_drama = model_version == validators::DRAMA_MODEL_VERSION;
+    if model_version == validators::WAN_MODEL_VERSION {
+        if let Some(duration) = durations.iter().find(|d| !(1.0..=15.0).contains(*d)) {
+            return Err(format!(
+                "Wan 3 local video duration {:.3}s out of range [1, 15]s",
+                duration
+            ));
+        }
+    }
     if is_drama {
         if let Some(duration) = durations.iter().find(|d| !(4.0..=30.0).contains(*d)) {
             return Err(format!(
@@ -356,7 +370,11 @@ fn inspect_reference_videos(
                 client::fail("client_error", "HTTP/HTTPS URLs are not supported for video input. Use a local file path or ssupload:?id=...", None, None, None);
             }
 
-            let err = validators::validate_reference_video_file(video_input);
+            let err = if model_version == validators::WAN_MODEL_VERSION {
+                validators::validate_wan_video_file(video_input)
+            } else {
+                validators::validate_reference_video_file(video_input)
+            };
             if !err.is_empty() {
                 client::fail("client_error", &err, None, None, None);
             }
@@ -380,7 +398,12 @@ fn inspect_reference_videos(
                     None,
                 ),
             };
-            if let Err(error) = validate_local_reference_video_geometry(video_input, w, h) {
+            let geometry = if model_version == validators::WAN_MODEL_VERSION {
+                validators::validate_wan_media_dimensions(w, h, 4096)
+            } else {
+                validate_local_reference_video_geometry(video_input, w, h)
+            };
+            if let Err(error) = geometry {
                 client::fail("client_error", &error, None, None, None);
             }
 
@@ -403,16 +426,52 @@ fn inspect_reference_videos(
         client::fail("client_error", &err, None, None, None);
     }
     if model_version == validators::DRAMA_MODEL_VERSION {
-        for (video_input, frame_rate) in videos.iter().zip(frame_rates) {
+        for (video_input, frame_rate) in videos.iter().zip(&frame_rates) {
             if video_input.starts_with("ssupload:") {
                 continue;
             }
-            if let Err(error) = validate_local_reference_video_frame_rate(video_input, frame_rate) {
+            if let Err(error) = validate_local_reference_video_frame_rate(video_input, *frame_rate)
+            {
                 client::fail("client_error", &error, None, None, None);
             }
         }
     }
+    if model_version == validators::WAN_MODEL_VERSION {
+        for (video_input, frame_rate) in videos.iter().zip(&frame_rates) {
+            if !video_input.starts_with("ssupload:") {
+                if let Err(error) = validate_wan_video_frame_rate(*frame_rate) {
+                    client::fail("client_error", &error, None, None, None);
+                }
+            }
+        }
+    }
     durations
+}
+
+fn validate_wan_video_frame_rate(frame_rate: Option<AverageFrameRate>) -> Result<(), String> {
+    match frame_rate {
+        Some(rate)
+            if rate.duration_ticks > 0
+                && rate
+                    .duration_ticks
+                    .checked_mul(16)
+                    .is_some_and(|min| rate.numerator >= min) =>
+        {
+            Ok(())
+        }
+        _ => Err("Wan 3 reference video frame rate must be at least 16 fps".into()),
+    }
+}
+
+fn validate_wan_video_output_duration(
+    output_duration: i64,
+    durations: &[Option<f64>],
+) -> Result<(), String> {
+    let total: f64 = durations.iter().flatten().sum();
+    if total > 0.0 && total + output_duration as f64 > 30.0 {
+        return Err("Wan 3 input video duration plus output duration must not exceed 30s".into());
+    }
+    Ok(())
 }
 
 // Keep the established CLI option mapping and shared call signature.
@@ -518,9 +577,25 @@ pub fn submit(
                 None,
             );
         }
+        if model_version == validators::WAN_MODEL_VERSION
+            && !image.starts_with("ssupload:")
+            && !image.starts_with("http://")
+            && !image.starts_with("https://")
+        {
+            let error = validators::validate_wan_image_file(image);
+            if !error.is_empty() {
+                client::fail("client_error", &error, None, None, None);
+            }
+        }
     }
 
     let video_durations = inspect_reference_videos(task_type, model_version, videos);
+    if model_version == validators::WAN_MODEL_VERSION {
+        if let Err(error) = validate_wan_video_output_duration(settings.duration, &video_durations)
+        {
+            client::fail("client_error", &error, None, None, None);
+        }
+    }
     let audio_durations =
         reference_audio_durations(task_type, model_version, audios, !videos.is_empty());
     let mut prompts = vec![json!({"type": "text", "content": prompt})];
@@ -2018,6 +2093,31 @@ pub fn query_credits(
     .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
     let schedule_mode = resolve_schedule_mode(schedule_mode, Some(model_version));
 
+    if model_version == validators::WAN_MODEL_VERSION {
+        let err = validators::validate_wan_cost(
+            task_type,
+            settings.duration,
+            &settings.resolution,
+            settings.aspect_ratio.as_deref(),
+            transition,
+            sample_count,
+        );
+        if !err.is_empty() {
+            client::fail("client_error", &err, None, None, None);
+        }
+    } else if settings
+        .aspect_ratio
+        .as_deref()
+        .is_some_and(|ratio| ["adaptive", "21:9"].contains(&ratio))
+    {
+        client::fail(
+            "client_error",
+            "adaptive and 21:9 aspect ratios are supported only for Wan 3",
+            None,
+            None,
+            None,
+        );
+    }
     if model_version == "3.4" {
         let err = validators::validate_q4_cost(
             task_type,
@@ -2489,6 +2589,73 @@ mod tests {
         header.width = 0;
         header.height = 0;
         assert_eq!(video_track_dimensions(&track), None);
+    }
+
+    #[test]
+    fn wan_defaults_and_local_media_duration_limits_match_submit_and_cost() {
+        let submit = normalize_task_settings(
+            "text2video",
+            validators::WAN_MODEL_VERSION,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let cost = normalize_task_settings(
+            "text2video",
+            validators::WAN_MODEL_VERSION,
+            None,
+            None,
+            None,
+            Some("1080p"),
+        )
+        .unwrap();
+        assert_eq!(submit, cost);
+        assert_eq!(submit.duration, 5);
+        assert_eq!(submit.resolution, "720p");
+        assert_eq!(submit.aspect_ratio.as_deref(), Some("16:9"));
+        assert!(validate_local_reference_video_durations(
+            validators::WAN_MODEL_VERSION,
+            &[1.0, 14.0]
+        )
+        .is_ok());
+        for durations in [&[0.99][..], &[15.01][..], &[8.0, 8.0][..]] {
+            assert!(validate_local_reference_video_durations(
+                validators::WAN_MODEL_VERSION,
+                durations
+            )
+            .is_err());
+        }
+        for (duration, total) in [(0.99, 0.99), (15.01, 15.01), (8.0, 16.0)] {
+            assert!(validate_reference_audio_duration(
+                validators::WAN_MODEL_VERSION,
+                duration,
+                total,
+                false
+            )
+            .is_err());
+        }
+        assert!(
+            validate_reference_audio_duration(validators::WAN_MODEL_VERSION, 1.0, 15.0, false)
+                .is_ok()
+        );
+        assert!(validate_wan_video_output_duration(15, &[Some(15.0)]).is_ok());
+        assert!(validate_wan_video_output_duration(16, &[Some(15.0), None]).is_err());
+        assert!(validate_wan_video_output_duration(30, &[None]).is_ok());
+        for rate in [16, 60, 120] {
+            let fps = AverageFrameRate {
+                numerator: rate,
+                duration_ticks: 1,
+            };
+            assert!(validate_wan_video_frame_rate(Some(fps)).is_ok());
+        }
+        assert!(validate_wan_video_frame_rate(None).is_err());
+        assert!(validate_wan_video_frame_rate(Some(AverageFrameRate {
+            numerator: 15999,
+            duration_ticks: 1000
+        }))
+        .is_err());
     }
 
     #[test]
