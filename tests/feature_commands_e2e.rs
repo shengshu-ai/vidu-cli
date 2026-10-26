@@ -204,6 +204,155 @@ fn envelope(output: &Output, success: bool) -> Value {
     assert_eq!(value["ok"], success);
     value
 }
+
+#[test]
+fn wan_submit_four_types_and_multimodal_references_use_main_site_task_api() {
+    for (kind, media) in [
+        ("text2video", vec![]),
+        ("img2video", vec![("image", "first")]),
+        (
+            "headtailimg2video",
+            vec![("image", "first"), ("image", "last")],
+        ),
+        (
+            "character2video",
+            vec![("image", "ref"), ("audio", "audio"), ("video", "video")],
+        ),
+        ("character2video", vec![("audio", "audio-only")]),
+    ] {
+        let mut prompts = vec![json!({"type":"text","content":"test wan"})];
+        let mut args = vec![
+            "task".to_string(),
+            "submit".into(),
+            "--type".into(),
+            kind.into(),
+            "--prompt".into(),
+            "test wan".into(),
+            "--model-version".into(),
+            "viduq2-drama-std".into(),
+            "--codec".into(),
+            "h264".into(),
+        ];
+        for (kind, id) in media {
+            let uri = format!("ssupload:?id={id}");
+            args.extend([format!("--{kind}"), uri.clone()]);
+            let mut prompt = json!({"type":kind,"content":uri});
+            if kind != "image" {
+                prompt["name"] = json!(uri);
+            }
+            prompts.push(prompt);
+        }
+        let body = json!({"type":kind,"input":{"prompts":prompts,"editor_mode":"normal","enhance":true},"settings":{"duration":5,"model_version":"viduq2-drama-std","sample_count":1,"codec":"h264","resolution":"720p","aspect_ratio":"16:9","schedule_mode":"normal"}});
+        let server = Mock::new(|_| {
+            vec![Step::json("POST", "/vidu/v1/tasks", json!({"id":"wan-task"})).body(body)]
+        });
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        envelope(&server.run(&refs), true);
+        server.finish();
+    }
+}
+
+#[test]
+fn wan_cost_defaults_and_resolution_quotes_are_returned_by_server() {
+    for (resolution, rate) in [("480p", 6), ("720p", 10), ("1080p", 20)] {
+        let server = Mock::new(|_| {
+            vec![get(
+                "/vidu/v1/tasks/credits",
+                json!({"cost_credits":rate * 2,"can_submit":true}),
+            )
+            .query(&[
+                ("type", "text2video"),
+                ("settings.model_version", "viduq2-drama-std"),
+                ("settings.duration", "2"),
+                ("settings.resolution", resolution),
+                ("settings.sample_count", "1"),
+                ("settings.codec", "h264"),
+                ("settings.schedule_mode", "normal"),
+                ("settings.aspect_ratio", "adaptive"),
+            ])]
+        });
+        let quote = envelope(
+            &server.run(&[
+                "task",
+                "cost",
+                "--type",
+                "text2video",
+                "--model-version",
+                "viduq2-drama-std",
+                "--duration",
+                "2",
+                "--resolution",
+                resolution,
+                "--aspect-ratio",
+                "adaptive",
+                "--codec",
+                "h264",
+            ]),
+            true,
+        );
+        assert_eq!(quote["cost_credits"], rate * 2);
+        assert_eq!(quote["can_submit"], true);
+        server.finish();
+    }
+    let server = Mock::new(|_| {
+        vec![
+            get("/vidu/v1/tasks/credits", json!({"cost_credits":50})).query(&[
+                ("type", "text2video"),
+                ("settings.model_version", "viduq2-drama-std"),
+                ("settings.duration", "5"),
+                ("settings.resolution", "720p"),
+                ("settings.sample_count", "1"),
+                ("settings.codec", "h264"),
+                ("settings.schedule_mode", "normal"),
+                ("settings.aspect_ratio", "16:9"),
+            ]),
+        ]
+    });
+    envelope(
+        &server.run(&[
+            "task",
+            "cost",
+            "--type",
+            "text2video",
+            "--model-version",
+            "viduq2-drama-std",
+            "--codec",
+            "h264",
+        ]),
+        true,
+    );
+    server.finish();
+}
+
+#[test]
+fn wan_rerun_clears_legacy_transition_and_pass_mode() {
+    let server = Mock::new(|_| {
+        vec![
+            get(
+                "/vidu/v1/tasks/old",
+                json!({"type":"img2video","input":{"enhance":true,"prompts":[{"type":"text","content":"test"},{"type":"image","content":"ssupload:?id=first"}]},"settings":{"model_version":"3.2","duration":5,"resolution":"1080p","transition":"speed","schedule_mode":"claw_pass"}}),
+            ),
+            Step::json("POST", "/vidu/v1/tasks", json!({"id":"wan-rerun"})).check(|request| {
+                let body = request.json();
+                assert_eq!(body["settings"]["model_version"], "viduq2-drama-std");
+                assert_eq!(body["settings"]["schedule_mode"], "normal");
+                assert!(body["settings"].get("transition").is_none());
+                assert_eq!(body["input"]["prompts"][1]["content"], "ssupload:?id=first");
+            }),
+        ]
+    });
+    envelope(
+        &server.run(&[
+            "task",
+            "rerun",
+            "old",
+            "--model-version",
+            "viduq2-drama-std",
+        ]),
+        true,
+    );
+    server.finish();
+}
 fn get(path: &'static str, value: Value) -> Step {
     Step::json("GET", path, value)
 }

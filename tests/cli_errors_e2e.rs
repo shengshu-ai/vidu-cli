@@ -180,6 +180,78 @@ fn legacy_submit_still_requires_resolution_before_auth_or_upload() {
 }
 
 #[test]
+fn wan_invalid_options_fail_before_network_or_file_access() {
+    for action in ["submit", "cost"] {
+        for (options, expected) in [
+            (vec!["--duration", "-1"], "out of range [2, 30]"),
+            (vec!["--resolution", "4k"], "Invalid resolution"),
+            (vec!["--sample-count", "5"], "sample_count must be 1-4"),
+            (vec!["--transition", "speed"], "does not support transition"),
+            (
+                vec!["--schedule-mode", "claw_pass"],
+                "only --schedule-mode normal",
+            ),
+            (
+                vec!["--schedule-mode", "nopeak"],
+                "only --schedule-mode normal",
+            ),
+        ] {
+            let mut command = cli();
+            command.env_remove("VIDU_TOKEN").args([
+                "task",
+                action,
+                "--type",
+                "text2video",
+                "--model-version",
+                "viduq2-drama-std",
+            ]);
+            if action == "submit" {
+                command.args(["--prompt", "test"]);
+            }
+            command
+                .args(options)
+                .assert()
+                .failure()
+                .stdout(contains(expected));
+        }
+    }
+    cli()
+        .env_remove("VIDU_TOKEN")
+        .args([
+            "task",
+            "submit",
+            "--type",
+            "text2video",
+            "--model-version",
+            "viduq2-drama-std",
+            "--prompt",
+            "test",
+            "--image",
+            "/does/not/exist.jpg",
+        ])
+        .assert()
+        .failure()
+        .stdout(contains("text prompts only"));
+    cli()
+        .env_remove("VIDU_TOKEN")
+        .args([
+            "task",
+            "submit",
+            "--type",
+            "character2video",
+            "--model-version",
+            "viduq2-drama-std",
+            "--prompt",
+            "test",
+            "--material",
+            "name:id:version",
+        ])
+        .assert()
+        .failure()
+        .stdout(contains("does not support 'material'"));
+}
+
+#[test]
 fn drama_text2video_rejects_reference_inputs_before_file_access() {
     cli()
         .env_remove("VIDU_TOKEN")
