@@ -652,6 +652,18 @@ pub fn submit(
             video_input.clone()
         } else {
             let mut metadata = serde_json::Map::new();
+            let (width, height) = read_mp4_dimensions(video_input).unwrap_or_else(|| {
+                client::fail(
+                    "client_error",
+                    &format_local_video_dimensions_error(video_input),
+                    None,
+                    None,
+                    None,
+                )
+            });
+            // Files reads image-width/image-height for uploaded videos too.
+            metadata.insert("image-width".to_string(), json!(width.to_string()));
+            metadata.insert("image-height".to_string(), json!(height.to_string()));
             if let Some(duration) = duration {
                 metadata.insert("duration".to_string(), json!(duration.to_string()));
             }

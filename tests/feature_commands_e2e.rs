@@ -253,6 +253,95 @@ fn wan_submit_four_types_and_multimodal_references_use_main_site_task_api() {
 }
 
 #[test]
+fn local_reference_videos_send_dimensions_to_object_storage_before_submission() {
+    // Native MP4 parsing must preserve dimensions without ffprobe/ffmpeg.
+    let tool_path = tempfile::tempdir().unwrap();
+    // Five seconds of H.264 video, 864x486, 30fps; valid for all three models.
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/reference_864x486_5s.mp4"
+    );
+    for (model, needs_image) in [
+        ("viduq2-drama-std", false),
+        ("viduq3.1-drama-std", false),
+        ("3.2_a", true),
+    ] {
+        let server = Mock::new(|base| {
+            vec![
+                Step::json(
+                    "POST",
+                    "/tools/v1/files/uploads",
+                    json!({
+                        "id":"123", "put_url":format!("{base}/blob/reference.mp4"),
+                        "headers":{
+                            "x-amz-meta-image-width":"864",
+                            "x-amz-meta-image-height":"486",
+                            "x-amz-meta-duration":"5"
+                        }
+                    }),
+                )
+                .body(json!({"scene":"vidu","metadata":{
+                    "image-width":"864", "image-height":"486", "duration":"5"
+                }})),
+                Step::json("PUT", "/blob/reference.mp4", json!({})).check(|request| {
+                    // Color metadata may be injected without changing dimensions.
+                    assert!(request.body.len() > 500);
+                    assert!(request.body.windows(4).any(|bytes| bytes == b"ftyp"));
+                    assert_eq!(request.headers["x-amz-meta-image-width"], "864");
+                    assert_eq!(request.headers["x-amz-meta-image-height"], "486");
+                    assert_eq!(request.headers["x-amz-meta-duration"], "5");
+                    assert_eq!(request.headers["content-type"], "video/mp4");
+                }),
+                Step::json("PUT", "/tools/v1/files/uploads/123/finish", json!({}))
+                    .body(json!({"etag":"test-etag","id":"123"})),
+                Step::json("POST", "/vidu/v1/tasks", json!({"id":"reference-task"})).check(
+                    move |request| {
+                        let body = request.json();
+                        assert_eq!(body["settings"]["model_version"], model);
+                        let prompts = body["input"]["prompts"].as_array().unwrap();
+                        let reference = prompts
+                            .iter()
+                            .find(|prompt| prompt["type"] == "video")
+                            .unwrap();
+                        assert_eq!(reference["content"], "ssupload:?id=123");
+                    },
+                ),
+            ]
+        });
+        let mut args = vec![
+            "task",
+            "submit",
+            "--type",
+            "character2video",
+            "--model-version",
+            model,
+            "--prompt",
+            "edit video 1",
+            "--video",
+            fixture,
+            "--duration",
+            "5",
+            "--resolution",
+            "720p",
+            "--aspect-ratio",
+            "16:9",
+            "--codec",
+            "h264",
+            "--schedule-mode",
+            "normal",
+        ];
+        if needs_image {
+            args.extend(["--image", "ssupload:?id=image"]);
+        }
+        envelope(
+            &server.run_env(&args, &[("PATH", tool_path.path().to_str().unwrap())]),
+            true,
+        );
+        server.finish();
+    }
+}
+
+#[test]
 fn wan_cost_defaults_and_resolution_quotes_are_returned_by_server() {
     for (resolution, rate) in [("480p", 6), ("720p", 10), ("1080p", 20)] {
         let server = Mock::new(|_| {
