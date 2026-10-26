@@ -64,6 +64,7 @@ fn build_submit_body(
     codec: &str,
     movement_amplitude: &str,
     schedule_mode: Option<&str>,
+    with_audio: Option<bool>,
 ) -> Value {
     let mut body = json!({
         "type": task_type,
@@ -83,6 +84,10 @@ fn build_submit_body(
 
     if let Some(mode) = schedule_mode {
         body["settings"]["schedule_mode"] = json!(mode);
+    }
+    if let Some(with_audio) = with_audio {
+        body["input"]["with_audio"] = json!(with_audio);
+        body["settings"]["with_audio"] = json!(with_audio);
     }
     if let Some(ar) = aspect_ratio {
         body["settings"]["aspect_ratio"] = json!(ar);
@@ -493,7 +498,10 @@ pub fn submit(
     codec: &str,
     movement_amplitude: &str,
     schedule_mode: Option<&str>,
+    with_audio: Option<bool>,
 ) -> Value {
+    validators::validate_output_audio(task_type, with_audio)
+        .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
     let prompt = resolve_prompt_inputs(prompt, prompt_path).unwrap_or_else(|| {
         client::fail(
             "client_error",
@@ -543,6 +551,7 @@ pub fn submit(
         codec,
         movement_amplitude,
         Some(&schedule_mode),
+        with_audio,
     );
     let preflight_error = validators::validate_task_body(&preflight_body);
     if !preflight_error.is_empty() {
@@ -652,6 +661,18 @@ pub fn submit(
             video_input.clone()
         } else {
             let mut metadata = serde_json::Map::new();
+            let (width, height) = read_mp4_dimensions(video_input).unwrap_or_else(|| {
+                client::fail(
+                    "client_error",
+                    &format_local_video_dimensions_error(video_input),
+                    None,
+                    None,
+                    None,
+                )
+            });
+            // Files reads image-width/image-height for uploaded videos too.
+            metadata.insert("image-width".to_string(), json!(width.to_string()));
+            metadata.insert("image-height".to_string(), json!(height.to_string()));
             if let Some(duration) = duration {
                 metadata.insert("duration".to_string(), json!(duration.to_string()));
             }
@@ -679,6 +700,7 @@ pub fn submit(
         codec,
         movement_amplitude,
         Some(&schedule_mode),
+        with_audio,
     );
 
     let err = validators::validate_task_body(&body);
@@ -2081,7 +2103,10 @@ pub fn query_credits(
     sample_count: i64,
     codec: &str,
     schedule_mode: Option<&str>,
+    with_audio: Option<bool>,
 ) {
+    validators::validate_output_audio(task_type, with_audio)
+        .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
     let settings = normalize_task_settings(
         task_type,
         model_version,
@@ -2139,7 +2164,7 @@ pub fn query_credits(
             client::fail("client_error", &err, None, None, None);
         }
     }
-    let params = build_credit_query_params(
+    let mut params = build_credit_query_params(
         task_type,
         model_version,
         &settings,
@@ -2148,6 +2173,9 @@ pub fn query_credits(
         codec,
         &schedule_mode,
     );
+    if let Some(with_audio) = with_audio {
+        params.insert("settings.with_audio".to_string(), with_audio.to_string());
+    }
 
     let base = client::base_url();
     let data = client::request_json(
@@ -2699,6 +2727,7 @@ mod tests {
             "h264",
             "auto",
             Some("normal"),
+            None,
         );
         assert_eq!(body["settings"]["duration"], 5);
         assert_eq!(body["settings"]["resolution"], "720p");
@@ -2740,6 +2769,7 @@ mod tests {
             "h265",
             "auto",
             Some("normal"),
+            None,
         );
 
         assert_eq!(body["input"]["prompts"].as_array().unwrap().len(), 2);

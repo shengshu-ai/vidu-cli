@@ -353,11 +353,13 @@ fn rerun_body(
     model: Option<&str>,
     duration: Option<i64>,
     resolution: Option<&str>,
+    with_audio: Option<bool>,
 ) -> Result<Value, String> {
     let task_type = raw["type"].as_str().unwrap_or("");
     if !RERUN_TYPES.contains(&task_type) {
         return Err(format!("Task type '{task_type}' does not support rerun"));
     }
+    validators::validate_output_audio(task_type, with_audio)?;
     let source_prompts = raw["input"]["prompts"]
         .as_array()
         .ok_or("Historical task is missing input.prompts")?;
@@ -459,6 +461,19 @@ fn rerun_body(
     if let Some(resolution) = resolution {
         settings["resolution"] = json!(resolution);
     }
+    if let Some(with_audio) = with_audio {
+        // The API merges input/settings with OR; update both to override history.
+        input["with_audio"] = json!(with_audio);
+        settings["with_audio"] = json!(with_audio);
+        if !with_audio {
+            // A historical lip-sync setting must not re-enable muted output.
+            for params in [&mut input, &mut settings] {
+                if params.get("lip_sync").is_some() {
+                    params["lip_sync"] = json!(false);
+                }
+            }
+        }
+    }
     let schedule = validators::preferred_schedule_mode(
         settings["model_version"].as_str(),
         settings["schedule_mode"].as_str(),
@@ -481,6 +496,7 @@ pub fn rerun(
     model: Option<&str>,
     duration: Option<i64>,
     resolution: Option<&str>,
+    with_audio: Option<bool>,
 ) -> Value {
     check_id(task_id);
     if prompt.is_some() && prompt_path.is_some() {
@@ -501,6 +517,7 @@ pub fn rerun(
         model,
         duration,
         resolution,
+        with_audio,
     )
     .unwrap_or_else(|e| invalid(&e));
     submission(client::request_json(
@@ -703,7 +720,15 @@ mod tests {
     #[test]
     fn rerun_preserves_media_and_only_permitted_fields() {
         let raw = json!({"id":"old","type":"img2video","input":{"seed":42,"skip_moderation":true,"enhance":false,"prompts":[{"type":"text","content":"old","recaption":"server"},{"type":"image","content":"ssupload:original","audit":{"state":"success"}}]},"settings":{"model_version":"3.2","duration":5,"resolution":"1080p","sample_count":1,"use_trial":true,"is_locked":true}});
-        let body = rerun_body(&raw, Some("new"), Some("3.2_a"), Some(6), Some("720p")).unwrap();
+        let body = rerun_body(
+            &raw,
+            Some("new"),
+            Some("3.2_a"),
+            Some(6),
+            Some("720p"),
+            None,
+        )
+        .unwrap();
         assert_eq!(body["input"]["prompts"][1]["content"], "ssupload:original");
         assert_eq!(body["input"]["prompts"][0]["content"], "new");
         assert_eq!(body["settings"]["duration"], 6);
@@ -717,12 +742,12 @@ mod tests {
         assert!(body["input"]["prompts"][0].get("recaption").is_none());
         let mut unsupported = raw;
         unsupported["type"] = json!("tts");
-        assert!(rerun_body(&unsupported, None, None, None, None).is_err());
+        assert!(rerun_body(&unsupported, None, None, None, None, None).is_err());
     }
     #[test]
     fn rerun_preserves_character_lip_sync_settings() {
         let raw = json!({"type":"character2video", "input":{"enhance":true,"lip_sync":true,"prompts":[{"type":"text","content":"hello"},{"type":"image","content":"ssupload:original"}]},"settings":{"model_version":"3.1","duration":5,"resolution":"1080p","model":"vidu","style":"historical_style","lip_sync":true}});
-        let body = rerun_body(&raw, None, None, None, None).unwrap();
+        let body = rerun_body(&raw, None, None, None, None, None).unwrap();
         assert_eq!(body["input"]["lip_sync"], true);
         assert_eq!(body["settings"]["lip_sync"], true);
         assert_eq!(body["settings"]["model"], "vidu");
@@ -731,7 +756,7 @@ mod tests {
     #[test]
     fn rerun_preserves_legacy_anime_without_model_override() {
         let raw = json!({"type":"text2video","input":{"enhance":true,"prompts":[{"type":"text","content":"anime scene"}]},"settings":{"model":"vidu","model_version":"3.0","duration":5,"resolution":"1080p","style":"anime"}});
-        let body = rerun_body(&raw, None, None, None, None).unwrap();
+        let body = rerun_body(&raw, None, None, None, None, None).unwrap();
         assert_eq!(body["settings"]["style"], "anime");
         assert_eq!(body["settings"]["model"], "vidu");
     }
@@ -739,7 +764,7 @@ mod tests {
     fn version_override_normalizes_inherited_transition_schedule_and_vendor() {
         let raw = json!({"type":"character2video","input":{"enhance":true,"lip_sync":true,"prompts":[{"type":"text","content":"hello"},{"type":"image","content":"ssupload:original"}]},"settings":{"model":"old-vendor","model_version":"3.1","duration":5,"resolution":"1080p","transition":"pro","schedule_mode":"claw_pass","style":"anime"}});
         for model in ["3.4", validators::DRAMA_MODEL_VERSION] {
-            let body = rerun_body(&raw, None, Some(model), None, None).unwrap();
+            let body = rerun_body(&raw, None, Some(model), None, None, None).unwrap();
             assert!(body["settings"].get("transition").is_none());
             assert!(body["settings"].get("model").is_none());
             assert_eq!(body["settings"]["schedule_mode"], "normal");
@@ -749,16 +774,16 @@ mod tests {
         }
         let mut image = raw;
         image["type"] = json!("img2video");
-        let body = rerun_body(&image, None, Some("3.0"), None, None).unwrap();
+        let body = rerun_body(&image, None, Some("3.0"), None, None, None).unwrap();
         assert_eq!(body["settings"]["transition"], "stable");
-        let body = rerun_body(&body, None, Some("3.2"), None, None).unwrap();
+        let body = rerun_body(&body, None, Some("3.2"), None, None, None).unwrap();
         assert_eq!(body["settings"]["transition"], "speed");
         let mut missing_style = body;
         missing_style["settings"]
             .as_object_mut()
             .unwrap()
             .remove("style");
-        let legacy = rerun_body(&missing_style, None, Some("3.0"), None, None).unwrap();
+        let legacy = rerun_body(&missing_style, None, Some("3.0"), None, None, None).unwrap();
         assert_eq!(legacy["settings"]["style"], "general");
         assert_eq!(legacy["settings"]["transition"], "stable");
     }
