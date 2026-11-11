@@ -7,6 +7,20 @@ use clap::builder::PossibleValuesParser;
 use clap::{Args, Parser, Subcommand};
 use std::process::ExitCode;
 
+// Share membership wording across submit, cost, and rerun so model help stays consistent.
+const MODEL_VERSION_HELP: &str = concat!(
+    "Model version (per-type compatibility enforced after parse; 3.4 = Q4). ",
+    "Membership duration limits for video tasks: 3.1 / 3.1_pro require membership above 5s (max 8s); ",
+    "3.2 (Q3) / 3.4 (Q4) require membership above 10s (max 16s). ",
+    "Member features requiring active membership entitlements: 3.2_a (Seedance 2.0), ",
+    "viduq3.1-drama-std (Seedance 2.5), viduq2-drama-std (Wan 3), ",
+    "3.2_image_2_5_fast / 3.2_image_2_5_pro (Image 2.5). ",
+    "Image 2.5 Fast/Pro free trials are available only with remaining trial quota; ",
+    "active membership entitlements are required after trials are exhausted. ",
+    "Trial eligibility and remaining quota are determined by the server. ",
+    "Membership eligibility is validated by the server.",
+);
+
 #[derive(Parser)]
 #[command(name = "vidu-cli", about = "Vidu API CLI", version = env!("VIDU_CLI_VERSION"), propagate_version = true)]
 struct Cli {
@@ -153,7 +167,19 @@ enum TaskAction {
     ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
     ///   Inputs: image + material ≤ 7 (Drama: image ≤ 9, video ≤ 3, audio ≤ 10; no material)
     ///
-    /// WAN 3: viduq2-drama-std
+    /// MEMBERSHIP DURATION LIMITS (video tasks):
+    ///   3.1 / 3.1_pro: free users max 5s; membership required for 6-8s
+    ///   3.2 (Q3) / 3.4 (Q4): free users max 10s; membership required for 11-16s
+    ///
+    /// MEMBER FEATURES (require active membership entitlements; server validates eligibility):
+    ///   Seedance 2.0: 3.2_a
+    ///   Seedance 2.5: viduq3.1-drama-std (also labeled Q3.1 Drama)
+    ///   Image 2.5: 3.2_image_2_5_fast, 3.2_image_2_5_pro
+    ///     Free trials only with remaining trial quota; membership required after trials are exhausted
+    ///     Fast/Pro and text2image/reference2image trial quotas are tracked separately
+    ///     Trial eligibility and remaining quota are determined by the server
+    ///
+    /// WAN 3: viduq2-drama-std (member feature; requires active membership entitlements)
     ///   Types: text2video, img2video, headtailimg2video, character2video
     ///   Duration: 2-30s (default 5); resolution: 480p/720p/1080p (default 720p)
     ///   Aspect Ratio: 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive
@@ -193,13 +219,13 @@ enum TaskAction {
         #[arg(
             long,
             allow_negative_numbers = true,
-            help = "Video duration: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(4-15), Q4 img2video(3-16)/character2video(1-16), Drama(4-30, default 5), Wan 3(2-30, default 5). Ignored for images."
+            help = "Video duration: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(4-15), Q4 img2video(3-16)/character2video(1-16), Drama(4-30, default 5), Wan 3(2-30, default 5). Ignored for images. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
         )]
         duration: Option<i64>,
         #[arg(long,
             alias = "model",
             value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
-            help = "Model version (per-type compatibility enforced after parse): 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.4 (Q4), viduq3.1-drama-std, viduq2-drama-std (Wan 3), 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro")]
+            help = MODEL_VERSION_HELP)]
         model_version: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::ASPECT_RATIOS),
@@ -281,9 +307,13 @@ enum TaskAction {
         prompt: Option<String>,
         #[arg(long = "prompt-path", alias = "prompt-file")]
         prompt_path: Option<String>,
-        #[arg(long = "model-version", alias = "model", value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS))]
+        #[arg(long = "model-version", alias = "model", value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS), help = MODEL_VERSION_HELP)]
         model: Option<String>,
-        #[arg(long, allow_negative_numbers = true)]
+        #[arg(
+            long,
+            allow_negative_numbers = true,
+            help = "Override video duration. Membership required above 5s for 3.1/3.1_pro (max 8s), above 10s for 3.2 (Q3)/3.4 (Q4) (max 16s). Ignored for images."
+        )]
         duration: Option<i64>,
         #[arg(long, value_parser = PossibleValuesParser::new(validators::RESOLUTIONS))]
         resolution: Option<String>,
@@ -428,14 +458,14 @@ enum TaskAction {
         #[arg(long,
             alias = "model",
             value_parser = PossibleValuesParser::new(validators::MODEL_VERSIONS),
-            help = "Model version (per-type compatibility enforced after parse)")]
+            help = MODEL_VERSION_HELP)]
         model_version: String,
         #[command(flatten)]
         audio_output: OutputAudioOptions,
         #[arg(
             long,
             allow_negative_numbers = true,
-            help = "Duration in seconds. Required for legacy video models; Drama defaults to 5 (range 4-30); Wan 3 defaults to 5 (range 2-30). Ignored for image tasks."
+            help = "Duration in seconds. Required for legacy video models; Drama defaults to 5 (range 4-30); Wan 3 defaults to 5 (range 2-30). Ignored for image tasks. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
         )]
         duration: Option<i64>,
         #[arg(long,
