@@ -95,18 +95,24 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 
 **Task types and constraints:**
 
-| Type | Models | Duration | Resolution | Aspect Ratio |
-|------|--------|----------|------------|--------------|
-| `text2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 |
-| `text2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 |
-| `img2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — |
-| `headtailimg2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — |
-| `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 |
-| `character2video` (Q4) | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
-| `character2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 |
-| `text2video`, `img2video`, `headtailimg2video`, `character2video` (Wan 3) | `viduq2-drama-std` | 2-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive |
-| `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
-| `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 |
+| Type | Models | Duration | Resolution | Aspect Ratio | Member features |
+|------|--------|----------|------------|--------------|-----------------|
+| `text2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 | Seedance 2.0; membership above 5s for 3.1, above 10s for Q3 |
+| `text2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 | Seedance 2.5 |
+| `img2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — | Seedance 2.0; membership above 5s for 3.1, above 10s for Q3 |
+| `headtailimg2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — | Seedance 2.0; membership above 5s for 3.1, above 10s for Q3 |
+| `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 | Seedance 2.0; membership above 5s for 3.1 / 3.1_pro, above 10s for Q3 |
+| `character2video` (Q4) | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 | Membership required above 10s |
+| `character2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 | Seedance 2.5 |
+| `text2video`, `img2video`, `headtailimg2video`, `character2video` (Wan 3) | `viduq2-drama-std` | 2-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive | Wan 3 |
+| `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 | Image 2.5 Fast / Pro |
+| `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 | Image 2.5 Fast / Pro |
+
+**Member features**: Seedance 2.0 (`3.2_a`), Seedance 2.5 (`viduq3.1-drama-std`, also labeled Q3.1 Drama below), Wan 3 (`viduq2-drama-std`), and Image 2.5 (`3.2_image_2_5_fast` / `3.2_image_2_5_pro`) require active membership entitlements; the server validates eligibility. These requirements also apply when `task rerun` creates a new task with these models, and `task cost --help` includes the membership notice. Credit billing does not establish model access eligibility. A “—” in the table means no membership requirement is documented here.
+
+**Image 2.5 Fast / Pro free trials**: Member features. Free trials are available only with remaining trial quota; active membership entitlements are required after trials are exhausted. Trial eligibility and remaining quota are determined by the server. Trial quotas are tracked separately for Fast / Pro and for text-to-image (`text2image`) / reference-to-image (`reference2image`).
+
+**Video duration membership limits**: `3.1` / `3.1_pro` allow up to 5 seconds for free users; 6–8 seconds require membership. Q3 (`3.2`) / Q4 (`3.4`) allow up to 10 seconds for free users; 11–16 seconds require membership. These limits do not apply to image tasks.
 
 Q4 reference audio: each local file must be 1-16 seconds. Up to 3 files are
 allowed without the `3.2_a` combined 15-second limit. Q4 accepts audio-only
