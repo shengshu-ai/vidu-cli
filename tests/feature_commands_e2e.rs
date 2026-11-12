@@ -206,6 +206,671 @@ fn envelope(output: &Output, success: bool) -> Value {
 }
 
 #[test]
+fn q4_fifteen_images_and_transition_match_submit_cost_and_rerun() {
+    let empty_tool_path = tempfile::tempdir().unwrap();
+    let mut prompts = vec![json!({"type":"text","content":"参考所有图片"})];
+    prompts
+        .extend((1..=15).map(|id| json!({"type":"image","content":format!("ssupload:?id={id}")})));
+    let historical = json!({"type":"character2video","input":{"prompts":prompts},
+        "settings":{"model_version":"3.4","duration":5,"resolution":"720p",
+            "codec":"h265","sample_count":0,"schedule_mode":"normal","transition":"speed"}});
+    for action in ["submit", "cost", "rerun"] {
+        let server = Mock::new(|_| {
+            let check_submission = || {
+                let expected_prompts = prompts.clone();
+                Step::json("POST", "/vidu/v1/tasks", json!({"id":"aligned-q4"})).check(
+                    move |request| {
+                        let body = request.json();
+                        assert_eq!(body["input"]["prompts"], Value::Array(expected_prompts));
+                        assert_eq!(body["settings"]["model_version"], "3.4");
+                        assert_eq!(body["settings"]["sample_count"], 1);
+                        assert_eq!(body["settings"]["codec"], "h265");
+                        assert_eq!(body["settings"]["transition"], "speed");
+                    },
+                )
+            };
+            match action {
+                "submit" => vec![check_submission()],
+                "rerun" => vec![
+                    get("/vidu/v1/tasks/alignment-source", historical.clone()),
+                    check_submission(),
+                ],
+                _ => vec![
+                    get("/vidu/v1/tasks/credits", json!({"cost_credits":30})).query(&[
+                        ("type", "character2video"),
+                        ("settings.model_version", "3.4"),
+                        ("settings.duration", "5"),
+                        ("settings.resolution", "720p"),
+                        ("settings.sample_count", "1"),
+                        ("settings.codec", "h265"),
+                        ("settings.schedule_mode", "normal"),
+                        ("settings.transition", "speed"),
+                    ]),
+                ],
+            }
+        });
+        let mut args: Vec<String> = if action == "rerun" {
+            vec!["task".into(), "rerun".into(), "alignment-source".into()]
+        } else {
+            [
+                "task",
+                action,
+                "--type",
+                "character2video",
+                "--model-version",
+                "3.4",
+                "--duration",
+                "5",
+                "--resolution",
+                "720p",
+                "--codec",
+                "h265",
+                "--schedule-mode",
+                "normal",
+                "--transition",
+                "speed",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+        };
+        if action == "submit" {
+            args.extend(["--prompt".into(), "参考所有图片".into()]);
+            for id in 1..=15 {
+                args.extend(["--image".into(), format!("ssupload:?id={id}")]);
+            }
+        }
+        let args: Vec<_> = args.iter().map(String::as_str).collect();
+        envelope(
+            &server.run_env(&args, &[("PATH", empty_tool_path.path().to_str().unwrap())]),
+            true,
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn drama_and_wan_preserve_transition_for_backend_policy() {
+    for model in ["viduq3.1-drama-std", "viduq2-drama-std"] {
+        for action in ["submit", "cost", "rerun"] {
+            let server = Mock::new(|_| {
+                if action == "cost" {
+                    vec![
+                        get("/vidu/v1/tasks/credits", json!({"cost_credits":10})).query(&[
+                            ("type", "character2video"),
+                            ("settings.model_version", model),
+                            ("settings.duration", "5"),
+                            ("settings.resolution", "720p"),
+                            ("settings.sample_count", "1"),
+                            ("settings.codec", "h264"),
+                            ("settings.aspect_ratio", "16:9"),
+                            ("settings.schedule_mode", "normal"),
+                            ("settings.transition", "speed"),
+                        ]),
+                    ]
+                } else {
+                    let mut steps = vec![];
+                    if action == "rerun" {
+                        steps.push(get(
+                            "/vidu/v1/tasks/ignored-transition",
+                            json!({
+                                "type":"character2video", "input":{"prompts":[
+                                    {"type":"text","content":"scene"},
+                                    {"type":"image","content":"ssupload:?id=1"}]},
+                                "settings":{"model_version":model,"duration":5,"resolution":"720p",
+                                    "codec":"h264","transition":"speed","schedule_mode":"normal"}
+                            }),
+                        ));
+                    }
+                    steps.push(
+                        Step::json("POST", "/vidu/v1/tasks", json!({"id":"new-task"})).check(
+                            |request| assert_eq!(request.json()["settings"]["transition"], "speed"),
+                        ),
+                    );
+                    steps
+                }
+            });
+            let mut args = if action == "rerun" {
+                vec!["task", "rerun", "ignored-transition"]
+            } else {
+                vec![
+                    "task",
+                    action,
+                    "--type",
+                    "character2video",
+                    "--model-version",
+                    model,
+                    "--codec",
+                    "h264",
+                    "--transition",
+                    "speed",
+                ]
+            };
+            if action == "submit" {
+                args.extend(["--prompt", "scene", "--image", "ssupload:?id=1"]);
+            }
+            envelope(&server.run(&args), true);
+            server.finish();
+        }
+    }
+}
+
+#[test]
+fn sd_auto_duration_and_upscale_ratios_match_all_generation_entrypoints() {
+    for (resolution, ratio) in [("480p", "21:9"), ("2k", "adaptive"), ("4k", "16:9")] {
+        for action in ["submit", "cost", "rerun"] {
+            let server = Mock::new(|_| {
+                if action == "cost" {
+                    vec![
+                        get("/vidu/v1/tasks/credits", json!({"cost_credits":10})).query(&[
+                            ("type", "character2video"),
+                            ("settings.model_version", "3.2_a"),
+                            ("settings.duration", "-1"),
+                            ("settings.resolution", resolution),
+                            ("settings.sample_count", "1"),
+                            ("settings.codec", "h264"),
+                            ("settings.aspect_ratio", ratio),
+                            ("settings.schedule_mode", "normal"),
+                        ]),
+                    ]
+                } else {
+                    let mut steps = vec![];
+                    if action == "rerun" {
+                        steps.push(get(
+                            "/vidu/v1/tasks/sd-source",
+                            json!({
+                                "type":"character2video", "input":{"prompts":[
+                                    {"type":"text","content":"scene"},
+                                    {"type":"image","content":"ssupload:?id=1"}]},
+                                "settings":{"model_version":"3.2_a","duration":-1,
+                                    "resolution":resolution,"aspect_ratio":ratio,
+                                    "codec":"h264","schedule_mode":"normal"}
+                            }),
+                        ));
+                    }
+                    let expected_resolution = resolution.to_owned();
+                    let expected_ratio = ratio.to_owned();
+                    steps.push(
+                        Step::json("POST", "/vidu/v1/tasks", json!({"id":"sd-task"})).check(
+                            move |request| {
+                                let settings = &request.json()["settings"];
+                                assert_eq!(settings["duration"], -1);
+                                assert_eq!(settings["resolution"], expected_resolution);
+                                assert_eq!(settings["aspect_ratio"], expected_ratio);
+                            },
+                        ),
+                    );
+                    steps
+                }
+            });
+            let mut args = if action == "rerun" {
+                vec!["task", "rerun", "sd-source"]
+            } else {
+                vec![
+                    "task",
+                    action,
+                    "--type",
+                    "character2video",
+                    "--model-version",
+                    "3.2_a",
+                    "--duration",
+                    "-1",
+                    "--resolution",
+                    resolution,
+                    "--aspect-ratio",
+                    ratio,
+                    "--codec",
+                    "h264",
+                    "--schedule-mode",
+                    "normal",
+                ]
+            };
+            if action == "submit" {
+                args.extend(["--prompt", "scene", "--image", "ssupload:?id=1"]);
+            }
+            envelope(&server.run(&args), true);
+            server.finish();
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn reference_video_color_repair_failure_falls_back_to_original_upload() {
+    use std::os::unix::fs::PermissionsExt;
+    let tools = tempfile::tempdir().unwrap();
+    for (name, script) in [
+        (
+            "ffprobe",
+            "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"codec_type\":\"video\"}]}'\n",
+        ),
+        ("ffmpeg", "#!/bin/sh\nexit 1\n"),
+    ] {
+        let path = tools.path().join(name);
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/reference_864x486_5s.mp4"
+    );
+    let original = std::fs::read(fixture).unwrap();
+    let server = Mock::new(|base| {
+        vec![
+            Step::json(
+                "POST",
+                "/tools/v1/files/uploads",
+                json!({
+                    "id":"123", "put_url":format!("{base}/blob/reference.mp4")
+                }),
+            )
+            .body(json!({"scene":"vidu","metadata":{
+                "image-width":"864","image-height":"486","duration":"5"
+            }})),
+            Step::json("PUT", "/blob/reference.mp4", json!({}))
+                .check(move |request| assert_eq!(request.body, original)),
+            Step::json("PUT", "/tools/v1/files/uploads/123/finish", json!({}))
+                .body(json!({"etag":"test-etag","id":"123"})),
+            Step::json("POST", "/vidu/v1/tasks", json!({"id":"reference-task"})).check(|request| {
+                assert_eq!(
+                    request.json()["input"]["prompts"][2]["content"],
+                    "ssupload:?id=123"
+                )
+            }),
+        ]
+    });
+    envelope(
+        &server.run_env(
+            &[
+                "task",
+                "submit",
+                "--type",
+                "character2video",
+                "--model-version",
+                "3.2_a",
+                "--prompt",
+                "scene",
+                "--image",
+                "ssupload:?id=1",
+                "--video",
+                fixture,
+                "--duration",
+                "5",
+                "--resolution",
+                "720p",
+                "--codec",
+                "h264",
+                "--schedule-mode",
+                "normal",
+            ],
+            &[("PATH", tools.path().to_str().unwrap())],
+        ),
+        true,
+    );
+    server.finish();
+}
+
+#[test]
+fn invalid_generation_settings_match_submit_cost_and_rerun_without_uploads() {
+    for (kind, model, duration, resolution, count, mode, error_field) in [
+        ("img2video", "3.4", "2", "720p", "1", "normal", "duration"),
+        ("img2video", "3.4", "3", "480p", "1", "normal", "resolution"),
+        (
+            "character2video",
+            "viduq3.1-drama-std",
+            "5",
+            "720p",
+            "5",
+            "normal",
+            "sample_count",
+        ),
+        (
+            "character2video",
+            "3.2_a",
+            "5",
+            "720p",
+            "1",
+            "nopeak",
+            "nopeak",
+        ),
+        ("text2video", "3.4", "5", "720p", "1", "normal", "support"),
+    ] {
+        for action in ["submit", "cost", "rerun"] {
+            let raw = json!({"type":kind,"input":{"prompts":[{"type":"text","content":"test"},
+                {"type":"image","content":"ssupload:?id=1"}]},"settings":{
+                "model_version":model,"duration":duration.parse::<i64>().unwrap(),
+                "resolution":resolution,"sample_count":count.parse::<i64>().unwrap(),"schedule_mode":mode}});
+            let server = Mock::new(|_| {
+                if action == "rerun" {
+                    vec![get("/vidu/v1/tasks/invalid-source", raw)]
+                } else {
+                    vec![]
+                }
+            });
+            let mut args = if action == "rerun" {
+                vec!["task", "rerun", "invalid-source"]
+            } else {
+                vec![
+                    "task",
+                    action,
+                    "--type",
+                    kind,
+                    "--model-version",
+                    model,
+                    "--duration",
+                    duration,
+                    "--resolution",
+                    resolution,
+                    "--sample-count",
+                    count,
+                    "--schedule-mode",
+                    mode,
+                ]
+            };
+            if action == "submit" {
+                args.extend(["--prompt", "test", "--image", "/unnecessary-upload.jpg"]);
+            }
+            let result = envelope(&server.run(&args), false);
+            assert_eq!(result["error"]["type"], "client_error");
+            assert!(
+                result["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(error_field),
+                "{result}"
+            );
+            server.finish();
+        }
+    }
+}
+
+#[test]
+fn generation_prompt_length_is_decided_by_backend_for_submit_and_rerun() {
+    for (model, kind, backend_limit) in [
+        ("3.2", "text2video", 5_000),
+        ("3.4", "character2video", 20_000),
+        ("viduq3.1-drama-std", "text2video", 5_000),
+        ("viduq2-drama-std", "text2video", 20_000),
+    ] {
+        for action in ["submit", "rerun"] {
+            for accepted in [true, false] {
+                let prompt = format!(
+                    " \n{}\t ",
+                    "猫".repeat(backend_limit + usize::from(!accepted))
+                );
+                let mut prompts = vec![json!({"type":"text","content":"old"})];
+                if kind == "character2video" {
+                    prompts.push(json!({"type":"image","content":"ssupload:?id=101"}));
+                }
+                let expected_prompt = prompt.clone();
+                let server = Mock::new(|_| {
+                    let mut steps = Vec::new();
+                    if action == "rerun" {
+                        steps.push(get(
+                            "/vidu/v1/tasks/long-source",
+                            json!({
+                                "type":kind, "input":{"prompts":prompts},
+                                "settings":{"model_version":model,"duration":5,
+                                    "resolution":"1080p","sample_count":1,
+                                    "codec":"h265","schedule_mode":"normal"}
+                            }),
+                        ));
+                    }
+                    let response = if accepted {
+                        json!({"id":"long-prompt-task"})
+                    } else {
+                        json!({"reason":"PROMPT_TOO_LONG","message":"length is checked by backend"})
+                    };
+                    steps.push(
+                        Step::json("POST", "/vidu/v1/tasks", response)
+                            .status(if accepted { 200 } else { 400 })
+                            .check(move |request| {
+                                assert_eq!(
+                                    request.json()["input"]["prompts"][0]["content"],
+                                    expected_prompt
+                                );
+                            }),
+                    );
+                    steps
+                });
+                let mut args = if action == "rerun" {
+                    vec!["task", "rerun", "long-source", "--prompt", &prompt]
+                } else {
+                    vec![
+                        "task",
+                        "submit",
+                        "--type",
+                        kind,
+                        "--model-version",
+                        model,
+                        "--duration",
+                        "5",
+                        "--resolution",
+                        "1080p",
+                        "--schedule-mode",
+                        "normal",
+                        "--prompt",
+                        &prompt,
+                    ]
+                };
+                if action == "submit" && kind == "character2video" {
+                    args.extend(["--image", "ssupload:?id=101"]);
+                }
+                let data = envelope(&server.run(&args), accepted);
+                if accepted {
+                    assert_eq!(data["task_id"], "long-prompt-task");
+                } else {
+                    assert_eq!(data["error"]["type"], "http_error");
+                    assert_eq!(data["error"]["http_status"], 400);
+                    assert_eq!(data["error"]["code"], "PROMPT_TOO_LONG");
+                    assert_eq!(data["error"]["message"], "length is checked by backend");
+                }
+                server.finish();
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_prompt_and_excess_q4_images_fail_before_any_upload() {
+    for (prompt, images, error_field) in [
+        (" \t\n".to_owned(), 1, "text"),
+        ("test".to_owned(), 16, "15"),
+    ] {
+        let server = Mock::new(|_| vec![]);
+        let mut args: Vec<String> = [
+            "task",
+            "submit",
+            "--type",
+            "character2video",
+            "--model-version",
+            "3.4",
+            "--duration",
+            "5",
+            "--resolution",
+            "720p",
+            "--schedule-mode",
+            "normal",
+            "--prompt",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        args.push(prompt);
+        for _ in 0..images {
+            args.extend(["--image".into(), "/unnecessary-upload.jpg".into()]);
+        }
+        let args: Vec<_> = args.iter().map(String::as_str).collect();
+        let result = envelope(&server.run(&args), false);
+        assert!(
+            result["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(error_field),
+            "{result}"
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn image25_additional_ratios_are_shared_by_submit_cost_and_rerun() {
+    for ratio in ["3:2", "2:3", "21:9", "9:21"] {
+        for action in ["submit", "cost", "rerun"] {
+            let settings = json!({"model_version":"3.2_image_2_5_fast","duration":0,
+                "resolution":"1080p","sample_count":1,"codec":"h264",
+                "schedule_mode":"normal","aspect_ratio":ratio});
+            let server = Mock::new(|_| {
+                if action == "cost" {
+                    vec![
+                        get("/vidu/v1/tasks/credits", json!({"cost_credits":6})).query(&[
+                            ("type", "text2image"),
+                            ("settings.model_version", "3.2_image_2_5_fast"),
+                            ("settings.duration", "0"),
+                            ("settings.resolution", "1080p"),
+                            ("settings.sample_count", "1"),
+                            ("settings.codec", "h264"),
+                            ("settings.schedule_mode", "normal"),
+                            ("settings.aspect_ratio", ratio),
+                        ]),
+                    ]
+                } else {
+                    let mut steps = vec![];
+                    if action == "rerun" {
+                        steps.push(get("/vidu/v1/tasks/image-source", json!({"type":"text2image",
+                            "settings":settings,"input":{"prompts":[{"type":"text","content":"cat"}]}})));
+                    }
+                    let ratio = ratio.to_owned();
+                    steps.push(
+                        Step::json("POST", "/vidu/v1/tasks", json!({"id":"image-aligned"})).check(
+                            move |request| {
+                                assert_eq!(request.json()["settings"]["aspect_ratio"], ratio)
+                            },
+                        ),
+                    );
+                    steps
+                }
+            });
+            let args = if action == "rerun" {
+                vec!["task", "rerun", "image-source"]
+            } else {
+                let mut args = vec![
+                    "task",
+                    action,
+                    "--type",
+                    "text2image",
+                    "--model-version",
+                    "3.2_image_2_5_fast",
+                    "--resolution",
+                    "1080p",
+                    "--aspect-ratio",
+                    ratio,
+                    "--codec",
+                    "h264",
+                    "--schedule-mode",
+                    "normal",
+                ];
+                if action == "submit" {
+                    args.extend(["--prompt", "cat"]);
+                }
+                args
+            };
+            envelope(&server.run(&args), true);
+            server.finish();
+        }
+    }
+}
+
+#[test]
+fn image2_and_image25_accept_nineteen_direct_references_without_uploads() {
+    for model in ["3.2_image_2", "3.2_image_2_5_fast", "3.2_image_2_5_pro"] {
+        let server = Mock::new(|_| {
+            vec![
+                Step::json("POST", "/vidu/v1/tasks", json!({"id":"image-references"})).check(
+                    |request| {
+                        assert_eq!(
+                            request.json()["input"]["prompts"].as_array().unwrap().len(),
+                            20
+                        )
+                    },
+                ),
+            ]
+        });
+        let mut args: Vec<String> = [
+            "task",
+            "submit",
+            "--type",
+            "reference2image",
+            "--model-version",
+            model,
+            "--prompt",
+            "cat",
+            "--resolution",
+            "1080p",
+            "--schedule-mode",
+            "normal",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        for id in 1..=19 {
+            args.extend(["--image".into(), format!("ssupload:?id={id}")]);
+        }
+        let args: Vec<_> = args.iter().map(String::as_str).collect();
+        envelope(&server.run(&args), true);
+        server.finish();
+    }
+}
+
+#[test]
+fn damaged_second_image_is_detected_before_uploading_the_first() {
+    let directory = tempfile::tempdir().unwrap();
+    let first = directory.path().join("first.png");
+    let second = directory.path().join("broken.png");
+    let mut seed = 0x1234_5678u32;
+    let image = image::RgbImage::from_fn(64, 64, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let bytes = seed.to_le_bytes();
+        image::Rgb([bytes[0], bytes[1], bytes[2]])
+    });
+    image.save(&first).unwrap();
+    assert!(std::fs::metadata(&first).unwrap().len() > 512);
+    std::fs::write(&second, b"not an image").unwrap();
+    let server = Mock::new(|_| vec![]);
+    let result = envelope(
+        &server.run(&[
+            "task",
+            "submit",
+            "--type",
+            "character2video",
+            "--model-version",
+            "3.4",
+            "--duration",
+            "5",
+            "--resolution",
+            "720p",
+            "--schedule-mode",
+            "normal",
+            "--prompt",
+            "test",
+            "--image",
+            first.to_str().unwrap(),
+            "--image",
+            second.to_str().unwrap(),
+        ]),
+        false,
+    );
+    assert_eq!(result["error"]["type"], "client_error");
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("image"));
+    server.finish();
+}
+
+#[test]
 fn output_audio_switch_reaches_submit_and_quote_without_changing_reference_inputs() {
     for (model, kinds) in [
         (
@@ -1440,7 +2105,7 @@ fn extend_preflights_creation_and_upscale_uses_tool_endpoint() {
     server.finish();
 }
 #[test]
-fn rerun_six_supported_types_preserves_original_assets_and_overrides_prompt() {
+fn rerun_six_supported_types_normalizes_legacy_codec_and_preserves_original_assets() {
     for kind in [
         "text2image",
         "text2video",
@@ -1466,12 +2131,13 @@ fn rerun_six_supported_types_preserves_original_assets_and_overrides_prompt() {
             _ => {}
         }
         let image_task = kind.ends_with("image");
-        let mut settings = json!({"model_version":"3.1","resolution":"1080p","duration":if image_task {0}else{5},"sample_count":1,"schedule_mode":"normal"});
+        let mut settings = json!({"model_version":"3.1","resolution":"1080p","duration":if image_task {0}else{5},"sample_count":1,"schedule_mode":"normal","codec":"unspecified"});
         if ["img2video", "headtailimg2video"].contains(&kind) {
             settings["transition"] = json!("speed");
         }
         let original = prompts.clone();
-        let expected_settings = settings.clone();
+        let mut expected_settings = settings.clone();
+        expected_settings.as_object_mut().unwrap().remove("codec");
         let server = Mock::new(|_| {
             vec![
                 get(

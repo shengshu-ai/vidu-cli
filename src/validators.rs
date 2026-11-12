@@ -94,18 +94,52 @@ pub const MODEL_VERSIONS: &[&str] = &[
 
 pub const RESOLUTIONS: &[&str] = &["480p", "540p", "720p", "1080p", "2k", "4k"];
 const Q4_RESOLUTIONS: &[&str] = &["540p", "720p", "1080p", "2k", "4k"];
+// SD can generate these natively except 2k, which the configured 720p +
+// Tencent upscale path supports. Deployment-dependent availability stays server-side.
+const SD_RESOLUTIONS: &[&str] = &["480p", "720p", "1080p", "2k", "4k"];
+const SD_ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"];
 
 /// All accepted `--aspect-ratio` values.
-pub const ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive"];
+pub const ASPECT_RATIOS: &[&str] = &[
+    "16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9", "9:21", "adaptive", "auto",
+];
+
+/// Parse the syntax shared by model-specific aspect ratio rules. Empty/auto is
+/// the API's intelligent image ratio; membership and model capabilities are
+/// checked separately by `validate_generation_settings`.
+pub fn parse_aspect_ratio(input: &str) -> Result<String, String> {
+    let ratio = input.trim();
+    if ratio.is_empty() || ratio == "auto" {
+        return Ok(String::new());
+    }
+    if ASPECT_RATIOS.contains(&ratio) || numeric_aspect_ratio(ratio).is_some() {
+        return Ok(ratio.to_string());
+    }
+    Err("aspect_ratio must be auto, adaptive, or a positive width:height ratio".into())
+}
+
+fn numeric_aspect_ratio(ratio: &str) -> Option<f64> {
+    let (width, height) = ratio.split_once(':')?;
+    let width: f64 = width.trim().parse().ok()?;
+    let height: f64 = height.trim().parse().ok()?;
+    let value = width / height;
+    (width.is_finite()
+        && height.is_finite()
+        && width > 0.0
+        && height > 0.0
+        && value.is_finite()
+        && value > 0.0)
+        .then_some(value)
+}
 
 /// All accepted `--transition` values across task types.
-pub const TRANSITIONS: &[&str] = &["creative", "stable", "pro", "speed"];
+pub const TRANSITIONS: &[&str] = &["creative", "stable", "pro", "speed", "pro_ad"];
 
 /// All accepted `--schedule-mode` values.
 pub const SCHEDULE_MODES: &[&str] = &["claw_pass", "nopeak", "normal"];
 
 /// All accepted `--codec` values.
-pub const CODECS: &[&str] = &["h264", "h265"];
+pub const CODECS: &[&str] = &["h264", "h265", "h264_pro", "h265_pro"];
 
 /// All accepted `--language-boost` values for `task tts`.
 /// Sorted alphabetically to keep `--help` output stable.
@@ -266,8 +300,180 @@ fn sorted_join(s: &HashSet<String>) -> String {
     v.join(", ")
 }
 
+/// Validate model settings without depending on prompts or uploaded media.
+/// Submit, cost and rerun share this check; account entitlements stay server-side.
+pub fn validate_generation_settings(task_type: &str, settings: &Value) -> String {
+    if !valid_task_types().contains(task_type) {
+        return format!(
+            "Invalid type '{}'. Valid: {}",
+            task_type,
+            sorted_join(&valid_task_types())
+        );
+    }
+    if !settings.is_object() {
+        return "settings must be an object".into();
+    }
+    let model = settings["model_version"].as_str().unwrap_or("");
+    if !valid_model_versions().contains(model) {
+        return format!(
+            "Invalid model_version '{}'. Valid: {}",
+            model,
+            sorted_join(&valid_model_versions())
+        );
+    }
+    let supports_type = if model == WAN_MODEL_VERSION {
+        WAN_TASK_TYPES.contains(&task_type)
+    } else {
+        model_support()
+            .get(task_type)
+            .is_some_and(|models| models.contains(model))
+    };
+    if !supports_type {
+        return format!("model_version {} does not support {}", model, task_type);
+    }
+    let sample_count = match settings.get("sample_count") {
+        None => 1,
+        Some(value) => match value.as_i64() {
+            Some(count) if (1..=i64::from(i32::MAX)).contains(&count) => count,
+            _ => return "sample_count must be a positive 32-bit integer".into(),
+        },
+    };
+    if model == DRAMA_MODEL_VERSION && sample_count > 4 {
+        return "Drama sample_count must be 1-4".into();
+    }
+    if let Some(codec) = settings.get("codec") {
+        if !codec.as_str().is_some_and(|codec| CODECS.contains(&codec)) {
+            return format!("Invalid codec. Valid: {}", CODECS.join(", "));
+        }
+    }
+    let duration = match settings.get("duration") {
+        None => 0,
+        Some(value) => match value.as_i64() {
+            Some(duration) if i32::try_from(duration).is_ok() => duration,
+            _ => return "duration must be a 32-bit integer".into(),
+        },
+    };
+    let resolution = settings["resolution"].as_str().unwrap_or("");
+    if resolution.is_empty() {
+        return format!("resolution is required for {}", task_type);
+    }
+    let transition = match settings.get("transition") {
+        None => None,
+        Some(value) => match value.as_str() {
+            Some("") => None,
+            Some(value) if TRANSITIONS.contains(&value) => Some(value),
+            Some(value) => {
+                return format!(
+                    "Invalid transition '{}'. Valid: {}",
+                    value,
+                    TRANSITIONS.join(", ")
+                )
+            }
+            None => return "transition must be a string".into(),
+        },
+    };
+    let aspect_ratio = match settings.get("aspect_ratio") {
+        None => None,
+        Some(value) => match value.as_str() {
+            Some(ratio) => Some(ratio),
+            None => return "aspect_ratio must be a string".into(),
+        },
+    };
+    if let Err(error) = preferred_schedule_mode(Some(model), settings["schedule_mode"].as_str()) {
+        return error;
+    }
+    if model == WAN_MODEL_VERSION {
+        return validate_wan_cost(
+            task_type,
+            duration,
+            resolution,
+            aspect_ratio.filter(|ratio| !ratio.is_empty()),
+            transition,
+            sample_count,
+        );
+    }
+    if model == "3.2_a" {
+        if duration != -1 && !(4..=15).contains(&duration) {
+            return format!(
+                "duration {} is invalid for 3.2_a: must be -1 or 4-15",
+                duration
+            );
+        }
+    } else if model == "3.2" && task_type == "character2video" && transition == Some("pro_ad") {
+        if !(3..=16).contains(&duration) {
+            return format!("duration {} out of range [3, 16] for 3.2 pro_ad", duration);
+        }
+    } else if let Some(&(min, max)) = duration_ranges()
+        .get(task_type)
+        .and_then(|ranges| ranges.get(model))
+    {
+        let valid = if min < 0 {
+            duration == -1 || (2..=max).contains(&duration)
+        } else if min == 0 {
+            true
+        }
+        // The backend normalizes image duration to zero.
+        else {
+            (min..=max).contains(&duration)
+        };
+        if !valid {
+            return format!(
+                "duration {} out of range [{}, {}] for {} with {}",
+                duration, min, max, task_type, model
+            );
+        }
+    }
+    let valid_resolutions = if model == DRAMA_MODEL_VERSION {
+        set(&["480p", "720p", "1080p"])
+    } else if model == "3.4" {
+        set(Q4_RESOLUTIONS)
+    } else if model == "3.2_a" {
+        set(SD_RESOLUTIONS)
+    } else {
+        resolution_support().remove(task_type).unwrap_or_default()
+    };
+    if !valid_resolutions.contains(resolution) {
+        return format!(
+            "Invalid resolution '{}' for {}. Valid: {}",
+            resolution,
+            task_type,
+            sorted_join(&valid_resolutions)
+        );
+    }
+    if let Some(ratio) = aspect_ratio.filter(|ratio| !ratio.is_empty()) {
+        let image_task = ["text2image", "reference2image"].contains(&task_type);
+        let valid_ratio = if image_task && model == "3.1" {
+            numeric_aspect_ratio(ratio).is_some_and(|ratio| (0.1..=10.0).contains(&ratio))
+        } else if image_task {
+            numeric_aspect_ratio(ratio).is_some()
+        } else if model == "3.2_a" {
+            SD_ASPECT_RATIOS.contains(&ratio)
+        } else if model == DRAMA_MODEL_VERSION {
+            valid_aspect_ratios().contains(ratio)
+        } else {
+            numeric_aspect_ratio(ratio).is_some()
+        };
+        if !valid_ratio {
+            return format!(
+                "Invalid aspect_ratio '{}' for {} with {}",
+                ratio, task_type, model
+            );
+        }
+    }
+    // Transition affects trial matching, account gates and billing before some
+    // generation builders ignore it. Preserve every recognized protocol value;
+    // do not manufacture model-specific enum rejection or silently rewrite it.
+    if task_type == "img2video" && ["3.0", "3.1", "3.2"].contains(&model) && transition.is_none() {
+        return format!("{} with {} requires transition parameter", task_type, model);
+    }
+    if task_type == "character2video" && model == "3.2" && transition.is_none() {
+        return "character2video with 3.2 requires transition parameter".into();
+    }
+    String::new()
+}
+
 pub fn validate_task_body(body: &Value) -> String {
-    let task_type = body.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let task_type = body["type"].as_str().unwrap_or("");
     if task_type.is_empty() {
         return "Missing required field: type".into();
     }
@@ -278,323 +484,172 @@ pub fn validate_task_body(body: &Value) -> String {
             sorted_join(&valid_task_types())
         );
     }
-
-    let input_obj = body.get("input");
-    let input = match input_obj {
-        Some(Value::Object(_)) => input_obj.unwrap(),
+    let input = match body.get("input") {
+        Some(value) if value.is_object() => value,
         _ => return "input must be an object".into(),
     };
-    let prompts = input.get("prompts");
-    match prompts {
-        Some(Value::Array(arr)) if !arr.is_empty() => {}
-        Some(Value::Array(_)) => return "input.prompts is required and must not be empty".into(),
+    let prompts = match input["prompts"].as_array() {
+        Some(prompts) if !prompts.is_empty() => prompts,
         _ => return "input.prompts is required and must not be empty".into(),
-    }
-
-    // Count images and materials
-    let prompts_arr = prompts.unwrap().as_array().unwrap();
-    let image_count = prompts_arr
-        .iter()
-        .filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("image"))
-        .count();
-    let material_count = prompts_arr
-        .iter()
-        .filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("material"))
-        .count();
-    let audio_count = prompts_arr
-        .iter()
-        .filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("audio"))
-        .count();
-    let video_count = prompts_arr
-        .iter()
-        .filter(|p| p.get("type").and_then(|v| v.as_str()) == Some("video"))
-        .count();
-    let non_text_prompt_count = prompts_arr
-        .iter()
-        .filter(|p| p.get("type").and_then(|v| v.as_str()) != Some("text"))
-        .count();
-    let unsupported_prompt_type = prompts_arr.iter().find_map(|prompt| {
-        let prompt_type = prompt.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        (!["text", "image", "video", "material", "audio"].contains(&prompt_type))
-            .then_some(prompt_type)
-    });
-
+    };
     let settings = match body.get("settings") {
-        Some(Value::Object(_)) => body.get("settings").unwrap(),
+        Some(value) if value.is_object() => value,
         _ => return "settings must be an object".into(),
     };
-
-    let model_version = settings
-        .get("model_version")
-        .and_then(|v| v.as_str())
-        .unwrap_or("2.0");
-    if !valid_model_versions().contains(model_version) {
-        return format!(
-            "Invalid model_version '{}'. Valid: {}",
-            model_version,
-            sorted_join(&valid_model_versions())
-        );
+    let error = validate_generation_settings(task_type, settings);
+    if !error.is_empty() {
+        return error;
     }
-
-    if model_version == WAN_MODEL_VERSION {
+    let model = settings["model_version"].as_str().unwrap();
+    let editor_mode = match input.get("editor_mode") {
+        None | Some(Value::Null) => 0,
+        Some(Value::String(mode)) => match mode.as_str() {
+            "unspecified" => 0,
+            "normal" => 1,
+            "professional" => 2,
+            _ => return format!("Invalid editor_mode '{}'", mode),
+        },
+        Some(mode) => match mode.as_i64().filter(|mode| i32::try_from(*mode).is_ok()) {
+            Some(mode) => mode,
+            None => return "editor_mode must be a protocol enum name or a 32-bit integer".into(),
+        },
+    };
+    if editor_mode == 2 && model != "3.0" {
+        return "professional editor_mode is only supported for model_version 3.0".into();
+    }
+    if model != DRAMA_MODEL_VERSION && model != WAN_MODEL_VERSION && prompts.len() > 20 {
+        return "input.prompts allows at most 20 items".into();
+    }
+    let mut texts = 0usize;
+    let mut images = 0usize;
+    let mut materials = 0usize;
+    let mut possible_image_material = false;
+    let mut videos = 0usize;
+    let mut audios = 0usize;
+    for prompt in prompts {
+        let Some(kind) = prompt.get("type").and_then(Value::as_str) else {
+            return "Each prompt must be an object with a type".into();
+        };
+        match kind {
+            "text" | "image" | "video" | "audio" => {
+                let Some(content) = prompt["content"].as_str() else {
+                    return format!("{} prompt content must be a string", kind);
+                };
+                if content.trim().is_empty() {
+                    return format!("{} prompt content must not be empty", kind);
+                }
+                match kind {
+                    "text" => texts += 1,
+                    "image" => images += 1,
+                    "video" => videos += 1,
+                    "audio" => audios += 1,
+                    _ => unreachable!(),
+                }
+            }
+            "material" => {
+                materials += 1;
+                if [DRAMA_MODEL_VERSION, WAN_MODEL_VERSION].contains(&model) {
+                    if model == WAN_MODEL_VERSION {
+                        return "Wan 3 does not support 'material' prompt references".into();
+                    }
+                    return format!("{} does not support material references", model);
+                }
+                let Some(material) = prompt.get("material").filter(|value| value.is_object())
+                else {
+                    return "material prompt requires a material object".into();
+                };
+                for field in ["id", "version"] {
+                    let value = &material[field];
+                    let valid = value
+                        .as_i64()
+                        .or_else(|| value.as_str()?.parse::<i64>().ok())
+                        .is_some_and(|value| value > 0);
+                    if !valid {
+                        return format!("material.{} must be a positive 64-bit integer", field);
+                    }
+                }
+                if model == "3.4" {
+                    match material["modality"].as_str() {
+                        Some("text") => {}
+                        Some("image" | "unspecified" | "") | None => possible_image_material = true,
+                        _ => return "Q4 supports only image or text materials".into(),
+                    }
+                }
+                // The server resolves material IDs and fills/trims their image
+                // components. Neither one material nor historical contents is a
+                // reliable local image count.
+            }
+            _ => return format!("{} does not support '{}' prompt references", model, kind),
+        }
+    }
+    if ([DRAMA_MODEL_VERSION, WAN_MODEL_VERSION].contains(&model)
+        || (model == "3.4" && task_type == "character2video"))
+        && texts != 1
+    {
+        return format!("{} requires exactly one text prompt", model);
+    }
+    if task_type == "text2video" && (texts == 0 || images + videos + audios + materials > 0) {
+        return "text2video accepts text prompts only and requires at least one text prompt; use character2video for references".into();
+    }
+    if input
+        .get("enhance")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return "input.enhance must be true or false".into();
+    }
+    if model == WAN_MODEL_VERSION {
         return validate_wan_task_body(body);
     }
-    // The new Wan ratios must not widen legacy models' accepted inputs.
-    if settings
-        .get("aspect_ratio")
-        .and_then(Value::as_str)
-        .is_some_and(|ratio| ["adaptive", "21:9"].contains(&ratio))
-    {
-        return "Invalid aspect_ratio: adaptive and 21:9 are supported only for Wan 3".into();
-    }
-
-    let ms = model_support();
-    if let Some(supported) = ms.get(task_type) {
-        if !supported.contains(model_version) {
-            return format!(
-                "model_version {} does not support {}",
-                model_version, task_type
-            );
-        }
-    }
-
-    // Validate input counts by task type and model version.
     match task_type {
-        "img2video" if image_count != 1 => {
-            return format!("img2video requires exactly 1 image, got {}", image_count)
+        "img2video" if images != 1 => {
+            return format!("img2video requires exactly 1 image, got {}", images)
         }
-        "headtailimg2video" if image_count != 2 => {
+        "headtailimg2video" if images != 2 => {
             return format!(
                 "headtailimg2video requires exactly 2 images, got {}",
-                image_count
+                images
             )
         }
-        "reference2image" if image_count + material_count > 7 => {
-            return format!(
-                "{} allows max 7 images+materials, got {}",
-                task_type,
-                image_count + material_count
-            );
+        "character2video" => {
+            if texts == 0 {
+                return "character2video requires at least one text prompt".into();
+            }
+            let max = match model {
+                "3.4" => Some(15),
+                "3.2_a" | DRAMA_MODEL_VERSION => Some(9),
+                "3.1_pro" => None, // The server trims reference media to 48 slots.
+                _ if materials > 0 => Some(7),
+                _ => None,
+            };
+            if let Some(max) = max {
+                if images > max {
+                    return format!("character2video allows max {} images, got {}", max, images);
+                }
+            }
+            let has_reference = if model == "3.4" {
+                images + audios > 0 || possible_image_material
+            } else if model == DRAMA_MODEL_VERSION {
+                images + videos + audios > 0
+            } else {
+                images + videos + materials > 0
+            };
+            if !has_reference {
+                return format!("{} character2video requires at least one image, video or audio reference (image materials are resolved by the server)", model);
+            }
         }
-        "character2video" if model_version == DRAMA_MODEL_VERSION && image_count > 9 => {
-            return format!("{} allows max 9 images, got {}", task_type, image_count);
-        }
-        "character2video"
-            if model_version != DRAMA_MODEL_VERSION && image_count + material_count > 7 =>
-        {
-            return format!(
-                "{} allows max 7 images+materials, got {}",
-                task_type,
-                image_count + material_count
-            );
+        "reference2image" if materials > 0 && images > 7 => {
+            return format!("reference2image allows max 7 images, got {}", images);
         }
         _ => {}
     }
-
-    let video_error = validate_reference_video_count(task_type, model_version, video_count);
-    if !video_error.is_empty() {
-        return video_error;
+    let error = validate_reference_video_count(task_type, model, videos);
+    if !error.is_empty() {
+        return error;
     }
-
-    if model_version == DRAMA_MODEL_VERSION {
-        if material_count > 0 {
-            return "viduq3.1-drama-std does not support material references".into();
-        }
-        if let Some(prompt_type) = unsupported_prompt_type {
-            return format!(
-                "viduq3.1-drama-std does not support '{}' prompt references",
-                prompt_type
-            );
-        }
-        if input
-            .get("editor_mode")
-            .is_some_and(|mode| mode.as_str() != Some("normal"))
-        {
-            return "viduq3.1-drama-std supports only normal generation mode".into();
-        }
-        if task_type == "text2video" && non_text_prompt_count > 0 {
-            return "viduq3.1-drama-std text2video accepts text prompts only; use character2video for references".into();
-        }
-        if task_type == "character2video" && image_count + video_count + audio_count == 0 {
-            return "viduq3.1-drama-std character2video requires at least one image, video or audio reference".into();
-        }
+    let error = validate_reference_audio_count(task_type, model, audios);
+    if !error.is_empty() {
+        return error;
     }
-
-    let audio_error = validate_reference_audio_count(task_type, model_version, audio_count);
-    if !audio_error.is_empty() {
-        return audio_error;
-    }
-
-    if model_version == "3.4"
-        && task_type == "character2video"
-        && image_count + material_count + audio_count == 0
-    {
-        return "Q4 character2video requires an image, material or audio reference".into();
-    }
-
-    let duration = settings
-        .get("duration")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-    if model_version == "3.2_a" {
-        if !(4..=15).contains(&duration) {
-            return format!("duration {} is invalid for 3.2_a: must be 4-15", duration);
-        }
-    } else {
-        let dr = duration_ranges();
-        if let Some(type_ranges) = dr.get(task_type) {
-            if let Some(&(min_d, max_d)) = type_ranges.get(model_version) {
-                if min_d < 0 && duration != min_d && !(2..=max_d).contains(&duration) {
-                    return format!(
-                        "duration {} out of range [{}, {}] for {} with {}",
-                        duration, min_d, max_d, task_type, model_version
-                    );
-                }
-                if min_d > 0 && (duration < min_d || duration > max_d) {
-                    return format!(
-                        "duration {} out of range [{}, {}] for {} with {}",
-                        duration, min_d, max_d, task_type, model_version
-                    );
-                }
-            }
-        }
-    }
-
-    if settings.get("resolution").is_none() {
-        return format!("resolution is required for {}", task_type);
-    }
-    let res = settings
-        .get("resolution")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let rs = resolution_support();
-    let valid_res = if model_version == DRAMA_MODEL_VERSION {
-        set(&["480p", "720p", "1080p"])
-    } else if model_version == "3.2_a" {
-        let mut valid = rs
-            .get(task_type)
-            .cloned()
-            .unwrap_or_else(|| set(&["1080p"]));
-        valid.insert("720p".into());
-        valid
-    } else if model_version == "3.4" {
-        set(Q4_RESOLUTIONS)
-    } else {
-        rs.get(task_type)
-            .cloned()
-            .unwrap_or_else(|| set(&["1080p"]))
-    };
-    if !valid_res.contains(res) {
-        return format!(
-            "Invalid resolution '{}' for {}. Valid: {}",
-            res,
-            task_type,
-            sorted_join(&valid_res)
-        );
-    }
-
-    let no_ar_types = ["img2video", "headtailimg2video", "text2image"];
-    if !no_ar_types.contains(&task_type) {
-        if let Some(ar_val) = settings.get("aspect_ratio").and_then(|v| v.as_str()) {
-            if !valid_aspect_ratios().contains(ar_val) {
-                return format!(
-                    "Invalid aspect_ratio '{}'. Valid: {}",
-                    ar_val,
-                    sorted_join(&valid_aspect_ratios())
-                );
-            }
-        }
-    }
-
-    let transition = settings.get("transition").and_then(|v| v.as_str());
-
-    if model_version == DRAMA_MODEL_VERSION && transition.is_some() {
-        return "viduq3.1-drama-std does not support transition".into();
-    }
-
-    if model_version == "3.4" && transition.is_some() {
-        return "Q4 should not include transition".into();
-    }
-
-    if transition.is_some() {
-        let no_trans = ["reference2image", "text2image"];
-        if no_trans.contains(&task_type) {
-            return format!("{} should not include transition", task_type);
-        }
-        if task_type == "text2video" && model_version != "3.2" {
-            return format!(
-                "text2video with {} should not include transition (only 3.2 supports pro/speed)",
-                model_version
-            );
-        }
-    }
-
-    if task_type == "img2video" || task_type == "headtailimg2video" {
-        if model_version == "3.1" || model_version == "3.2" {
-            match transition {
-                None => {
-                    return format!(
-                        "{} with {} requires transition parameter (pro or speed)",
-                        task_type, model_version
-                    );
-                }
-                Some(trans) if trans != "pro" && trans != "speed" => {
-                    return format!(
-                        "Invalid transition '{}' for {} {}. Valid: pro, speed",
-                        trans, task_type, model_version
-                    );
-                }
-                _ => {}
-            }
-        } else if let Some(trans) = transition {
-            let valid_trans = if model_version == "3.0" {
-                set(&["creative", "stable"])
-            } else {
-                set(&["pro", "speed"])
-            };
-            if !valid_trans.contains(trans) {
-                return format!(
-                    "Invalid transition '{}' for {} {}. Valid: {}",
-                    trans,
-                    task_type,
-                    model_version,
-                    sorted_join(&valid_trans)
-                );
-            }
-        }
-    }
-
-    if task_type == "character2video" {
-        if model_version == "3.2" {
-            match transition {
-                None => {
-                    return "character2video with 3.2 requires transition parameter (speed or pro)"
-                        .into()
-                }
-                Some(trans) if trans != "speed" && trans != "pro" => {
-                    return format!(
-                        "Invalid transition '{}' for character2video 3.2. Valid: pro, speed",
-                        trans
-                    );
-                }
-                _ => {}
-            }
-        } else if transition.is_some() {
-            return format!("character2video with {} should not include transition (only 3.2 supports pro/speed)", model_version);
-        }
-    }
-
-    if input.get("enhance").is_none() {
-        return "input.enhance is required (true or false)".into();
-    }
-
-    if let Err(err) = preferred_schedule_mode(
-        Some(model_version),
-        settings.get("schedule_mode").and_then(Value::as_str),
-    ) {
-        return err;
-    }
-
     String::new()
 }
 
@@ -621,6 +676,9 @@ pub fn preferred_schedule_mode(
                 "Q4 does not support claw_pass; use --schedule-mode normal or nopeak".into(),
             );
         }
+        if model_version == Some("3.2_a") && mode == "nopeak" {
+            return Err("3.2_a does not support nopeak schedule mode".into());
+        }
         if model_version == Some(DRAMA_MODEL_VERSION) && mode != "normal" {
             return Err("viduq3.1-drama-std supports only --schedule-mode normal (credits)".into());
         }
@@ -631,53 +689,36 @@ pub fn preferred_schedule_mode(
     Ok(mode.map(str::to_string))
 }
 
+#[cfg(test)]
 pub fn validate_q4_cost(
     task_type: &str,
     duration: i64,
     resolution: &str,
     transition: Option<&str>,
 ) -> String {
-    let ranges = duration_ranges();
-    let Some(&(min, max)) = ranges.get(task_type).and_then(|r| r.get("3.4")) else {
-        return format!("model_version 3.4 does not support {}", task_type);
-    };
-    if !(min..=max).contains(&duration) {
-        return format!(
-            "duration {} out of range [{}, {}] for Q4 {}",
-            duration, min, max, task_type
-        );
+    let mut settings = serde_json::json!({
+        "model_version": "3.4", "duration": duration, "resolution": resolution,
+    });
+    if let Some(transition) = transition {
+        settings["transition"] = transition.into();
     }
-    if !Q4_RESOLUTIONS.contains(&resolution) {
-        return format!("Invalid resolution '{}' for Q4", resolution);
-    }
-    if transition.is_some() {
-        return "Q4 should not include transition".into();
-    }
-    String::new()
+    validate_generation_settings(task_type, &settings)
 }
 
+#[cfg(test)]
 pub fn validate_drama_cost(
     task_type: &str,
     duration: i64,
     resolution: &str,
     transition: Option<&str>,
 ) -> String {
-    if !["text2video", "character2video"].contains(&task_type) {
-        return format!(
-            "model_version {} does not support {}",
-            DRAMA_MODEL_VERSION, task_type
-        );
+    let mut settings = serde_json::json!({
+        "model_version": DRAMA_MODEL_VERSION, "duration": duration, "resolution": resolution,
+    });
+    if let Some(transition) = transition {
+        settings["transition"] = transition.into();
     }
-    if !(4..=30).contains(&duration) {
-        return format!("Drama duration {} out of range [4, 30]", duration);
-    }
-    if !["480p", "720p", "1080p"].contains(&resolution) {
-        return format!("Invalid resolution '{}' for Drama", resolution);
-    }
-    if transition.is_some() {
-        return "viduq3.1-drama-std does not support transition".into();
-    }
-    String::new()
+    validate_generation_settings(task_type, &settings)
 }
 
 pub fn validate_wan_cost(
@@ -706,8 +747,10 @@ pub fn validate_wan_cost(
     if aspect_ratio.is_some_and(|ratio| !WAN_ASPECT_RATIOS.contains(&ratio)) {
         return "Invalid aspect_ratio for Wan 3".into();
     }
-    if transition.is_some() {
-        return "Wan 3 does not support transition".into();
+    if transition
+        .is_some_and(|transition| !transition.is_empty() && !TRANSITIONS.contains(&transition))
+    {
+        return "Invalid transition protocol value".into();
     }
     if !(1..=4).contains(&sample_count) {
         return "Wan 3 sample_count must be 1-4".into();
@@ -736,13 +779,10 @@ fn validate_wan_task_body(body: &Value) -> String {
     }
     let input = &body["input"];
     if input
-        .get("editor_mode")
-        .is_some_and(|mode| mode.as_str() != Some("normal"))
+        .get("enhance")
+        .is_some_and(|value| !value.is_boolean())
     {
-        return "Wan 3 supports only normal generation mode".into();
-    }
-    if input.get("enhance").is_none() {
-        return "input.enhance is required (true or false)".into();
+        return "input.enhance must be true or false".into();
     }
     let mut counts = [0usize; 4];
     for prompt in input["prompts"].as_array().unwrap() {
@@ -916,9 +956,13 @@ pub fn validate_reference_video_count(
         return String::new();
     }
     if task_type != "character2video"
-        || !["3.2_a", DRAMA_MODEL_VERSION, WAN_MODEL_VERSION].contains(&model_version)
+        || !["3.1_pro", "3.2_a", DRAMA_MODEL_VERSION, WAN_MODEL_VERSION].contains(&model_version)
     {
-        return "Video input is only supported for character2video with model_version 3.2_a, viduq3.1-drama-std, or viduq2-drama-std".into();
+        return "Video input is only supported for character2video with model_version 3.1_pro, 3.2_a, viduq3.1-drama-std, or viduq2-drama-std".into();
+    }
+    if model_version == "3.1_pro" {
+        // The workflow trims video/image references to its 48-slot budget.
+        return String::new();
     }
     let max_count = if model_version == WAN_MODEL_VERSION {
         5
@@ -931,7 +975,12 @@ pub fn validate_reference_video_count(
     String::new()
 }
 
+#[cfg(test)]
 pub fn validate_reference_audio_file(path: &str) -> String {
+    validate_reference_audio_file_for_model(path, DRAMA_MODEL_VERSION)
+}
+
+pub fn validate_reference_audio_file_for_model(path: &str, model_version: &str) -> String {
     let p = Path::new(path);
     if !p.is_file() {
         return format!("Audio file not found: {}", path);
@@ -941,13 +990,22 @@ pub fn validate_reference_audio_file(path: &str) -> String {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    if !["mp3", "wav"].contains(&ext.as_str()) {
+    if model_version != "3.2_a" && !["mp3", "wav"].contains(&ext.as_str()) {
         return format!("Invalid audio format '{}'. Supported: mp3, wav", ext);
     }
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    if size > 15 * 1024 * 1024 {
+    if std::fs::File::open(p).is_err() {
+        return format!("Cannot read audio file: {}", path);
+    }
+    let max_mb = if ["3.4", "3.2_a"].contains(&model_version) {
+        20
+    } else {
+        15
+    };
+    if size == 0 || size > max_mb * 1024 * 1024 {
         return format!(
-            "Audio file too large ({:.1}MB). Max: 15MB",
+            "Audio file size must be greater than zero and at most {}MB (got {:.1}MB)",
+            max_mb,
             size as f64 / 1024.0 / 1024.0
         );
     }
@@ -959,20 +1017,8 @@ pub fn validate_reference_video_file(path: &str) -> String {
     if !p.is_file() {
         return format!("Video file not found: {}", path);
     }
-    let ext = p
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if !["mp4", "mov"].contains(&ext.as_str()) {
-        return format!("Invalid video format '{}'. Supported: mp4, mov", ext);
-    }
-    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    if size > 50 * 1024 * 1024 {
-        return format!(
-            "Video file too large ({:.1}MB). Max: 50MB",
-            size as f64 / 1024.0 / 1024.0
-        );
+    if std::fs::File::open(p).is_err() {
+        return format!("Cannot read video file: {}", path);
     }
     String::new()
 }
@@ -993,16 +1039,9 @@ pub fn validate_wan_media_dimensions(width: u32, height: u32, max: u32) -> Resul
     Ok(())
 }
 
+#[cfg(test)]
 pub fn validate_wan_image_file(path: &str) -> String {
     let p = Path::new(path);
-    let ext = p
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if !["jpg", "jpeg", "png", "bmp", "webp"].contains(&ext.as_str()) {
-        return "Wan 3 images must be JPEG, PNG, BMP or WEBP".into();
-    }
     let size = match std::fs::metadata(p) {
         Ok(metadata) => metadata.len(),
         Err(_) => return format!("Image file not found: {}", path),
@@ -1010,7 +1049,22 @@ pub fn validate_wan_image_file(path: &str) -> String {
     if size == 0 || size > 20 * 1024 * 1024 {
         return "Wan 3 image size must be greater than zero and at most 20MB".into();
     }
-    match image::image_dimensions(p) {
+    let reader = match image::ImageReader::open(p).and_then(|reader| reader.with_guessed_format()) {
+        Ok(reader) => reader,
+        Err(_) => return "Cannot read Wan 3 image format".into(),
+    };
+    if !matches!(
+        reader.format(),
+        Some(
+            image::ImageFormat::Jpeg
+                | image::ImageFormat::Png
+                | image::ImageFormat::Bmp
+                | image::ImageFormat::WebP
+        )
+    ) {
+        return "Wan 3 images must be JPEG, PNG, BMP or WEBP".into();
+    }
+    match reader.into_dimensions() {
         Ok((width, height)) => validate_wan_media_dimensions(width, height, 8000)
             .err()
             .unwrap_or_default(),
@@ -1023,13 +1077,8 @@ pub fn validate_wan_video_file(path: &str) -> String {
     if !p.is_file() {
         return format!("Video file not found: {}", path);
     }
-    let ext = p
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if !["mp4", "mov"].contains(&ext.as_str()) {
-        return "Wan 3 video format must be MP4 or MOV".into();
+    if std::fs::File::open(p).is_err() {
+        return format!("Cannot read video file: {}", path);
     }
     let size = std::fs::metadata(p)
         .map(|metadata| metadata.len())
@@ -1681,6 +1730,471 @@ mod tests {
     }
 
     #[test]
+    fn text_counts_follow_task_specific_backend_rules() {
+        let mut frame = make_body("img2video", "3.4", 5, 1, 0);
+        frame["input"]["prompts"] = json!([
+            {"type":"text", "content":"scene"},
+            {"type":"text", "content":"blur", "negative":true},
+            {"type":"image", "content":"ssupload:?id=1"}
+        ]);
+        assert_eq!(validate_task_body(&frame), "");
+        frame["input"]["prompts"] = json!([
+            {"type":"image", "content":"ssupload:?id=1"}
+        ]);
+        assert_eq!(validate_task_body(&frame), "");
+        frame["type"] = json!("character2video");
+        assert!(validate_task_body(&frame).contains("exactly one text"));
+
+        for model in ["3.0", "3.1", "3.1_pro", "3.2", "3.2_a"] {
+            let mut reference = make_body("character2video", model, 5, 1, 0);
+            if model == "3.2" {
+                reference["settings"]["transition"] = json!("speed");
+            }
+            reference["input"]["prompts"] = json!([
+                {"type":"image", "content":"ssupload:?id=1"}
+            ]);
+            assert!(
+                validate_task_body(&reference).contains("at least one text"),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn reference_image_limits_follow_models_and_server_material_expansion() {
+        for (model, max) in [("3.4", 15), ("3.2_a", 9)] {
+            assert_eq!(
+                validate_task_body(&make_body("character2video", model, 5, max, 0)),
+                ""
+            );
+            assert!(
+                validate_task_body(&make_body("character2video", model, 5, max + 1, 0))
+                    .contains(&format!("max {} images", max))
+            );
+        }
+        let mut q4 = make_body("character2video", "3.4", 5, 0, 1);
+        // A material ID must be resolved by unidu. A historical contents array
+        // cannot establish its current type or number of image components.
+        q4["input"]["prompts"][1]["material"]["contents"] = json!(vec!["stale"; 30]);
+        assert_eq!(validate_task_body(&q4), "");
+        q4["input"]["prompts"][1]["material"]["modality"] = json!("text");
+        assert!(validate_task_body(&q4).contains("requires at least one"));
+        q4["input"]["prompts"][1]["material"]["modality"] = json!("image");
+        assert_eq!(validate_task_body(&q4), "");
+        q4["input"]["prompts"][1]["material"]["modality"] = json!("video");
+        assert!(validate_task_body(&q4).contains("only image or text materials"));
+        assert_eq!(
+            validate_task_body(&make_body("character2video", "3.4", 5, 15, 4)),
+            ""
+        );
+        for model in [
+            "3.1",
+            "3.2_fast_m",
+            "3.2_pro_m",
+            "3.2_image_2",
+            "3.2_image_2_5_fast",
+            "3.2_image_2_5_pro",
+        ] {
+            assert_eq!(
+                validate_task_body(&make_body("reference2image", model, 0, 19, 0)),
+                "",
+                "{}",
+                model
+            );
+            assert!(
+                validate_task_body(&make_body("reference2image", model, 0, 20, 0))
+                    .contains("at most 20")
+            );
+        }
+    }
+
+    #[test]
+    fn generation_text_length_is_left_to_backend_and_input_shapes_are_checked() {
+        for (model, max) in [
+            ("3.4", 20000),
+            (WAN_MODEL_VERSION, 20000),
+            (DRAMA_MODEL_VERSION, 5000),
+            ("3.1", 5000),
+        ] {
+            let mut body = make_body("character2video", model, 5, 1, 0);
+            body["input"]["prompts"][0]["content"] = json!("界".repeat(max));
+            assert_eq!(validate_task_body(&body), "", "{}", model);
+            body["input"]["prompts"][0]["content"] = json!("界".repeat(max + 1));
+            assert_eq!(validate_task_body(&body), "", "{}", model);
+            body["input"]["prompts"][0]["content"] = json!(format!(" \n{}\t", "界".repeat(max)));
+            assert_eq!(validate_task_body(&body), "", "{}", model);
+            body["input"]["prompts"][0]["content"] = json!(" \n\t");
+            assert!(validate_task_body(&body).contains("must not be empty"));
+        }
+        for model in ["3.4", DRAMA_MODEL_VERSION, WAN_MODEL_VERSION] {
+            let mut body = make_body("character2video", model, 5, 1, 0);
+            body["input"]["prompts"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"type":"text", "content":"second"}));
+            assert!(validate_task_body(&body).contains("exactly one text"));
+        }
+        let mut legacy = make_body("character2video", "3.1", 5, 1, 0);
+        legacy["input"]["prompts"] = json!([
+            {"type":"text", "content":"a".repeat(5000)},
+            {"type":"text", "content":"b".repeat(5000), "negative":true},
+            {"type":"image", "content":"ssupload:?id=ref"}
+        ]);
+        assert_eq!(validate_task_body(&legacy), "");
+        let mut text_only = legacy.clone();
+        text_only["type"] = json!("text2video");
+        text_only["input"]["prompts"].as_array_mut().unwrap().pop();
+        assert_eq!(validate_task_body(&text_only), "");
+        for value in [
+            Value::Null,
+            json!({}),
+            json!({"type":"image", "content":null}),
+        ] {
+            legacy["input"]["prompts"][2] = value;
+            assert!(!validate_task_body(&legacy).is_empty());
+        }
+    }
+
+    #[test]
+    fn material_identity_is_checked_without_trusting_expanded_media() {
+        let mut body = make_body("character2video", "3.4", 5, 0, 1);
+        for (id, version) in [
+            (json!(1), json!(2)),
+            (json!("1"), json!("9223372036854775807")),
+        ] {
+            body["input"]["prompts"][1]["material"]["id"] = id;
+            body["input"]["prompts"][1]["material"]["version"] = version;
+            assert_eq!(validate_task_body(&body), "");
+        }
+        for invalid in [
+            json!(""),
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("9223372036854775808"),
+            Value::Null,
+        ] {
+            body["input"]["prompts"][1]["material"]["id"] = invalid;
+            assert!(validate_task_body(&body).contains("material.id"));
+        }
+        body["settings"]["model_version"] = json!(DRAMA_MODEL_VERSION);
+        assert!(validate_task_body(&body).contains("does not support material"));
+    }
+
+    #[test]
+    fn shared_settings_check_integer_bounds_without_inventing_generic_batch_limit() {
+        let mut settings = make_body("character2video", "3.4", 5, 1, 0)["settings"].clone();
+        for count in [1, 5, i64::from(i32::MAX)] {
+            settings["sample_count"] = json!(count);
+            assert_eq!(
+                validate_generation_settings("character2video", &settings),
+                ""
+            );
+        }
+        for count in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!(i64::from(i32::MAX) + 1),
+            Value::Null,
+        ] {
+            settings["sample_count"] = count;
+            assert!(validate_generation_settings("character2video", &settings)
+                .contains("32-bit integer"));
+        }
+        settings["sample_count"] = json!(5);
+        settings["model_version"] = json!(DRAMA_MODEL_VERSION);
+        assert!(validate_generation_settings("character2video", &settings).contains("1-4"));
+        settings["sample_count"] = json!(4);
+        assert_eq!(
+            validate_generation_settings("character2video", &settings),
+            ""
+        );
+        for codec in ["h264_pro", "h265_pro"] {
+            settings["codec"] = json!(codec);
+            assert_eq!(
+                validate_generation_settings("character2video", &settings),
+                ""
+            );
+        }
+    }
+
+    #[test]
+    fn aspect_ratios_are_parsed_then_checked_per_model() {
+        assert_eq!(parse_aspect_ratio("auto"), Ok(String::new()));
+        assert_eq!(parse_aspect_ratio(""), Ok(String::new()));
+        for bad in ["intelligent", "0:1", "1:-2", "NaN:1", "1:inf", "1:2:3"] {
+            assert!(parse_aspect_ratio(bad).is_err(), "{}", bad);
+        }
+        let mut settings = make_body("text2image", "3.1", 0, 0, 0)["settings"].clone();
+        for ratio in ["1:10", "10:1", "2.5:3", ""] {
+            settings["aspect_ratio"] = json!(ratio);
+            assert_eq!(validate_generation_settings("text2image", &settings), "");
+        }
+        settings["aspect_ratio"] = json!("10.01:1");
+        assert!(
+            validate_generation_settings("text2image", &settings).contains("Invalid aspect_ratio")
+        );
+        for model in [
+            "3.2_fast_m",
+            "3.2_pro_m",
+            "3.2_image_2",
+            "3.2_image_2_5_fast",
+            "3.2_image_2_5_pro",
+        ] {
+            settings["model_version"] = json!(model);
+            for ratio in ["3:2", "2:3", "21:9", "9:21", "17:6"] {
+                settings["aspect_ratio"] = json!(ratio);
+                assert_eq!(
+                    validate_generation_settings("reference2image", &settings),
+                    "",
+                    "{} {}",
+                    model,
+                    ratio
+                );
+            }
+        }
+        for model in ["3.2_a", DRAMA_MODEL_VERSION] {
+            settings = make_body("character2video", model, 5, 1, 0)["settings"].clone();
+            settings["aspect_ratio"] = json!("9:21");
+            assert!(validate_generation_settings("character2video", &settings)
+                .contains("Invalid aspect_ratio"));
+        }
+    }
+
+    #[test]
+    fn sd_auto_duration_schedule_and_ad_transition_remain_model_specific() {
+        let mut settings = make_body("character2video", "3.2_a", -1, 1, 0)["settings"].clone();
+        assert_eq!(
+            validate_generation_settings("character2video", &settings),
+            ""
+        );
+        settings["schedule_mode"] = json!("nopeak");
+        assert!(validate_generation_settings("character2video", &settings)
+            .contains("does not support nopeak"));
+        settings = make_body("character2video", "3.2", 3, 1, 0)["settings"].clone();
+        settings["transition"] = json!("pro_ad");
+        for duration in [3, 16] {
+            settings["duration"] = json!(duration);
+            assert_eq!(
+                validate_generation_settings("character2video", &settings),
+                ""
+            );
+        }
+        settings["duration"] = json!(2);
+        assert!(validate_generation_settings("character2video", &settings).contains("[3, 16]"));
+        settings["duration"] = json!(5);
+        assert_eq!(validate_generation_settings("img2video", &settings), "");
+        assert_eq!(validate_generation_settings("text2video", &settings), "");
+        settings["model_version"] = json!("3.4");
+        assert_eq!(
+            validate_generation_settings("character2video", &settings),
+            ""
+        );
+        let mut editing = make_body("character2video", "3.1_pro", -1, 0, 0);
+        for _ in 0..8 {
+            editing["input"]["prompts"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"type":"video", "content":"ssupload:?id=ref"}));
+        }
+        assert_eq!(validate_task_body(&editing), "");
+    }
+
+    #[test]
+    fn reference_audio_files_use_model_budgets_and_keep_format_isolation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audio.wav");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(20 * 1024 * 1024).unwrap();
+        for model in ["3.4", "3.2_a"] {
+            assert_eq!(
+                validate_reference_audio_file_for_model(path.to_str().unwrap(), model),
+                ""
+            );
+        }
+        for model in [DRAMA_MODEL_VERSION, WAN_MODEL_VERSION] {
+            assert!(
+                validate_reference_audio_file_for_model(path.to_str().unwrap(), model)
+                    .contains("15MB")
+            );
+        }
+        assert!(validate_reference_audio_file(path.to_str().unwrap()).contains("15MB"));
+        file.set_len(20 * 1024 * 1024 + 1).unwrap();
+        assert!(
+            validate_reference_audio_file_for_model(path.to_str().unwrap(), "3.4").contains("20MB")
+        );
+        let flac = directory.path().join("audio.flac");
+        std::fs::write(&flac, b"fLaC").unwrap();
+        assert_eq!(
+            validate_reference_audio_file_for_model(flac.to_str().unwrap(), "3.2_a"),
+            ""
+        );
+        assert!(
+            validate_reference_audio_file_for_model(flac.to_str().unwrap(), "3.4")
+                .contains("Supported: mp3, wav")
+        );
+    }
+
+    #[test]
+    fn protocol_transitions_are_preserved_across_supported_model_combinations() {
+        let mut combinations = 0;
+        for task_type in TASK_TYPES {
+            for model in MODEL_VERSIONS {
+                let supported = if *model == WAN_MODEL_VERSION {
+                    WAN_TASK_TYPES.contains(task_type)
+                } else {
+                    model_support()
+                        .get(*task_type)
+                        .is_some_and(|models| models.contains(*model))
+                };
+                if !supported {
+                    continue;
+                }
+                combinations += 1;
+                let mut settings = json!({
+                    "model_version": model, "duration": 5, "resolution": "1080p",
+                    "sample_count": 1, "schedule_mode": "normal",
+                });
+                for transition in TRANSITIONS {
+                    settings["transition"] = json!(transition);
+                    assert_eq!(
+                        validate_generation_settings(task_type, &settings),
+                        "",
+                        "{} {} {}",
+                        task_type,
+                        model,
+                        transition
+                    );
+                }
+                for transition in [json!("invented"), json!(17), Value::Null] {
+                    settings["transition"] = transition;
+                    let error = validate_generation_settings(task_type, &settings);
+                    assert!(
+                        error.contains("transition"),
+                        "{} {}: {}",
+                        task_type,
+                        model,
+                        error
+                    );
+                }
+            }
+        }
+        assert_eq!(combinations, 37);
+    }
+
+    #[test]
+    fn sd_output_options_follow_native_and_configured_upscale_paths() {
+        for task_type in [
+            "text2video",
+            "img2video",
+            "headtailimg2video",
+            "character2video",
+        ] {
+            let mut settings = json!({"model_version":"3.2_a", "duration":5, "resolution":"720p"});
+            for resolution in ["480p", "720p", "1080p", "2k", "4k"] {
+                settings["resolution"] = json!(resolution);
+                for ratio in ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive", ""] {
+                    settings["aspect_ratio"] = json!(ratio);
+                    assert_eq!(
+                        validate_generation_settings(task_type, &settings),
+                        "",
+                        "{} {} {}",
+                        task_type,
+                        resolution,
+                        ratio
+                    );
+                }
+            }
+            for resolution in ["540p", "8k"] {
+                settings["resolution"] = json!(resolution);
+                assert!(validate_generation_settings(task_type, &settings)
+                    .contains("Invalid resolution"));
+            }
+            settings["resolution"] = json!("720p");
+            for ratio in ["9:21", "7:5", "3:2"] {
+                settings["aspect_ratio"] = json!(ratio);
+                assert!(validate_generation_settings(task_type, &settings)
+                    .contains("Invalid aspect_ratio"));
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_video_custom_ratios_do_not_widen_special_model_enums() {
+        for model in ["3.0", "3.1", "3.1_pro", "3.2", "3.4"] {
+            let mut settings = json!({"model_version":model, "duration":5, "resolution":"1080p", "transition":"speed"});
+            for ratio in ["21:9", "7:5", "9:21", ""] {
+                settings["aspect_ratio"] = json!(ratio);
+                assert_eq!(
+                    validate_generation_settings("character2video", &settings),
+                    "",
+                    "{} {}",
+                    model,
+                    ratio
+                );
+            }
+            for ratio in ["adaptive", "foo", "0:1", "1:-2", "NaN:1", "1:inf"] {
+                settings["aspect_ratio"] = json!(ratio);
+                assert!(validate_generation_settings("character2video", &settings)
+                    .contains("Invalid aspect_ratio"));
+            }
+        }
+        for model in [DRAMA_MODEL_VERSION, WAN_MODEL_VERSION] {
+            let mut settings = json!({"model_version":model, "duration":5, "resolution":"720p"});
+            settings["aspect_ratio"] = json!("7:5");
+            assert!(validate_generation_settings("character2video", &settings)
+                .contains("Invalid aspect_ratio"));
+        }
+        let ordinary =
+            json!({"model_version":"3.2", "duration":5, "resolution":"480p", "transition":"speed"});
+        assert!(validate_generation_settings("character2video", &ordinary)
+            .contains("Invalid resolution"));
+    }
+
+    #[test]
+    fn editor_mode_follows_protocol_representation_and_professional_model_gate() {
+        for model in [
+            "3.0",
+            "3.1",
+            "3.1_pro",
+            "3.2",
+            "3.2_a",
+            "3.4",
+            DRAMA_MODEL_VERSION,
+            WAN_MODEL_VERSION,
+        ] {
+            let mut body = make_body("character2video", model, 5, 1, 0);
+            body["settings"]["transition"] = json!("speed");
+            // Proto JSON accepts enum names, integer representations and null
+            // (unset). The generated validator has no defined-only enum rule.
+            for mode in [
+                json!("unspecified"),
+                json!("normal"),
+                json!(0),
+                json!(1),
+                json!(3),
+                Value::Null,
+            ] {
+                body["input"]["editor_mode"] = mode.clone();
+                assert_eq!(validate_task_body(&body), "", "{} {}", model, mode);
+            }
+            for mode in [json!("professional"), json!(2)] {
+                body["input"]["editor_mode"] = mode;
+                if model == "3.0" {
+                    assert_eq!(validate_task_body(&body), "");
+                } else {
+                    assert!(validate_task_body(&body).contains("professional editor_mode"));
+                }
+            }
+            for mode in [json!("edit"), json!(1.5), json!(i64::from(i32::MAX) + 1)] {
+                body["input"]["editor_mode"] = mode;
+                assert!(!validate_task_body(&body).is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn q4_basic_options_match_submit_and_cost() {
         for (task_type, min) in [("img2video", 3), ("character2video", 1)] {
             for duration in [min, 16] {
@@ -1701,7 +2215,7 @@ mod tests {
         assert!(!validate_q4_cost("text2video", 5, "1080p", None).is_empty());
         assert!(!validate_q4_cost("headtailimg2video", 5, "1080p", None).is_empty());
         assert!(!validate_q4_cost("img2video", 5, "8k", None).is_empty());
-        assert!(!validate_q4_cost("img2video", 5, "1080p", Some("pro")).is_empty());
+        assert_eq!(validate_q4_cost("img2video", 5, "1080p", Some("pro")), "");
         assert!(!validate_task_body(&make_body("character2video", "3.4", 5, 0, 0)).is_empty());
     }
 
@@ -1735,7 +2249,10 @@ mod tests {
             assert!(!validate_wan_cost("text2video", 5, "720p", None, None, count).is_empty());
         }
         assert!(!validate_wan_cost("text2image", 5, "720p", None, None, 1).is_empty());
-        assert!(!validate_wan_cost("text2video", 5, "720p", None, Some("speed"), 1).is_empty());
+        assert_eq!(
+            validate_wan_cost("text2video", 5, "720p", None, Some("speed"), 1),
+            ""
+        );
         assert_eq!(
             preferred_schedule_mode(Some(WAN_MODEL_VERSION), None),
             Ok(Some("normal".into()))
@@ -1772,7 +2289,7 @@ mod tests {
         }
         let mut legacy = make_body("text2video", DRAMA_MODEL_VERSION, 5, 0, 0);
         legacy["settings"]["aspect_ratio"] = json!("adaptive");
-        assert!(validate_task_body(&legacy).contains("only for Wan 3"));
+        assert!(validate_task_body(&legacy).contains("Invalid aspect_ratio"));
     }
 
     #[test]
@@ -1788,12 +2305,29 @@ mod tests {
             .set_len(60 * 1024 * 1024)
             .unwrap();
         assert_eq!(validate_wan_video_file(video.to_str().unwrap()), "");
-        assert!(validate_reference_video_file(video.to_str().unwrap()).contains("50MB"));
+        assert_eq!(validate_reference_video_file(video.to_str().unwrap()), "");
         let image = directory.path().join("small.png");
         image::RgbImage::new(240, 240).save(&image).unwrap();
         assert_eq!(validate_wan_image_file(image.to_str().unwrap()), "");
         image::RgbImage::new(239, 240).save(&image).unwrap();
         assert!(!validate_wan_image_file(image.to_str().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn wan_video_budget_is_independent_of_container_and_legacy_uploads() {
+        let directory = tempfile::tempdir().unwrap();
+        let video = directory.path().join("reference.mkv");
+        let file = std::fs::File::create(&video).unwrap();
+        file.set_len(100 * 1024 * 1024).unwrap();
+        // Parsing/probing the actual media is the task layer's responsibility;
+        // unidu's Wan metadata contract accepts video/* rather than extensions.
+        assert_eq!(validate_wan_video_file(video.to_str().unwrap()), "");
+        assert_eq!(validate_reference_video_file(video.to_str().unwrap()), "");
+        file.set_len(100 * 1024 * 1024 + 1).unwrap();
+        assert!(validate_wan_video_file(video.to_str().unwrap()).contains("100MB"));
+        assert_eq!(validate_reference_video_file(video.to_str().unwrap()), "");
+        file.set_len(0).unwrap();
+        assert!(validate_wan_video_file(video.to_str().unwrap()).contains("greater than zero"));
     }
 
     #[test]
@@ -1900,7 +2434,7 @@ mod tests {
         assert_eq!(validate_task_body(&character), "");
         character["input"]["prompts"].as_array_mut().unwrap().pop();
         character["settings"]["transition"] = json!("pro");
-        assert!(validate_task_body(&character).contains("does not support transition"));
+        assert_eq!(validate_task_body(&character), "");
 
         let mut character = make_body("character2video", DRAMA_MODEL_VERSION, 5, 1, 0);
         character["input"]["prompts"]
@@ -1912,9 +2446,12 @@ mod tests {
         assert!(validate_task_body(&character).contains("does not support 'extend'"));
         character["input"]["prompts"].as_array_mut().unwrap().pop();
         character["input"]["editor_mode"] = json!("edit");
-        assert!(validate_task_body(&character).contains("normal generation mode"));
+        assert!(validate_task_body(&character).contains("Invalid editor_mode"));
         assert!(!validate_drama_cost("text2video", 5, "540p", None).is_empty());
-        assert!(!validate_drama_cost("text2video", 5, "720p", Some("pro")).is_empty());
+        assert_eq!(
+            validate_drama_cost("text2video", 5, "720p", Some("pro")),
+            ""
+        );
     }
 
     #[test]
@@ -1956,10 +2493,14 @@ mod tests {
                 preferred_schedule_mode(model, Some("claw_pass")),
                 Ok(Some("claw_pass".into()))
             );
-            assert_eq!(
-                preferred_schedule_mode(model, Some("nopeak")),
-                Ok(Some("nopeak".into()))
-            );
+            if model == Some("3.2_a") {
+                assert!(preferred_schedule_mode(model, Some("nopeak")).is_err());
+            } else {
+                assert_eq!(
+                    preferred_schedule_mode(model, Some("nopeak")),
+                    Ok(Some("nopeak".into()))
+                );
+            }
         }
     }
 
@@ -2093,8 +2634,9 @@ mod tests {
 
     #[test]
     fn task_body_img2video_wrong_image_count() {
-        assert!(validate_task_body(&make_body("img2video", "3.1", 5, 0, 0))
-            .contains("requires exactly 1 image"));
+        let mut body = make_body("img2video", "3.1", 5, 0, 0);
+        body["settings"]["transition"] = json!("pro");
+        assert!(validate_task_body(&body).contains("requires exactly 1 image"));
     }
 
     #[test]
@@ -2106,16 +2648,23 @@ mod tests {
 
     #[test]
     fn task_body_headtail_wrong_count() {
-        assert!(
-            validate_task_body(&make_body("headtailimg2video", "3.1", 5, 1, 0))
-                .contains("requires exactly 2 images")
-        );
+        let mut body = make_body("headtailimg2video", "3.1", 5, 1, 0);
+        body["settings"]["transition"] = json!("pro");
+        assert!(validate_task_body(&body).contains("requires exactly 2 images"));
     }
 
     #[test]
-    fn task_body_character2video_too_many_refs() {
+    fn task_body_material_budget_counts_direct_images_without_guessing_components() {
+        assert_eq!(
+            validate_task_body(&make_body("character2video", "3.1", 5, 4, 4)),
+            ""
+        );
+        assert_eq!(
+            validate_task_body(&make_body("character2video", "3.1", 5, 8, 0)),
+            ""
+        );
         assert!(
-            validate_task_body(&make_body("character2video", "3.1", 5, 4, 4)).contains("max 7")
+            validate_task_body(&make_body("character2video", "3.1", 5, 8, 1)).contains("max 7")
         );
     }
 
@@ -2181,10 +2730,10 @@ mod tests {
     }
 
     #[test]
-    fn task_body_3_2_a_duration_rejects_auto() {
-        assert!(
-            validate_task_body(&make_body("text2video", "3.2_a", -1, 0, 0))
-                .contains("must be 4-15")
+    fn task_body_3_2_a_duration_accepts_auto() {
+        assert_eq!(
+            validate_task_body(&make_body("text2video", "3.2_a", -1, 0, 0)),
+            ""
         );
     }
 
@@ -2243,10 +2792,10 @@ mod tests {
     }
 
     #[test]
-    fn task_body_char2video_non_3_2_rejects_transition() {
+    fn task_body_char2video_non_3_2_accepts_protocol_transition() {
         let mut body = make_body("character2video", "3.1", 5, 1, 0);
         body["settings"]["transition"] = json!("pro");
-        assert!(validate_task_body(&body).contains("should not include transition"));
+        assert_eq!(validate_task_body(&body), "");
     }
 
     #[test]
@@ -2467,22 +3016,22 @@ mod tests {
     #[test]
     fn task_body_invalid_aspect_ratio() {
         let mut body = make_body("text2video", "3.2", 8, 0, 0);
-        body["settings"]["aspect_ratio"] = json!("21:9");
+        body["settings"]["aspect_ratio"] = json!("foo");
         assert!(validate_task_body(&body).contains("Invalid aspect_ratio"));
     }
 
     #[test]
-    fn task_body_text2image_rejects_transition() {
+    fn task_body_text2image_accepts_protocol_transition() {
         let mut body = make_body("text2image", "3.1", 0, 0, 0);
         body["settings"]["transition"] = json!("pro");
-        assert!(validate_task_body(&body).contains("should not include transition"));
+        assert_eq!(validate_task_body(&body), "");
     }
 
     #[test]
-    fn task_body_text2video_non_3_2_rejects_transition() {
+    fn task_body_text2video_non_3_2_accepts_protocol_transition() {
         let mut body = make_body("text2video", "3.1", 5, 0, 0);
         body["settings"]["transition"] = json!("pro");
-        assert!(validate_task_body(&body).contains("should not include transition"));
+        assert_eq!(validate_task_body(&body), "");
     }
 
     #[test]
@@ -2512,18 +3061,18 @@ mod tests {
     }
 
     #[test]
-    fn task_body_headtailimg2video_3_1_requires_transition() {
-        assert!(
-            validate_task_body(&make_body("headtailimg2video", "3.1", 5, 2, 0))
-                .contains("requires transition")
+    fn task_body_headtailimg2video_3_1_accepts_missing_transition() {
+        assert_eq!(
+            validate_task_body(&make_body("headtailimg2video", "3.1", 5, 2, 0)),
+            ""
         );
     }
 
     #[test]
-    fn task_body_headtailimg2video_3_2_requires_transition() {
-        assert!(
-            validate_task_body(&make_body("headtailimg2video", "3.2", 5, 2, 0))
-                .contains("requires transition")
+    fn task_body_headtailimg2video_3_2_accepts_missing_transition() {
+        assert_eq!(
+            validate_task_body(&make_body("headtailimg2video", "3.2", 5, 2, 0)),
+            ""
         );
     }
 
@@ -2535,10 +3084,10 @@ mod tests {
     }
 
     #[test]
-    fn task_body_headtailimg2video_invalid_transition() {
+    fn task_body_headtailimg2video_preserves_protocol_transition() {
         let mut body = make_body("headtailimg2video", "3.2", 5, 2, 0);
         body["settings"]["transition"] = json!("creative");
-        assert!(validate_task_body(&body).contains("Invalid transition"));
+        assert_eq!(validate_task_body(&body), "");
     }
 
     #[test]
@@ -2561,12 +3110,14 @@ mod tests {
 
     #[test]
     fn task_body_missing_enhance() {
-        let body = json!({
+        let mut body = json!({
             "type": "text2video",
             "input": { "prompts": [{"type": "text", "content": "test"}] },
             "settings": { "duration": 5, "model_version": "3.2", "resolution": "1080p", "schedule_mode": "normal" }
         });
-        assert!(validate_task_body(&body).contains("enhance is required"));
+        assert_eq!(validate_task_body(&body), "");
+        body["input"]["enhance"] = json!("true");
+        assert!(validate_task_body(&body).contains("enhance must be true or false"));
     }
 
     #[test]

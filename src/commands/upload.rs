@@ -6,6 +6,39 @@ use std::fs;
 use std::io::Cursor;
 
 const MAX_SIZE_MB: u64 = 10;
+const MIN_IMAGE_BYTES: usize = 512;
+
+pub(super) struct PreparedImage {
+    pub(super) bytes: Vec<u8>,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) mime: String,
+}
+
+fn validate_prepared_image_size(size: usize) -> Result<(), String> {
+    if size < MIN_IMAGE_BYTES {
+        return Err("Image upload must contain at least 512 bytes".into());
+    }
+    if size as u64 > MAX_SIZE_MB * 1024 * 1024 {
+        return Err("Image upload must not exceed 10 MiB after compression".into());
+    }
+    Ok(())
+}
+
+pub(super) fn prepare_image(image_path: &str) -> Result<PreparedImage, String> {
+    let err = validators::validate_image_file(image_path);
+    if !err.is_empty() {
+        return Err(err);
+    }
+    let (bytes, width, height, mime) = compress_image_if_needed(image_path);
+    validate_prepared_image_size(bytes.len())?;
+    Ok(PreparedImage {
+        bytes,
+        width,
+        height,
+        mime,
+    })
+}
 
 fn upload_headers(reply: &serde_json::Value, mime: String) -> HashMap<String, String> {
     let mut headers: HashMap<String, String> = match reply.get("headers") {
@@ -105,12 +138,18 @@ pub fn run(image_path: &str) {
 }
 
 pub fn upload_and_get_uri(image_path: &str) -> String {
-    let err = validators::validate_image_file(image_path);
-    if !err.is_empty() {
-        client::fail("client_error", &err, None, None, None);
-    }
+    let image = prepare_image(image_path)
+        .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
+    upload_prepared_image(image)
+}
 
-    let (image_bytes, width, height, mime) = compress_image_if_needed(image_path);
+pub(super) fn upload_prepared_image(image: PreparedImage) -> String {
+    let PreparedImage {
+        bytes: image_bytes,
+        width,
+        height,
+        mime,
+    } = image;
 
     // Step 1: Create upload
     let body = json!({
@@ -319,13 +358,31 @@ pub fn upload_media_and_get_uri_with_metadata(
     path: &str,
     metadata: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> String {
+    upload_media(path, metadata, true)
+}
+
+/// Ordinary generation has no color-metadata requirement. Keep the optional
+/// local repair, but let the backend accept the original when ffmpeg is absent.
+pub fn upload_reference_media_with_metadata(
+    path: &str,
+    metadata: Option<serde_json::Map<String, serde_json::Value>>,
+) -> String {
+    upload_media(path, metadata, false)
+}
+
+fn upload_media(
+    path: &str,
+    metadata: Option<serde_json::Map<String, serde_json::Value>>,
+    require_color_repair: bool,
+) -> String {
     let _color_tmp = if is_video_file(path) {
         match check_color_metadata(path) {
             Some(true) => None,
             Some(false) => {
                 match inject_color_metadata(path) {
                     Some(tmp) => Some(tmp),
-                    None => client::fail("client_error", "Video is missing color metadata. Failed to inject it — ffmpeg may have encountered an error.", None, None, None),
+                    None if require_color_repair => client::fail("client_error", "Video is missing color metadata. Failed to inject it — ffmpeg may have encountered an error.", None, None, None),
+                    None => None,
                 }
             }
             None => None, // ffprobe unavailable, skip check — codec fallback handles this
@@ -404,6 +461,27 @@ pub fn upload_media_and_get_uri_with_metadata(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prepared_image_size_matches_upload_boundaries() {
+        assert!(validate_prepared_image_size(511).is_err());
+        assert!(validate_prepared_image_size(512).is_ok());
+        assert!(validate_prepared_image_size(10 * 1024 * 1024).is_ok());
+        assert!(validate_prepared_image_size(10 * 1024 * 1024 + 1).is_err());
+    }
+
+    #[test]
+    fn prepare_image_rejects_a_decodable_image_below_upload_minimum() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiny.png");
+        let bytes = png_fixture();
+        assert!(bytes.len() < MIN_IMAGE_BYTES);
+        fs::write(&path, bytes).unwrap();
+        assert!(prepare_image(path.to_str().unwrap())
+            .err()
+            .unwrap()
+            .contains("512 bytes"));
+    }
+
     fn png_fixture() -> Vec<u8> {
         let image = image::DynamicImage::new_rgb8(3, 2);
         let mut bytes = Cursor::new(Vec::new());
