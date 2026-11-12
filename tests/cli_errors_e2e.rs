@@ -186,7 +186,6 @@ fn wan_invalid_options_fail_before_network_or_file_access() {
             (vec!["--duration", "-1"], "out of range [2, 30]"),
             (vec!["--resolution", "4k"], "Invalid resolution"),
             (vec!["--sample-count", "5"], "sample_count must be 1-4"),
-            (vec!["--transition", "speed"], "does not support transition"),
             (
                 vec!["--schedule-mode", "claw_pass"],
                 "only --schedule-mode normal",

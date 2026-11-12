@@ -325,7 +325,9 @@ fn normalize_model_override(
             "stable"
         };
         settings["transition"] = json!(transition);
-    } else if ["pro", "speed"].contains(&old_transition) {
+    } else if ["pro", "speed"].contains(&old_transition)
+        || (new_model == "3.2" && task_type == "character2video" && old_transition == "pro_ad")
+    {
         // Already valid in the target model; preserve the user's choice.
     } else if ["3.1", "3.2"].contains(&new_model) {
         // Legacy creative/stable are not equivalent to quality/speed modes.
@@ -440,11 +442,10 @@ fn rerun_body(
         ],
     );
     // Proto defaults and server derived values are not valid explicit overrides.
-    if settings["transition"] == "unspecified" {
-        settings.as_object_mut().unwrap().remove("transition");
-    }
-    if settings["schedule_mode"] == "unspecified" {
-        settings.as_object_mut().unwrap().remove("schedule_mode");
+    for field in ["transition", "schedule_mode", "codec"] {
+        if settings[field] == "unspecified" {
+            settings.as_object_mut().unwrap().remove(field);
+        }
     }
     if let Some(model) = model {
         if raw["settings"]["model_version"].as_str() != Some(model) {
@@ -474,6 +475,9 @@ fn rerun_body(
             }
         }
     }
+    // Use the same server-compatible defaults as
+    // submit and cost, preserving original fields for backend trial/pricing rules.
+    tasks::normalize_generation_settings(task_type, &mut settings);
     let schedule = validators::preferred_schedule_mode(
         settings["model_version"].as_str(),
         settings["schedule_mode"].as_str(),
@@ -786,6 +790,107 @@ mod tests {
         let legacy = rerun_body(&missing_style, None, Some("3.0"), None, None, None).unwrap();
         assert_eq!(legacy["settings"]["style"], "general");
         assert_eq!(legacy["settings"]["transition"], "stable");
+    }
+    #[test]
+    fn rerun_q4_normalizes_history_and_uses_fifteen_image_boundary() {
+        let mut prompts = vec![json!({"type":"text", "content":"参考这些图片"})];
+        prompts.extend(
+            (0..15).map(|index| json!({"type":"image", "content":format!("ssupload:?id={index}")})),
+        );
+        let mut raw = json!({
+            "type":"character2video", "input":{"prompts":prompts},
+            "settings":{"model_version":"3.4", "duration":5, "resolution":"720p",
+                "sample_count":0, "transition":"pro", "schedule_mode":"unspecified"}
+        });
+        let body = rerun_body(&raw, None, None, None, None, None).unwrap();
+        assert_eq!(body["input"]["prompts"], raw["input"]["prompts"]);
+        assert_eq!(body["settings"]["sample_count"], 1);
+        assert_eq!(body["settings"]["schedule_mode"], "normal");
+        assert_eq!(body["settings"]["transition"], "pro");
+        raw["input"]["prompts"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"image", "content":"ssupload:?id=16"}));
+        assert!(rerun_body(&raw, None, None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn rerun_q4_frame_keeps_multiple_text_prompts_and_allows_image_only_history() {
+        let mut raw = json!({
+            "type":"img2video", "input":{"prompts":[
+                {"type":"text", "content":"scene"},
+                {"type":"text", "content":"blur", "negative":true},
+                {"type":"image", "content":"ssupload:?id=1"}]},
+            "settings":{"model_version":"3.4", "duration":5, "resolution":"720p"}
+        });
+        let body = rerun_body(&raw, None, None, None, None, None).unwrap();
+        assert_eq!(body["input"]["prompts"], raw["input"]["prompts"]);
+        raw["input"]["prompts"] = json!([
+            {"type":"image", "content":"ssupload:?id=1"}
+        ]);
+        assert!(rerun_body(&raw, None, None, None, None, None).is_ok());
+    }
+
+    #[test]
+    fn rerun_defers_prompt_length_and_revalidates_drama_sample_count() {
+        let mut raw = json!({
+            "type":"character2video",
+            "input":{"prompts":[{"type":"text","content":"old"},
+                {"type":"image","content":"ssupload:?id=1"}]},
+            "settings":{"model_version":"3.4", "duration":5,"resolution":"720p"}
+        });
+        assert!(rerun_body(&raw, Some(&"猫🐈".repeat(10_000)), None, None, None, None).is_ok());
+        let long_prompt = "猫".repeat(20_001);
+        let body = rerun_body(&raw, Some(&long_prompt), None, None, None, None).unwrap();
+        assert_eq!(body["input"]["prompts"][0]["content"], long_prompt);
+        assert!(rerun_body(&raw, Some(" \t\n"), None, None, None, None).is_err());
+        raw["settings"]["model_version"] = json!(validators::DRAMA_MODEL_VERSION);
+        raw["settings"]["sample_count"] = json!(4);
+        assert!(rerun_body(&raw, None, None, None, None, None).is_ok());
+        raw["settings"]["sample_count"] = json!(5);
+        assert!(rerun_body(&raw, None, None, None, None, None).is_err());
+    }
+
+    #[test]
+    fn rerun_normalizes_historical_codec_without_accepting_invalid_codecs() {
+        let mut raw = json!({
+            "type":"text2video", "input":{"prompts":[{"type":"text","content":"cat"}]},
+            "settings":{"model_version":"3.2", "duration":5,
+                "resolution":"1080p", "codec":"unspecified"}
+        });
+        let body = rerun_body(&raw, None, None, None, None, None).unwrap();
+        assert!(body["settings"].get("codec").is_none());
+        for codec in validators::CODECS {
+            raw["settings"]["codec"] = json!(codec);
+            let body = rerun_body(&raw, None, None, None, None, None).unwrap();
+            assert_eq!(body["settings"]["codec"], *codec);
+        }
+        raw["settings"]["codec"] = json!("unsupported");
+        assert!(rerun_body(&raw, None, None, None, None, None)
+            .unwrap_err()
+            .contains("Invalid codec"));
+    }
+
+    #[test]
+    fn rerun_defaults_image_duration_and_drama_proto_fields() {
+        let raw = json!({
+            "type":"text2image", "input":{"prompts":[{"type":"text","content":"cat"}]},
+            "settings":{"model_version":"3.2_image_2_5_fast", "duration":5,
+                "resolution":"1080p", "aspect_ratio":"9:21", "sample_count":0}
+        });
+        let body = rerun_body(&raw, None, None, None, None, None).unwrap();
+        assert_eq!(body["settings"]["duration"], 0);
+        assert_eq!(body["settings"]["aspect_ratio"], "9:21");
+        assert_eq!(body["settings"]["sample_count"], 1);
+        let raw = json!({
+            "type":"text2video", "input":{"prompts":[{"type":"text","content":"cat"}]},
+            "settings":{"model_version":validators::DRAMA_MODEL_VERSION,
+                "duration":0, "resolution":"", "aspect_ratio":"", "sample_count":0}
+        });
+        let body = rerun_body(&raw, None, None, None, None, None).unwrap();
+        assert_eq!(body["settings"]["duration"], 5);
+        assert_eq!(body["settings"]["resolution"], "720p");
+        assert_eq!(body["settings"]["aspect_ratio"], "16:9");
     }
     #[test]
     fn identifiers_and_terminal_states() {

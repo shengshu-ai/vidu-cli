@@ -10,6 +10,73 @@ struct NormalizedTaskSettings {
     aspect_ratio: Option<String>,
 }
 
+/// Match the backend's request normalization before shared settings validation.
+/// Used by submit, quote, and rerun so all three send the same effective settings.
+pub(super) fn normalize_generation_settings(task_type: &str, settings: &mut Value) {
+    let Some(settings) = settings.as_object_mut() else {
+        return;
+    };
+    let model = settings
+        .get("model_version")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if settings
+        .get("sample_count")
+        .is_none_or(|value| value.as_i64() == Some(0))
+    {
+        settings.insert("sample_count".into(), json!(1));
+    }
+    if ["text2image", "reference2image"].contains(&task_type) {
+        settings.insert("duration".into(), json!(0));
+    } else if [
+        validators::DRAMA_MODEL_VERSION,
+        validators::WAN_MODEL_VERSION,
+    ]
+    .contains(&model.as_str())
+    {
+        if settings
+            .get("duration")
+            .is_none_or(|value| value.as_i64() == Some(0))
+        {
+            settings.insert("duration".into(), json!(5));
+        }
+        for (field, default) in [("resolution", "720p"), ("aspect_ratio", "16:9")] {
+            if settings
+                .get(field)
+                .is_none_or(|value| value.as_str() == Some(""))
+            {
+                settings.insert(field.into(), json!(default));
+            }
+        }
+    }
+    // Preserve explicit transitions: Vidu uses the original value for trials,
+    // entitlement checks and pricing before a model may ignore or clear it.
+    if settings
+        .get("transition")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.is_empty() || value == "unspecified")
+    {
+        settings.remove("transition");
+    }
+    if model == "3.0"
+        && task_type == "img2video"
+        && settings
+            .get("transition")
+            .is_none_or(|value| value.as_str() == Some(""))
+    {
+        settings.insert("transition".into(), json!("stable"));
+    }
+    if model == "3.0"
+        && task_type == "text2video"
+        && settings
+            .get("style")
+            .is_none_or(|value| value.as_str() == Some(""))
+    {
+        settings.insert("style".into(), json!("general"));
+    }
+}
+
 fn normalize_task_settings(
     task_type: &str,
     model_version: &str,
@@ -43,10 +110,16 @@ fn normalize_task_settings(
         .or_else(|| has_video_defaults.then_some("16:9"))
         .map(str::to_string);
 
+    let mut normalized =
+        json!({"model_version": model_version, "duration": duration, "resolution": resolution});
+    if let Some(aspect_ratio) = aspect_ratio {
+        normalized["aspect_ratio"] = json!(aspect_ratio);
+    }
+    normalize_generation_settings(task_type, &mut normalized);
     Ok(NormalizedTaskSettings {
-        duration,
-        resolution,
-        aspect_ratio,
+        duration: normalized["duration"].as_i64().unwrap(),
+        resolution: normalized["resolution"].as_str().unwrap().into(),
+        aspect_ratio: normalized["aspect_ratio"].as_str().map(str::to_string),
     })
 }
 
@@ -98,6 +171,7 @@ fn build_submit_body(
     if movement_amplitude != "auto" {
         body["settings"]["movement_amplitude"] = json!(movement_amplitude);
     }
+    normalize_generation_settings(task_type, &mut body["settings"]);
     body
 }
 
@@ -110,34 +184,27 @@ fn build_credit_query_params(
     codec: &str,
     schedule_mode: &str,
 ) -> std::collections::HashMap<String, String> {
-    let mut params = std::collections::HashMap::new();
-    params.insert("type".to_string(), task_type.to_string());
-    params.insert(
-        "settings.model_version".to_string(),
-        model_version.to_string(),
+    let body = build_submit_body(
+        task_type,
+        Vec::new(),
+        settings.duration,
+        model_version,
+        settings.aspect_ratio.as_deref(),
+        transition,
+        &settings.resolution,
+        sample_count,
+        codec,
+        "auto",
+        Some(schedule_mode),
+        None,
     );
-    params.insert(
-        "settings.duration".to_string(),
-        settings.duration.to_string(),
-    );
-    params.insert(
-        "settings.resolution".to_string(),
-        settings.resolution.clone(),
-    );
-    params.insert(
-        "settings.sample_count".to_string(),
-        sample_count.to_string(),
-    );
-    params.insert("settings.codec".to_string(), codec.to_string());
-    params.insert(
-        "settings.schedule_mode".to_string(),
-        schedule_mode.to_string(),
-    );
-    if let Some(ar) = settings.aspect_ratio.as_deref() {
-        params.insert("settings.aspect_ratio".to_string(), ar.to_string());
-    }
-    if let Some(tr) = transition {
-        params.insert("settings.transition".to_string(), tr.to_string());
+    let mut params = std::collections::HashMap::from([("type".into(), task_type.into())]);
+    for (key, value) in body["settings"].as_object().unwrap() {
+        let value = value
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string());
+        params.insert(format!("settings.{key}"), value);
     }
     params
 }
@@ -182,6 +249,96 @@ fn resolve_prompt_inputs(prompt: Option<&str>, prompt_path: Option<&str>) -> Opt
         }
     }
     None
+}
+
+fn generation_preflight_prompts(
+    prompt: &str,
+    images: &[String],
+    materials: &[String],
+    audios: &[String],
+    videos: &[String],
+) -> Result<Vec<Value>, String> {
+    let mut prompts = vec![json!({"type": "text", "content": prompt})];
+    for (kind, inputs) in [("image", images), ("audio", audios), ("video", videos)] {
+        prompts.extend(inputs.iter().map(|input| {
+            let content = if input.starts_with("ssupload:") {
+                input.as_str()
+            } else {
+                "ssupload:?id=1"
+            };
+            json!({"type": kind, "content": content})
+        }));
+    }
+    for material in materials {
+        let parts: Vec<_> = material.split(':').collect();
+        if parts.len() != 3 {
+            return Err(format!(
+                "Invalid material format '{}'. Expected 'name:id:version'",
+                material
+            ));
+        }
+        prompts.push(json!({"type": "material", "name": parts[0], "material": {"id": parts[1], "version": parts[2]}}));
+    }
+    Ok(prompts)
+}
+
+enum PreparedImageInput {
+    Uploaded(String),
+    Local(crate::commands::upload::PreparedImage),
+}
+
+fn prepare_generation_image_input(
+    input: &str,
+    model_version: &str,
+) -> Result<PreparedImageInput, String> {
+    if input.starts_with("ssupload:") {
+        return Ok(PreparedImageInput::Uploaded(input.into()));
+    }
+    let mut temporary = None;
+    let path = if input.starts_with("http://") || input.starts_with("https://") {
+        let mut response = reqwest::blocking::get(input)
+            .and_then(reqwest::blocking::Response::error_for_status)
+            .map_err(|error| {
+                format!(
+                    "Failed to download image: {}",
+                    client::network_error_message(error, input)
+                )
+            })?;
+        let mut file = tempfile::NamedTempFile::new()
+            .map_err(|error| format!("Cannot prepare image: {error}"))?;
+        std::io::copy(&mut response, &mut file)
+            .map_err(|error| format!("Cannot download image: {error}"))?;
+        temporary = Some(file);
+        temporary
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_str()
+            .ok_or("Image path is not valid UTF-8")?
+    } else {
+        input
+    };
+    let image = crate::commands::upload::prepare_image(path)?;
+    validate_prepared_generation_image(&image, model_version)?;
+    drop(temporary);
+    Ok(PreparedImageInput::Local(image))
+}
+
+fn validate_prepared_generation_image(
+    image: &crate::commands::upload::PreparedImage,
+    model_version: &str,
+) -> Result<(), String> {
+    if model_version == validators::WAN_MODEL_VERSION {
+        if !["image/jpeg", "image/png", "image/bmp", "image/webp"].contains(&image.mime.as_str()) {
+            return Err("Wan 3 reference images must be JPEG, PNG, BMP, or WebP".into());
+        }
+        validators::validate_wan_media_dimensions(image.width, image.height, 8000)?;
+    } else if model_version == validators::DRAMA_MODEL_VERSION
+        && !["image/jpeg", "image/png", "image/webp"].contains(&image.mime.as_str())
+    {
+        return Err("Drama reference images must be JPEG, PNG, or WebP".into());
+    }
+    Ok(())
 }
 
 pub fn process_image_input(input: &str) -> String {
@@ -261,12 +418,14 @@ fn reference_audio_durations(
             if audio.starts_with("http://") || audio.starts_with("https://") {
                 client::fail("client_error", "HTTP/HTTPS URLs are not supported for audio input. Use a local file path or ssupload:?id=...", None, None, None);
             }
-            let err = validators::validate_reference_audio_file(audio);
+            let err = validators::validate_reference_audio_file_for_model(audio, model_version);
             if !err.is_empty() {
                 client::fail("client_error", &err, None, None, None);
             }
             let duration = read_audio_duration_f64(audio);
-            total += duration;
+            // Files.GetUploadMetadata rounds each upload's duration before the
+            // generation validator checks per-file and aggregate limits.
+            total += duration.round();
             if let Err(err) = validate_reference_audio_duration(
                 model_version,
                 duration,
@@ -284,12 +443,11 @@ fn validate_reference_audio_duration(
     model_version: &str,
     duration: f64,
     total_duration: f64,
-    has_reference_video: bool,
+    _has_reference_video: bool,
 ) -> Result<(), String> {
+    let duration = duration.round();
     let range = match model_version {
-        "3.2_a" => Some((2.0, 15.0)),
         "3.4" => Some((1.0, 16.0)),
-        validators::DRAMA_MODEL_VERSION if has_reference_video => Some((2.0, 30.0)),
         validators::DRAMA_MODEL_VERSION => Some((4.0, 30.0)),
         validators::WAN_MODEL_VERSION => Some((1.0, 15.0)),
         _ => None,
@@ -302,7 +460,7 @@ fn validate_reference_audio_duration(
             ));
         }
     }
-    if ["3.2_a", validators::WAN_MODEL_VERSION].contains(&model_version) && total_duration > 15.0 {
+    if model_version == validators::WAN_MODEL_VERSION && total_duration > 15.0 {
         return Err(format!(
             "Total audio duration {:.1}s exceeds 15s",
             total_duration
@@ -321,6 +479,15 @@ fn validate_local_reference_video_durations(
     model_version: &str,
     durations: &[f64],
 ) -> Result<(), String> {
+    if ![
+        validators::DRAMA_MODEL_VERSION,
+        validators::WAN_MODEL_VERSION,
+    ]
+    .contains(&model_version)
+    {
+        return Ok(());
+    }
+    let durations: Vec<f64> = durations.iter().map(|duration| duration.round()).collect();
     let is_drama = model_version == validators::DRAMA_MODEL_VERSION;
     if model_version == validators::WAN_MODEL_VERSION {
         if let Some(duration) = durations.iter().find(|d| !(1.0..=15.0).contains(*d)) {
@@ -362,13 +529,11 @@ fn inspect_reference_videos(
         client::fail("client_error", &video_error, None, None, None);
     }
 
-    let mut frame_rates = Vec::with_capacity(videos.len());
     let durations: Vec<Option<f64>> = videos
         .iter()
         .map(|video_input| {
             if video_input.starts_with("ssupload:") {
                 // The backend validates the complete metadata set for existing uploads.
-                frame_rates.push(None);
                 return None;
             }
             if video_input.starts_with("http://") || video_input.starts_with("https://") {
@@ -393,86 +558,35 @@ fn inspect_reference_videos(
                     None,
                 ),
             };
-            let (w, h) = match metadata.dimensions {
-                Some(dimensions) => dimensions,
-                None => client::fail(
-                    "client_error",
-                    &format_local_video_dimensions_error(video_input),
-                    None,
-                    None,
-                    None,
-                ),
-            };
-            let geometry = if model_version == validators::WAN_MODEL_VERSION {
-                validators::validate_wan_media_dimensions(w, h, 4096)
-            } else {
-                validate_local_reference_video_geometry(video_input, w, h)
-            };
-            if let Err(error) = geometry {
-                client::fail("client_error", &error, None, None, None);
+            if model_version == validators::WAN_MODEL_VERSION {
+                let (w, h) = metadata.dimensions.unwrap_or_else(|| client::fail(
+                    "client_error", &format_local_video_dimensions_error(video_input), None, None, None));
+                if let Err(error) = validators::validate_wan_media_dimensions(w, h, 4096) {
+                    client::fail("client_error", &error, None, None, None);
+                }
             }
-
-            let duration = match metadata.duration {
-                Some(value) => value,
-                None => client::fail(
-                    "client_error",
-                    &format_local_video_duration_error(video_input),
-                    None,
-                    None,
-                    None,
-                ),
-            };
-            frame_rates.push(metadata.average_frame_rate);
-            Some(duration)
+            if metadata.duration.is_none() && [validators::DRAMA_MODEL_VERSION, validators::WAN_MODEL_VERSION].contains(&model_version) {
+                client::fail("client_error", &format_local_video_duration_error(video_input), None, None, None);
+            }
+            metadata.duration
         })
         .collect();
     let local_durations: Vec<f64> = durations.iter().filter_map(|duration| *duration).collect();
     if let Err(err) = validate_local_reference_video_durations(model_version, &local_durations) {
         client::fail("client_error", &err, None, None, None);
     }
-    if model_version == validators::DRAMA_MODEL_VERSION {
-        for (video_input, frame_rate) in videos.iter().zip(&frame_rates) {
-            if video_input.starts_with("ssupload:") {
-                continue;
-            }
-            if let Err(error) = validate_local_reference_video_frame_rate(video_input, *frame_rate)
-            {
-                client::fail("client_error", &error, None, None, None);
-            }
-        }
-    }
-    if model_version == validators::WAN_MODEL_VERSION {
-        for (video_input, frame_rate) in videos.iter().zip(&frame_rates) {
-            if !video_input.starts_with("ssupload:") {
-                if let Err(error) = validate_wan_video_frame_rate(*frame_rate) {
-                    client::fail("client_error", &error, None, None, None);
-                }
-            }
-        }
-    }
     durations
-}
-
-fn validate_wan_video_frame_rate(frame_rate: Option<AverageFrameRate>) -> Result<(), String> {
-    match frame_rate {
-        Some(rate)
-            if rate.duration_ticks > 0
-                && rate
-                    .duration_ticks
-                    .checked_mul(16)
-                    .is_some_and(|min| rate.numerator >= min) =>
-        {
-            Ok(())
-        }
-        _ => Err("Wan 3 reference video frame rate must be at least 16 fps".into()),
-    }
 }
 
 fn validate_wan_video_output_duration(
     output_duration: i64,
     durations: &[Option<f64>],
 ) -> Result<(), String> {
-    let total: f64 = durations.iter().flatten().sum();
+    let total: f64 = durations
+        .iter()
+        .flatten()
+        .map(|duration| duration.round())
+        .sum();
     if total > 0.0 && total + output_duration as f64 > 30.0 {
         return Err("Wan 3 input video duration plus output duration must not exceed 30s".into());
     }
@@ -520,25 +634,14 @@ pub fn submit(
         None,
     )
     .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
-    let codec = if codec == "h265" && !crate::commands::upload::ffprobe_available() {
-        "h264"
-    } else {
-        codec
-    };
-    let schedule_mode = resolve_schedule_mode(schedule_mode, Some(model_version));
+    let preferred_schedule =
+        validators::preferred_schedule_mode(Some(model_version), schedule_mode)
+            .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
 
     // Validate all model-specific options and reference counts before performing uploads.
-    let mut preflight_prompts = vec![json!({"type": "text", "content": "preflight"})];
-    preflight_prompts.extend(
-        (0..images.len()).map(|_| json!({"type": "image", "content": "ssupload:?id=preflight"})),
-    );
-    preflight_prompts.extend((0..materials.len()).map(|_| json!({"type": "material", "name": "preflight", "material": {"id": "preflight", "version": "preflight"}})));
-    preflight_prompts.extend(
-        (0..audios.len()).map(|_| json!({"type": "audio", "content": "ssupload:?id=preflight"})),
-    );
-    preflight_prompts.extend(
-        (0..videos.len()).map(|_| json!({"type": "video", "content": "ssupload:?id=preflight"})),
-    );
+    let preflight_prompts =
+        generation_preflight_prompts(&prompt, images, materials, audios, videos)
+            .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
     let preflight_body = build_submit_body(
         task_type,
         preflight_prompts,
@@ -550,52 +653,12 @@ pub fn submit(
         sample_count,
         codec,
         movement_amplitude,
-        Some(&schedule_mode),
+        preferred_schedule.as_deref(),
         with_audio,
     );
     let preflight_error = validators::validate_task_body(&preflight_body);
     if !preflight_error.is_empty() {
         client::fail("client_error", &preflight_error, None, None, None);
-    }
-
-    for material in materials {
-        if material.split(':').count() != 3 {
-            client::fail(
-                "client_error",
-                &format!(
-                    "Invalid material format '{}'. Expected 'name:id:version'",
-                    material
-                ),
-                None,
-                None,
-                None,
-            );
-        }
-    }
-    for image in images {
-        if !image.starts_with("ssupload:")
-            && !image.starts_with("http://")
-            && !image.starts_with("https://")
-            && !Path::new(image).is_file()
-        {
-            client::fail(
-                "client_error",
-                &format!("Image file not found: {}", image),
-                None,
-                None,
-                None,
-            );
-        }
-        if model_version == validators::WAN_MODEL_VERSION
-            && !image.starts_with("ssupload:")
-            && !image.starts_with("http://")
-            && !image.starts_with("https://")
-        {
-            let error = validators::validate_wan_image_file(image);
-            if !error.is_empty() {
-                client::fail("client_error", &error, None, None, None);
-            }
-        }
     }
 
     let video_durations = inspect_reference_videos(task_type, model_version, videos);
@@ -607,11 +670,26 @@ pub fn submit(
     }
     let audio_durations =
         reference_audio_durations(task_type, model_version, audios, !videos.is_empty());
+    // Decode and prepare the complete image set before the first upload. HTTP
+    // inputs go through the same format, size, and model checks as local files.
+    let prepared_images: Vec<_> = images
+        .iter()
+        .map(|image| {
+            prepare_generation_image_input(image, model_version)
+                .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None))
+        })
+        .collect();
+    let schedule_mode = resolve_schedule_mode(schedule_mode, Some(model_version));
     let mut prompts = vec![json!({"type": "text", "content": prompt})];
 
     // Process images (auto-upload local files / URLs)
-    for img_input in images {
-        let ssupload_uri = process_image_input(img_input);
+    for image in prepared_images {
+        let ssupload_uri = match image {
+            PreparedImageInput::Uploaded(uri) => uri,
+            PreparedImageInput::Local(image) => {
+                crate::commands::upload::upload_prepared_image(image)
+            }
+        };
         prompts.push(json!({"type": "image", "content": ssupload_uri}));
     }
 
@@ -640,7 +718,7 @@ pub fn submit(
         let uri = if let Some(duration) = duration {
             let mut metadata = serde_json::Map::new();
             metadata.insert("duration".to_string(), json!(duration.to_string()));
-            crate::commands::upload::upload_media_and_get_uri_with_metadata(
+            crate::commands::upload::upload_reference_media_with_metadata(
                 audio_input,
                 Some(metadata),
             )
@@ -661,22 +739,15 @@ pub fn submit(
             video_input.clone()
         } else {
             let mut metadata = serde_json::Map::new();
-            let (width, height) = read_mp4_dimensions(video_input).unwrap_or_else(|| {
-                client::fail(
-                    "client_error",
-                    &format_local_video_dimensions_error(video_input),
-                    None,
-                    None,
-                    None,
-                )
-            });
-            // Files reads image-width/image-height for uploaded videos too.
-            metadata.insert("image-width".to_string(), json!(width.to_string()));
-            metadata.insert("image-height".to_string(), json!(height.to_string()));
+            if let Some((width, height)) = read_mp4_dimensions(video_input) {
+                // Files reads image-width/image-height for uploaded videos too.
+                metadata.insert("image-width".to_string(), json!(width.to_string()));
+                metadata.insert("image-height".to_string(), json!(height.to_string()));
+            }
             if let Some(duration) = duration {
                 metadata.insert("duration".to_string(), json!(duration.to_string()));
             }
-            crate::commands::upload::upload_media_and_get_uri_with_metadata(
+            crate::commands::upload::upload_reference_media_with_metadata(
                 video_input,
                 Some(metadata),
             )
@@ -1860,36 +1931,6 @@ fn video_track_dimensions(track: &mp4parse::Track) -> Option<(u32, u32)> {
 struct LocalVideoMetadata {
     dimensions: Option<(u32, u32)>,
     duration: Option<f64>,
-    average_frame_rate: Option<AverageFrameRate>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AverageFrameRate {
-    numerator: u128,
-    duration_ticks: u128,
-}
-
-impl AverageFrameRate {
-    fn as_f64(self) -> f64 {
-        self.numerator as f64 / self.duration_ticks as f64
-    }
-
-    fn is_within_q31_range(self) -> bool {
-        if self.numerator == 0 || self.duration_ticks == 0 {
-            return false;
-        }
-        let Some(minimum_numerator) = self.duration_ticks.checked_mul(24) else {
-            return false;
-        };
-        if self.numerator < minimum_numerator {
-            return false;
-        }
-
-        let Some(maximum_numerator) = self.duration_ticks.checked_mul(60) else {
-            return true;
-        };
-        self.numerator <= maximum_numerator
-    }
 }
 
 #[derive(Debug)]
@@ -1913,17 +1954,101 @@ fn local_video_metadata_from_context(
         // track that has readable dimensions; duration uses the first video track.
         dimensions: context.tracks.iter().find_map(video_track_dimensions),
         duration: video_track_duration_f64(first_video_track),
-        average_frame_rate: video_track_average_frame_rate(first_video_track),
     })
 }
 
 fn read_local_video_metadata(
     path: &str,
 ) -> Result<LocalVideoMetadata, LocalVideoMetadataReadError> {
+    read_local_video_metadata_with_probe(path, "ffprobe")
+}
+
+fn read_local_video_metadata_with_probe(
+    path: &str,
+    probe: &str,
+) -> Result<LocalVideoMetadata, LocalVideoMetadataReadError> {
     let file = std::fs::File::open(path).map_err(LocalVideoMetadataReadError::FileOpen)?;
     let mut reader = std::io::BufReader::new(file);
-    let context = mp4parse::read_mp4(&mut reader).map_err(LocalVideoMetadataReadError::Parse)?;
-    local_video_metadata_from_context(&context)
+    let parsed = mp4parse::read_mp4(&mut reader)
+        .map_err(LocalVideoMetadataReadError::Parse)
+        .and_then(|context| local_video_metadata_from_context(&context));
+    probe_missing_video_metadata(path, probe, parsed)
+}
+
+fn probe_missing_video_metadata(
+    path: &str,
+    probe: &str,
+    parsed: Result<LocalVideoMetadata, LocalVideoMetadataReadError>,
+) -> Result<LocalVideoMetadata, LocalVideoMetadataReadError> {
+    if parsed
+        .as_ref()
+        .is_ok_and(|metadata| metadata.dimensions.is_some() && metadata.duration.is_some())
+    {
+        return parsed;
+    }
+    // MP4/MOV parsing is built in. Other containers can use the user's existing
+    // ffprobe without narrowing the backend's video/* input contract.
+    let probed = std::process::Command::new(probe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_type,width,height,duration:format=duration",
+            "-of",
+            "json",
+            "-i",
+            path,
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok())
+        .and_then(|value| local_video_metadata_from_probe(&value));
+    match (parsed, probed) {
+        (Ok(native), Some(probed)) => Ok(supplement_local_video_metadata(native, probed)),
+        (Ok(native), None) => Ok(native),
+        (Err(_), Some(probed)) => Ok(probed),
+        (Err(error), None) => Err(error),
+    }
+}
+
+fn supplement_local_video_metadata(
+    native: LocalVideoMetadata,
+    probed: LocalVideoMetadata,
+) -> LocalVideoMetadata {
+    LocalVideoMetadata {
+        dimensions: native.dimensions.or(probed.dimensions),
+        duration: native.duration.or(probed.duration),
+    }
+}
+
+fn local_video_metadata_from_probe(value: &Value) -> Option<LocalVideoMetadata> {
+    let stream = value
+        .get("streams")?
+        .as_array()?
+        .iter()
+        .find(|stream| stream["codec_type"].as_str() == Some("video"))?;
+    let dimensions = stream
+        .get("width")
+        .and_then(Value::as_u64)
+        .zip(stream.get("height").and_then(Value::as_u64))
+        .and_then(|(width, height)| Some((u32::try_from(width).ok()?, u32::try_from(height).ok()?)))
+        .filter(|(width, height)| *width > 0 && *height > 0);
+    let duration = |value: &Value| {
+        value
+            .as_f64()
+            .or_else(|| value.as_str()?.parse::<f64>().ok())
+            .filter(|duration| duration.is_finite() && *duration > 0.0)
+    };
+    Some(LocalVideoMetadata {
+        dimensions,
+        duration: stream
+            .get("duration")
+            .and_then(duration)
+            .or_else(|| value.get("format")?.get("duration").and_then(duration)),
+    })
 }
 
 fn format_local_video_metadata_error(path: &str, error: LocalVideoMetadataReadError) -> String {
@@ -1933,7 +2058,7 @@ fn format_local_video_metadata_error(path: &str, error: LocalVideoMetadataReadEr
             path, error
         ),
         LocalVideoMetadataReadError::Parse(error) => format!(
-            "Cannot parse MP4/MOV metadata for '{}': {}. Re-export as MP4/MOV and retry.",
+            "Cannot inspect video metadata for '{}': built-in MP4/MOV parser failed ({}) and ffprobe could not read it. Install ffprobe or re-export as MP4/MOV.",
             path, error
         ),
         LocalVideoMetadataReadError::NoVideoTrack => {
@@ -1965,102 +2090,12 @@ fn video_track_duration_f64(track: &mp4parse::Track) -> Option<f64> {
     (timescale.0 > 0).then_some(duration.0 as f64 / timescale.0 as f64)
 }
 
-// The weighted stts sample durations provide the same average-rate measure
-// used by ffprobe's avg_frame_rate without requiring ffprobe at runtime.
-fn video_track_average_frame_rate(track: &mp4parse::Track) -> Option<AverageFrameRate> {
-    if track.track_type != mp4parse::TrackType::Video {
-        return None;
-    }
-    let timescale = track.timescale?.0;
-    if timescale == 0 {
-        return None;
-    }
-    let stts = track.stts.as_ref()?;
-    let (frame_count, duration_ticks) = stts.samples.iter().try_fold(
-        (0_u128, 0_u128),
-        |(frame_count, duration_ticks), sample| {
-            let sample_count = u128::from(sample.sample_count);
-            let sample_ticks = sample_count.checked_mul(u128::from(sample.sample_delta))?;
-            Some((
-                frame_count.checked_add(sample_count)?,
-                duration_ticks.checked_add(sample_ticks)?,
-            ))
-        },
-    )?;
-    if frame_count == 0 || duration_ticks == 0 {
-        return None;
-    }
-    Some(AverageFrameRate {
-        numerator: frame_count.checked_mul(u128::from(timescale))?,
-        duration_ticks,
-    })
-}
-
-fn validate_local_reference_video_frame_rate(
-    path: &str,
-    frame_rate: Option<AverageFrameRate>,
-) -> Result<(), String> {
-    let Some(frame_rate) = frame_rate else {
-        return Err(format!(
-            "Reference video '{}': cannot determine average FPS from valid video timing metadata; expected [24, 60] fps.",
-            path
-        ));
-    };
-    if frame_rate.is_within_q31_range() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Reference video '{}': average FPS {:.9} is outside allowed range [24, 60] fps.",
-            path,
-            frame_rate.as_f64()
-        ))
-    }
-}
-
 fn read_mp4_dimensions(path: &str) -> Option<(u32, u32)> {
     read_local_video_metadata(path).ok()?.dimensions
 }
 
 pub(super) fn read_video_duration_f64(path: &str) -> Option<f64> {
     read_local_video_metadata(path).ok()?.duration
-}
-
-fn validate_local_reference_video_geometry(
-    path: &str,
-    width: u32,
-    height: u32,
-) -> Result<(), String> {
-    let pixels = u64::from(width) * u64::from(height);
-    let aspect = (height > 0).then_some(width as f64 / height as f64);
-    let aspect_text = aspect
-        .map(|ratio| format!("{:.2}", ratio))
-        .unwrap_or_else(|| "undefined".to_string());
-
-    let violation = if aspect.is_none_or(|ratio| !(0.4..=2.5).contains(&ratio)) {
-        Some("aspect ratio must be in [0.4, 2.5]")
-    } else if !(300..=60000).contains(&width) {
-        Some("width must be in [300, 60000]")
-    } else if !(300..=60000).contains(&height) {
-        Some("height must be in [300, 60000]")
-    } else if !(409600..=2086876).contains(&pixels) {
-        Some("total pixels must be in [409600, 2086876]")
-    } else {
-        None
-    };
-
-    if let Some(violation) = violation {
-        let suggestion = if width < 300 || height < 300 || pixels < 409600 {
-            "Upscale/rescale the video while preserving its aspect ratio"
-        } else {
-            "Resize or re-export the video to meet the geometry constraints"
-        };
-        Err(format!(
-            "Reference video '{}': dimensions {}x{} ({} pixels, aspect ratio {}); {}. {}.",
-            path, width, height, pixels, aspect_text, violation, suggestion
-        ))
-    } else {
-        Ok(())
-    }
 }
 
 fn upload_local_media(path: &str) -> String {
@@ -2116,54 +2151,28 @@ pub fn query_credits(
         Some("1080p"),
     )
     .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
+    let preferred_schedule =
+        validators::preferred_schedule_mode(Some(model_version), schedule_mode)
+            .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
+    let quote_body = build_submit_body(
+        task_type,
+        Vec::new(),
+        settings.duration,
+        model_version,
+        settings.aspect_ratio.as_deref(),
+        transition,
+        &settings.resolution,
+        sample_count,
+        codec,
+        "auto",
+        preferred_schedule.as_deref(),
+        with_audio,
+    );
+    let err = validators::validate_generation_settings(task_type, &quote_body["settings"]);
+    if !err.is_empty() {
+        client::fail("client_error", &err, None, None, None);
+    }
     let schedule_mode = resolve_schedule_mode(schedule_mode, Some(model_version));
-
-    if model_version == validators::WAN_MODEL_VERSION {
-        let err = validators::validate_wan_cost(
-            task_type,
-            settings.duration,
-            &settings.resolution,
-            settings.aspect_ratio.as_deref(),
-            transition,
-            sample_count,
-        );
-        if !err.is_empty() {
-            client::fail("client_error", &err, None, None, None);
-        }
-    } else if settings
-        .aspect_ratio
-        .as_deref()
-        .is_some_and(|ratio| ["adaptive", "21:9"].contains(&ratio))
-    {
-        client::fail(
-            "client_error",
-            "adaptive and 21:9 aspect ratios are supported only for Wan 3",
-            None,
-            None,
-            None,
-        );
-    }
-    if model_version == "3.4" {
-        let err = validators::validate_q4_cost(
-            task_type,
-            settings.duration,
-            &settings.resolution,
-            transition,
-        );
-        if !err.is_empty() {
-            client::fail("client_error", &err, None, None, None);
-        }
-    } else if model_version == validators::DRAMA_MODEL_VERSION {
-        let err = validators::validate_drama_cost(
-            task_type,
-            settings.duration,
-            &settings.resolution,
-            transition,
-        );
-        if !err.is_empty() {
-            client::fail("client_error", &err, None, None, None);
-        }
-    }
     let mut params = build_credit_query_params(
         task_type,
         model_version,
@@ -2415,6 +2424,223 @@ mod tests {
     use super::*;
 
     #[test]
+    fn generation_normalization_matches_submit_quote_and_rerun_defaults() {
+        let mut q4 = json!({"model_version":"3.4", "transition":"legacy", "sample_count":0});
+        normalize_generation_settings("character2video", &mut q4);
+        assert_eq!(q4["transition"], "legacy");
+        assert_eq!(q4["sample_count"], 1);
+        let mut q1 = json!({"model_version":"3.0", "transition":""});
+        normalize_generation_settings("img2video", &mut q1);
+        assert_eq!(q1["transition"], "stable");
+        let mut q1_headtail = json!({"model_version":"3.0", "transition":"unspecified"});
+        normalize_generation_settings("headtailimg2video", &mut q1_headtail);
+        assert!(q1_headtail.get("transition").is_none());
+        let mut q1_text = json!({"model_version":"3.0"});
+        normalize_generation_settings("text2video", &mut q1_text);
+        assert_eq!(q1_text["style"], "general");
+        for model in [
+            validators::DRAMA_MODEL_VERSION,
+            validators::WAN_MODEL_VERSION,
+        ] {
+            let mut settings =
+                json!({"model_version":model,"duration":0,"resolution":"","aspect_ratio":""});
+            normalize_generation_settings("text2video", &mut settings);
+            assert_eq!(settings["duration"], 5);
+            assert_eq!(settings["resolution"], "720p");
+            assert_eq!(settings["aspect_ratio"], "16:9");
+        }
+        let mut image = json!({"model_version":"3.2_image_2", "duration":5});
+        normalize_generation_settings("text2image", &mut image);
+        assert_eq!(image["duration"], 0);
+    }
+
+    #[test]
+    fn q4_submit_and_quote_preserve_transition_for_backend_policy() {
+        let settings = normalize_task_settings(
+            "character2video",
+            "3.4",
+            Some(5),
+            Some("720p"),
+            Some("16:9"),
+            None,
+        )
+        .unwrap();
+        let body = build_submit_body(
+            "character2video",
+            vec![],
+            5,
+            "3.4",
+            Some("16:9"),
+            Some("pro"),
+            "720p",
+            0,
+            "h264",
+            "auto",
+            Some("normal"),
+            None,
+        );
+        assert_eq!(body["settings"]["transition"], "pro");
+        assert_eq!(body["settings"]["sample_count"], 1);
+        let params = build_credit_query_params(
+            "character2video",
+            "3.4",
+            &settings,
+            Some("pro"),
+            0,
+            "h264",
+            "normal",
+        );
+        assert_eq!(params["settings.transition"], "pro");
+        assert_eq!(params["settings.sample_count"], "1");
+        // Quotes validate settings alone; reference media are unnecessary.
+        assert_eq!(
+            validators::validate_generation_settings("character2video", &body["settings"]),
+            ""
+        );
+        let mut invalid = body["settings"].clone();
+        invalid["sample_count"] = json!(-1);
+        assert!(!validators::validate_generation_settings("character2video", &invalid).is_empty());
+    }
+
+    #[test]
+    fn generation_preflight_checks_real_prompt_and_material_values() {
+        let images = vec!["not-uploaded-yet.png".into()];
+        for (prompt, valid) in [(" ".into(), false), ("中".repeat(20_001), true)] {
+            let prompts = generation_preflight_prompts(&prompt, &images, &[], &[], &[]).unwrap();
+            assert_eq!(prompts[0]["content"], prompt);
+            let body = build_submit_body(
+                "character2video",
+                prompts,
+                5,
+                "3.4",
+                Some("16:9"),
+                None,
+                "720p",
+                1,
+                "h264",
+                "auto",
+                Some("normal"),
+                None,
+            );
+            assert_eq!(validators::validate_task_body(&body).is_empty(), valid);
+        }
+        let prompts =
+            generation_preflight_prompts("scene", &images, &["hero:0:1".into()], &[], &[]).unwrap();
+        let body = build_submit_body(
+            "character2video",
+            prompts,
+            5,
+            "3.4",
+            Some("16:9"),
+            None,
+            "720p",
+            1,
+            "h264",
+            "auto",
+            Some("normal"),
+            None,
+        );
+        assert!(!validators::validate_task_body(&body).is_empty());
+        assert!(generation_preflight_prompts("scene", &[], &["broken".into()], &[], &[]).is_err());
+    }
+
+    #[test]
+    fn pro_and_sd_accept_low_frame_rate_reference_without_geometry_rules() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/hevc_640x360_rotated.mp4"
+        )
+        .to_string();
+        for model in ["3.1_pro", "3.2_a"] {
+            // The fixture is 640x360 at 1 FPS: both formerly failed local
+            // geometry/FPS rules absent from these backend routes.
+            assert_eq!(
+                inspect_reference_videos("character2video", model, std::slice::from_ref(&path))
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_reference_image_rules_are_model_specific() {
+        let mut image = crate::commands::upload::PreparedImage {
+            bytes: vec![0; 512],
+            width: 240,
+            height: 240,
+            mime: "image/bmp".into(),
+        };
+        assert!(validate_prepared_generation_image(&image, validators::WAN_MODEL_VERSION).is_ok());
+        assert!(
+            validate_prepared_generation_image(&image, validators::DRAMA_MODEL_VERSION).is_err()
+        );
+        image.mime = "image/png".into();
+        image.width = 239;
+        assert!(validate_prepared_generation_image(&image, validators::WAN_MODEL_VERSION).is_err());
+        assert!(
+            validate_prepared_generation_image(&image, validators::DRAMA_MODEL_VERSION).is_ok()
+        );
+        assert!(validate_prepared_generation_image(&image, "3.4").is_ok());
+    }
+
+    #[test]
+    fn video_probe_metadata_accepts_backend_geometry_and_fractional_duration() {
+        let metadata = local_video_metadata_from_probe(&json!({
+            "streams":[{"codec_type":"video","width":320,"height":180,"duration":"3.6"}],
+            "format":{"duration":"4.0"}
+        }))
+        .unwrap();
+        assert_eq!(metadata.dimensions, Some((320, 180)));
+        assert_eq!(metadata.duration, Some(3.6));
+        assert!(local_video_metadata_from_probe(&json!({"streams":[]})).is_none());
+        assert!(local_video_metadata_from_probe(&json!({
+            "streams":[{"codec_type":"audio"}], "format":{"duration":"4.1"}
+        }))
+        .is_none());
+        let metadata = local_video_metadata_from_probe(&json!({
+            "streams":[{"codec_type":"video","width":320,"height":180}],"format":{"duration":"4.1"}
+        }))
+        .unwrap();
+        assert_eq!(metadata.duration, Some(4.1));
+        let native = LocalVideoMetadata {
+            dimensions: Some((640, 360)),
+            duration: None,
+        };
+        let merged = supplement_local_video_metadata(native, metadata);
+        assert_eq!(merged.dimensions, Some((640, 360)));
+        assert_eq!(merged.duration, Some(4.1));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn non_mp4_container_uses_existing_probe_without_a_model_format_rejection() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reference.webm");
+        std::fs::write(&path, b"container parsed by the isolated probe").unwrap();
+        let probe = dir.path().join("probe");
+        std::fs::write(&probe, "#!/bin/sh\nprintf '%s' '{\"streams\":[{\"codec_type\":\"video\",\"width\":320,\"height\":180}],\"format\":{\"duration\":\"4.1\"}}'\n").unwrap();
+        std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let metadata =
+            read_local_video_metadata_with_probe(path.to_str().unwrap(), probe.to_str().unwrap())
+                .unwrap();
+        assert_eq!(metadata.dimensions, Some((320, 180)));
+        assert_eq!(metadata.duration, Some(4.1));
+        let partial = LocalVideoMetadata {
+            dimensions: Some((640, 360)),
+            duration: None,
+        };
+        let metadata = probe_missing_video_metadata(
+            path.to_str().unwrap(),
+            probe.to_str().unwrap(),
+            Ok(partial),
+        )
+        .unwrap();
+        assert_eq!(metadata.dimensions, Some((640, 360)));
+        assert_eq!(metadata.duration, Some(4.1));
+    }
+
+    #[test]
     fn local_video_metadata_reader_distinguishes_open_and_parse_errors() {
         let temp_dir = tempfile::tempdir().unwrap();
         let missing = temp_dir.path().join("missing.mp4");
@@ -2429,9 +2655,9 @@ mod tests {
         let parse_error = read_local_video_metadata(damaged.to_str().unwrap()).unwrap_err();
         let parse_message =
             format_local_video_metadata_error(damaged.to_str().unwrap(), parse_error);
-        assert!(parse_message.contains("Cannot parse MP4/MOV metadata"));
+        assert!(parse_message.contains("Cannot inspect video metadata"));
         assert!(parse_message.contains(damaged.to_str().unwrap()));
-        assert!(parse_message.contains("Re-export as MP4/MOV and retry"));
+        assert!(parse_message.contains("Install ffprobe or re-export as MP4/MOV"));
     }
 
     #[test]
@@ -2460,110 +2686,8 @@ mod tests {
         let metadata = local_video_metadata_from_context(&context).unwrap();
         assert_eq!(metadata.dimensions, None);
         assert_eq!(metadata.duration, Some(4.0));
-        assert_eq!(metadata.average_frame_rate, None);
         assert!(format_local_video_dimensions_error("audio-only.mp4")
             .contains("has no readable dimensions"));
-    }
-
-    #[test]
-    fn local_reference_video_geometry_error_includes_path_details_and_resize_guidance() {
-        let error = validate_local_reference_video_geometry("sample.mp4", 704, 396).unwrap_err();
-        assert_eq!(
-            error,
-            "Reference video 'sample.mp4': dimensions 704x396 (278784 pixels, aspect ratio 1.78); total pixels must be in [409600, 2086876]. Upscale/rescale the video while preserving its aspect ratio."
-        );
-        assert_eq!(
-            validate_local_reference_video_geometry("sample.mp4", 864, 486),
-            Ok(())
-        );
-    }
-
-    fn video_track_with_timing(timescale: u64, entries: &[(u32, u32)]) -> mp4parse::Track {
-        let mut samples = mp4parse::TryVec::new();
-        for &(sample_count, sample_delta) in entries {
-            samples
-                .push(mp4parse::Sample {
-                    sample_count,
-                    sample_delta,
-                })
-                .unwrap();
-        }
-        mp4parse::Track {
-            track_type: mp4parse::TrackType::Video,
-            timescale: Some(mp4parse::TrackTimeScale(timescale, 1)),
-            stts: Some(mp4parse::TimeToSampleBox { samples }),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn local_reference_video_average_fps_accepts_inclusive_q31_bounds() {
-        let at_minimum =
-            video_track_average_frame_rate(&video_track_with_timing(24_000, &[(24, 1_000)]))
-                .unwrap();
-        let at_maximum =
-            video_track_average_frame_rate(&video_track_with_timing(60_000, &[(60, 1_000)]))
-                .unwrap();
-        assert!(at_minimum.is_within_q31_range());
-        assert!(at_maximum.is_within_q31_range());
-        assert_eq!(
-            validate_local_reference_video_frame_rate("minimum.mp4", Some(at_minimum)),
-            Ok(())
-        );
-        assert_eq!(
-            validate_local_reference_video_frame_rate("maximum.mp4", Some(at_maximum)),
-            Ok(())
-        );
-
-        // Weight sample timing by frame count: 48 frames over 2.4s is 20 FPS.
-        let variable_rate =
-            video_track_average_frame_rate(&video_track_with_timing(1_000, &[(24, 40), (24, 60)]))
-                .unwrap();
-        assert_eq!(variable_rate.as_f64(), 20.0);
-        assert!(!variable_rate.is_within_q31_range());
-        assert!(
-            validate_local_reference_video_frame_rate("vfr.mp4", Some(variable_rate))
-                .unwrap_err()
-                .contains("average FPS 20.000000000")
-        );
-    }
-
-    #[test]
-    fn local_reference_video_average_fps_rejects_out_of_range_rates_without_rounding() {
-        let below_minimum =
-            video_track_average_frame_rate(&video_track_with_timing(24_000, &[(24, 1_001)]))
-                .unwrap();
-        let above_maximum =
-            video_track_average_frame_rate(&video_track_with_timing(60_100, &[(60, 1_000)]))
-                .unwrap();
-        assert_eq!(below_minimum.as_f64(), 24_000.0 / 1_001.0);
-        assert!(!below_minimum.is_within_q31_range());
-        assert!(!above_maximum.is_within_q31_range());
-        assert_eq!(
-            validate_local_reference_video_frame_rate("ntsc.mp4", Some(below_minimum))
-                .unwrap_err(),
-            "Reference video 'ntsc.mp4': average FPS 23.976023976 is outside allowed range [24, 60] fps."
-        );
-        assert!(
-            validate_local_reference_video_frame_rate("fast.mp4", Some(above_maximum))
-                .unwrap_err()
-                .contains("average FPS 60.100000000")
-        );
-    }
-
-    #[test]
-    fn local_reference_video_average_fps_reports_missing_or_invalid_timing() {
-        let mut missing_stts = video_track_with_timing(24_000, &[]);
-        missing_stts.stts = None;
-        let zero_timescale = video_track_with_timing(0, &[(24, 1_000)]);
-        let zero_duration = video_track_with_timing(24_000, &[(24, 0)]);
-        for track in [missing_stts, zero_timescale, zero_duration] {
-            assert_eq!(video_track_average_frame_rate(&track), None);
-        }
-        let error = validate_local_reference_video_frame_rate("missing-fps.mp4", None).unwrap_err();
-        assert!(error.contains("missing-fps.mp4"));
-        assert!(error.contains("cannot determine average FPS"));
-        assert!(error.contains("[24, 60]"));
     }
 
     #[test]
@@ -2583,9 +2707,6 @@ mod tests {
             read_mp4_dimensions(path.to_str().unwrap()),
             Some((640, 360))
         );
-        let metadata = read_local_video_metadata(path.to_str().unwrap()).unwrap();
-        assert_eq!(metadata.average_frame_rate.unwrap().as_f64(), 1.0);
-
         let file = std::fs::File::open(&path).unwrap();
         let mut reader = std::io::BufReader::new(file);
         let context = mp4parse::read_mp4(&mut reader).unwrap();
@@ -2648,14 +2769,14 @@ mod tests {
             &[1.0, 14.0]
         )
         .is_ok());
-        for durations in [&[0.99][..], &[15.01][..], &[8.0, 8.0][..]] {
+        for durations in [&[0.49][..], &[15.5][..], &[8.0, 8.0][..]] {
             assert!(validate_local_reference_video_durations(
                 validators::WAN_MODEL_VERSION,
                 durations
             )
             .is_err());
         }
-        for (duration, total) in [(0.99, 0.99), (15.01, 15.01), (8.0, 16.0)] {
+        for (duration, total) in [(0.49, 0.0), (15.5, 16.0), (8.0, 16.0)] {
             assert!(validate_reference_audio_duration(
                 validators::WAN_MODEL_VERSION,
                 duration,
@@ -2671,19 +2792,6 @@ mod tests {
         assert!(validate_wan_video_output_duration(15, &[Some(15.0)]).is_ok());
         assert!(validate_wan_video_output_duration(16, &[Some(15.0), None]).is_err());
         assert!(validate_wan_video_output_duration(30, &[None]).is_ok());
-        for rate in [16, 60, 120] {
-            let fps = AverageFrameRate {
-                numerator: rate,
-                duration_ticks: 1,
-            };
-            assert!(validate_wan_video_frame_rate(Some(fps)).is_ok());
-        }
-        assert!(validate_wan_video_frame_rate(None).is_err());
-        assert!(validate_wan_video_frame_rate(Some(AverageFrameRate {
-            numerator: 15999,
-            duration_ticks: 1000
-        }))
-        .is_err());
     }
 
     #[test]
@@ -2779,77 +2887,70 @@ mod tests {
     }
 
     #[test]
-    fn drama_audio_duration_limits_follow_available_video_context() {
-        assert_eq!(
-            validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 4.0, 30.0, false),
-            Ok(())
-        );
+    fn reference_audio_limits_use_per_file_backend_rounding() {
+        for has_video in [false, true] {
+            assert!(validate_reference_audio_duration(
+                validators::DRAMA_MODEL_VERSION,
+                3.5,
+                4.0,
+                has_video
+            )
+            .is_ok());
+            assert!(validate_reference_audio_duration(
+                validators::DRAMA_MODEL_VERSION,
+                3.49,
+                3.0,
+                has_video
+            )
+            .is_err());
+            assert!(validate_reference_audio_duration(
+                validators::DRAMA_MODEL_VERSION,
+                30.49,
+                30.0,
+                has_video
+            )
+            .is_ok());
+            assert!(validate_reference_audio_duration(
+                validators::DRAMA_MODEL_VERSION,
+                30.5,
+                31.0,
+                has_video
+            )
+            .is_err());
+            assert!(validate_reference_audio_duration(
+                validators::DRAMA_MODEL_VERSION,
+                15.2,
+                30.0,
+                has_video
+            )
+            .is_ok());
+            assert!(validate_reference_audio_duration(
+                validators::DRAMA_MODEL_VERSION,
+                15.5,
+                31.0,
+                has_video
+            )
+            .is_err());
+        }
+        assert!(validate_reference_audio_duration("3.4", 0.5, 1.0, false).is_ok());
+        assert!(validate_reference_audio_duration("3.4", 0.49, 0.0, false).is_err());
+        assert!(validate_reference_audio_duration("3.4", 16.49, 48.0, false).is_ok());
+        assert!(validate_reference_audio_duration("3.4", 16.5, 17.0, false).is_err());
+        assert!(validate_reference_audio_duration("3.2_a", 60.0, 180.0, false).is_ok());
         assert!(validate_reference_audio_duration(
-            validators::DRAMA_MODEL_VERSION,
-            3.9,
-            3.9,
+            validators::WAN_MODEL_VERSION,
+            15.49,
+            15.0,
             false
         )
-        .unwrap_err()
-        .contains("out of range [4, 30]"));
-        assert_eq!(
-            validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 2.0, 30.0, true),
-            Ok(())
-        );
+        .is_ok());
         assert!(validate_reference_audio_duration(
-            validators::DRAMA_MODEL_VERSION,
-            1.99,
-            1.99,
-            true
+            validators::WAN_MODEL_VERSION,
+            15.5,
+            16.0,
+            false
         )
-        .unwrap_err()
-        .contains("out of range [2, 30]"));
-        assert_eq!(
-            validate_reference_audio_duration(validators::DRAMA_MODEL_VERSION, 30.0, 30.0, true),
-            Ok(())
-        );
-        assert!(validate_reference_audio_duration(
-            validators::DRAMA_MODEL_VERSION,
-            30.01,
-            30.01,
-            true
-        )
-        .unwrap_err()
-        .contains("out of range [2, 30]"));
-        assert!(validate_reference_audio_duration(
-            validators::DRAMA_MODEL_VERSION,
-            30.0,
-            30.1,
-            true
-        )
-        .unwrap_err()
-        .contains("Total audio duration 30.1s exceeds 30s"));
-        assert!(validate_reference_audio_duration("3.4", 30.0, 30.0, false)
-            .unwrap_err()
-            .contains("out of range [1, 16]"));
-        assert!(
-            validate_reference_audio_duration("3.2_a", 10.0, 16.0, false)
-                .unwrap_err()
-                .contains("Total audio duration 16.0s exceeds 15s")
-        );
-
-        let mut total = 0.0;
-        for duration in [15.0, 15.1] {
-            total += duration;
-            let result = validate_reference_audio_duration(
-                validators::DRAMA_MODEL_VERSION,
-                duration,
-                total,
-                false,
-            );
-            if total <= 30.0 {
-                assert_eq!(result, Ok(()));
-            } else {
-                assert!(result
-                    .unwrap_err()
-                    .contains("Total audio duration 30.1s exceeds 30s"));
-            }
-        }
+        .is_err());
     }
 
     #[test]
@@ -2873,31 +2974,45 @@ mod tests {
     }
 
     #[test]
-    fn drama_local_reference_video_duration_rules_are_checked_before_upload() {
-        assert_eq!(
-            validate_local_reference_video_durations(validators::DRAMA_MODEL_VERSION, &[4.0, 26.0],),
-            Ok(())
-        );
+    fn reference_video_duration_rules_match_rounded_backend_metadata() {
+        assert!(validate_local_reference_video_durations(
+            validators::DRAMA_MODEL_VERSION,
+            &[3.5, 26.49]
+        )
+        .is_ok());
         assert!(
-            validate_local_reference_video_durations(validators::DRAMA_MODEL_VERSION, &[3.99],)
-                .unwrap_err()
-                .contains("out of range [4, 30]")
+            validate_local_reference_video_durations(validators::DRAMA_MODEL_VERSION, &[3.49])
+                .is_err()
         );
         assert!(validate_local_reference_video_durations(
             validators::DRAMA_MODEL_VERSION,
-            &[15.1, 15.1],
+            &[15.2, 15.2]
         )
-        .unwrap_err()
-        .contains("exceeds 30s"));
-        assert_eq!(
-            validate_local_reference_video_durations("3.2_a", &[8.0, 7.0]),
-            Ok(())
-        );
+        .is_ok());
+        assert!(validate_local_reference_video_durations(
+            validators::DRAMA_MODEL_VERSION,
+            &[15.5, 15.0]
+        )
+        .is_err());
+        assert!(validate_local_reference_video_durations(
+            validators::WAN_MODEL_VERSION,
+            &[0.5, 14.49]
+        )
+        .is_ok());
         assert!(
-            validate_local_reference_video_durations("3.2_a", &[8.0, 7.1])
-                .unwrap_err()
-                .contains("exceeds 15s")
+            validate_local_reference_video_durations(validators::WAN_MODEL_VERSION, &[0.49])
+                .is_err()
         );
+        assert!(validate_local_reference_video_durations(
+            validators::WAN_MODEL_VERSION,
+            &[7.5, 7.5]
+        )
+        .is_err());
+        for model in ["3.2_a", "3.1_pro"] {
+            assert!(validate_local_reference_video_durations(model, &[30.0, 30.0]).is_ok());
+        }
+        assert!(validate_wan_video_output_duration(15, &[Some(15.49)]).is_ok());
+        assert!(validate_wan_video_output_duration(15, &[Some(15.5)]).is_err());
     }
 
     #[test]

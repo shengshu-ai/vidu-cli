@@ -82,14 +82,18 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 |--------|---------|-------------|
 | `--duration` | Drama/Wan 3: 5; legacy video models: required | Video duration in seconds. Drama accepts 4-30; Wan 3 accepts 2-30. Image tasks ignore it |
 | `--resolution` | Drama/Wan 3: 720p; legacy submit models: required | Supported output size. Cost queries keep the legacy 1080p default |
-| `--aspect-ratio` | Drama/Wan 3: 16:9 | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`; Wan 3 also supports `21:9` and `adaptive`, including img2video/headtailimg2video |
-| `--schedule-mode` | auto | `nopeak` uses off-peak quota subject to server eligibility, remaining quota, and task/model rules; `claw_pass` uses pass quota; `normal` uses credits. Q4 defaults to `normal`, rejects `claw_pass`, and accepts `nopeak` subject to server rules. Drama supports only `normal` credits. Other models auto-detect an active claw pass, otherwise use `normal` |
+| `--aspect-ratio` | Drama/Wan: 16:9; otherwise backend default | Images accept positive `w:h` or `auto`; model `3.1` is limited to 1:10–10:1. Image 2.5 includes `3:2`, `2:3`, `21:9`, `9:21`. Ordinary Vidu video forwards positive `w:h`; SD/Wan use their own ratio sets including `21:9` / `adaptive` |
+| `--schedule-mode` | auto | `nopeak` uses off-peak quota subject to server eligibility, remaining quota, and task/model rules; `claw_pass` uses pass quota; `normal` uses credits. Q4 defaults to `normal`, rejects `claw_pass`, and accepts `nopeak` subject to server rules. SD rejects `nopeak`; Drama/Wan 3 support only `normal` credits. Other models auto-detect an active claw pass, otherwise use `normal` |
 | `--with-audio` | unchanged | Generate audio in video output on supported models. `--with-audio` enables; `--with-audio=false` disables. Available on `submit`, `cost` and `rerun`; separate from reference input `--audio` |
-| `--audio` | - | Reference audio for `character2video` with `3.2_a`, `3.4` (Q4), or Q3.1 Drama. `3.2_a`/Q4 allow up to 3 (2–15s each, 15s total for `3.2_a`; 1–16s each for Q4). Drama allows up to 10 and 30s total. Local Drama audio: 4–30s each without `--video`, 2–30s each with `--video`; the server determines edit/reference task type and enforces the 4s minimum for non-edit tasks. Local WAV/MP3 files are limited to 15MB; `ssupload` durations are validated by the server |
-| `--transition` | - | For `img2video` / `headtailimg2video`: `3.0` uses `creative` / `stable`, `3.1` / `3.2` require `pro` / `speed`; `character2video 3.2` also requires `pro` / `speed`; `text2video` supports it only on `3.2` |
-| `--sample-count` | 1 | Number of samples to generate |
-| `--codec` | h265 | Output video codec |
+| `--audio` | - | Reference audio for `character2video` with SD (`3.2_a`), Q4, Drama, or Wan 3. SD/Q4: at most 3 files, local size ≤20 MiB each; SD accepts parseable audio formats and Q4 accepts WAV/MP3. Drama: at most 10 files, local WAV/MP3 ≤15 MiB, rounded duration 4–30s each and ≤30s total. Q4: rounded duration 1–16s each. SD reference durations are left to the backend. Wan 3: at most 5 files, ≤15 MiB each, 1–15s each and ≤15s total |
+| `--transition` | - | For `img2video` / `headtailimg2video`: `3.0` uses `creative` / `stable` (`img2video` defaults to `stable`, head/tail omission stays omitted), `3.1` / `3.2` select variants with `pro` / `speed`; `img2video` on 3.0/3.1/3.2 requires a transition, while first/last-frame mode allows omission; `character2video 3.2` requires a transition (`pro` / `speed` / `pro_ad` select its variants) (marketing mode: 3–16s); `text2video 3.2` uses `pro` / `speed` for variant selection; other known protocol values are also forwarded. Known values are forwarded unchanged for backend trials, entitlement and pricing; Q4 clears it later and Drama/Wan do not use it for generation |
+| `--sample-count` | 1 | Positive int32; Drama/Wan allow 1–4. Other entitlement and dynamic limits are checked by the backend |
+| `--codec` | h265 | `h264`, `h265`, `h264_pro`, `h265_pro`; the server checks membership for pro codecs |
 | `--movement-amplitude` | auto | Video motion intensity |
+
+Text prompts must be nonempty; their length limits are checked by the backend. UTF-8 prompt files read through `--prompt-path` / `--prompt-file` must not exceed 1 MiB. Ordinary tasks allow up to 20 prompt objects; Drama/Wan use their separate media-count rules.
+
+Output codec selection does not depend on local `ffprobe` availability: submit/cost/rerun preserve the same requested codec. All images are prepared and validated before any upload. The general upload limit is 512 B–10 MiB for the final bytes; larger source images can be compressed to that limit, and model format/geometry checks apply to the prepared result. Material IDs and versions must be positive int64 values; an empty name remains valid.
 
 `--with-audio` controls generated output audio; `--audio` supplies a reference file and does not enable output audio by itself. Use the same audio choice for `task cost` and `task submit`. Omit the switch to keep current behavior; `task rerun` preserves the historical choice unless overridden. `task rerun --with-audio=false` also disables historical lip-sync settings. Audio support and quotes are determined by the model and backend.
 
@@ -97,16 +101,17 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 
 | Type | Models | Duration | Resolution | Aspect Ratio | Member features |
 |------|--------|----------|------------|--------------|-----------------|
-| `text2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 | Seedance 2.0; membership above 5s for 3.1, above 10s for Q3 |
+| `text2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s | 1080p; SD: 480p/720p/1080p/2k/4k | Positive w:h; SD uses its own set | Seedance 2.0; membership above 5s for 3.1, above 10s for Q3 |
 | `text2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 | Seedance 2.5 |
-| `img2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — | Seedance 2.0; membership above 5s for 3.1, above 10s for Q3 |
-| `headtailimg2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | — | Seedance 2.0; membership above 5s for 3.1, above 10s for Q3 |
-| `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s | 1080p | 16:9, 9:16, 1:1, 4:3, 3:4 | Seedance 2.0; membership above 5s for 3.1 / 3.1_pro, above 10s for Q3 |
-| `character2video` (Q4) | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 | Membership required above 10s |
+| `img2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s | 1080p; SD: 480p/720p/1080p/2k/4k | — | Seedance 2.0; membership above 5s for 3.1, above 10s for Q3 |
+| `img2video` (Q4) | 3.4 | 3-16s | 540p, 720p, 1080p, 2k, 4k | Inferred from image | Membership required above 10s and for 2k/4k |
+| `headtailimg2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s | 1080p; SD: 480p/720p/1080p/2k/4k | — | Seedance 2.0; membership above 5s for 3.1, above 10s for Q3 |
+| `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→-1/4-15s | 1080p; SD: 480p/720p/1080p/2k/4k | Positive w:h; SD uses its own set | Seedance 2.0; membership above 5s for 3.1 / 3.1_pro, above 10s for Q3 |
+| `character2video` (Q4) | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | Positive w:h | Membership required above 10s |
 | `character2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 | Seedance 2.5 |
 | `text2video`, `img2video`, `headtailimg2video`, `character2video` (Wan 3) | `viduq2-drama-std` | 2-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive | Wan 3 |
-| `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 | Image 2.5 Fast / Pro |
-| `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | 16:9, 9:16, 1:1, 4:3, 3:4 | Image 2.5 Fast / Pro |
+| `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | Positive w:h/auto; 3.1 limited to 1:10–10:1 | Image 2.5 Fast / Pro |
+| `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | Positive w:h/auto; 3.1 limited to 1:10–10:1 | Image 2.5 Fast / Pro |
 
 **Member features**: Seedance 2.0 (`3.2_a`), Seedance 2.5 (`viduq3.1-drama-std`, also labeled Q3.1 Drama below), Wan 3 (`viduq2-drama-std`), and Image 2.5 (`3.2_image_2_5_fast` / `3.2_image_2_5_pro`) require active membership entitlements; the server validates eligibility. These requirements also apply when `task rerun` creates a new task with these models, and `task cost --help` includes the membership notice. Credit billing does not establish model access eligibility. A “—” in the table means no membership requirement is documented here.
 
@@ -114,43 +119,28 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 
 **Video duration membership limits**: `3.1` / `3.1_pro` allow up to 5 seconds for free users; 6–8 seconds require membership. Q3 (`3.2`) / Q4 (`3.4`) allow up to 10 seconds for free users; 11–16 seconds require membership. These limits do not apply to image tasks.
 
-Q4 reference audio: each local file must be 1-16 seconds. Up to 3 files are
-allowed without the `3.2_a` combined 15-second limit. Q4 accepts audio-only
-references with a text prompt; image/material references are optional when
-audio is present. `3.2_a` keeps its per-file 2-15 second and combined
-15-second limits. Local WAV/MP3 files remain limited to 15 MB each.
-Audio validation runs before image uploads. Existing `ssupload` references
-are checked by the server.
+Reference counts are model-specific. For `character2video`, Q4 accepts up to **15 direct images**, SD up to **9**; other supported legacy models with direct images only use the 20-prompt limit (**19 images** with one text). With materials, ordinary legacy models have a **7-image** budget, Q4/SD use 15/9, and `3.1_pro` uses backend frame slots. An image `material` can expand into several images, or have a different modality: the backend resolves it and allocates its image budget. The CLI does not count every material as one image. Q4 accepts text plus audio-only references; SD still requires an image, material, or video reference. SD allows at most 3 videos and 3 audio files. For `3.1_pro`, the server selects references within a 48-slot budget: each image costs 4 slots, and video uses 4 slots per second as computed by the backend. A reference that does not fit may be omitted in full; this is not a 48-video limit or partial video trimming.
 
-Q3.1 Drama `text2video` accepts text prompts only. Use `character2video` for
-references; it requires at least one image, video, or audio, accepts up to 9
-images, 3 videos, and 10 audio references, and does not support materials,
-automatic duration, or transitions. The CLI does not expose an explicit
-edit/extend task-type selector; the server determines the task type from the
-references and prompt. Audio references
-allow up to 30 seconds total: local clips must be 4–30 seconds each without
-`--video`, or 2–30 seconds each with `--video`. With a video reference, the
-server determines the task type and enforces a 4-second minimum for non-edit
-tasks. Local WAV/MP3 files are limited to 15MB each; `ssupload` durations are
-validated by the server. It accepts only `--schedule-mode normal`
-(credits). Local MP4/MOV references must each be
-4-30 seconds, average 24-60 fps, and total at most 30 seconds. The CLI checks
-the average frame rate of each local video before submission. Existing `ssupload`
-videos pass through for full server-side validation. Submit and cost use the same Drama
-defaults; cost values are returned by the API.
+`reference2image` does not share the legacy 7-image validator. With one text prompt, up to **19 direct images** fit the backend's 20-prompt limit. When materials are present, the backend's separate image/material budget is 7: more than 7 direct images are rejected, and expanded material images use the remaining budget. Quote and submit do not resolve materials locally.
+
+Q4 reference audio is WAV/MP3, ≤20 MiB per local file, 1–16 rounded seconds each, up to 3 files, without a combined 15-second limit. SD accepts identifiable local audio files up to 20 MiB; the CLI no longer imposes the old 2–15s / 15s-total rule because the ordinary backend path has disabled that duration check. SD output duration accepts `-1` (automatic) or 4–15s and rejects `nopeak`. Output resolutions are 480p/720p/1080p/2k/4k; ratios are 16:9, 9:16, 1:1, 4:3, 3:4, 21:9 and adaptive. Upscaling availability is determined by backend configuration. Audio validation runs before uploads. Existing `ssupload` references and complete mixed-reference metadata are checked by the server.
+
+Q3.1 Drama `text2video` accepts text only. Use `character2video` for references; it requires at least one image, video, or audio and accepts up to 9 images, 3 videos, and 10 audio files. It does not support materials or automatic output duration; transition is forwarded for backend policy. It accepts only `--schedule-mode normal`. Local WAV/MP3 is ≤15 MiB each; every reference audio and video must be 4–30 seconds after rounding each clip to integer seconds, with at most 30 seconds total per media kind. An accompanying video does not lower the audio minimum to 2 seconds. Prepared uploaded images accept PNG/JPEG/WebP with a 50 MiB model limit and must also fit the general upload limit; no additional image geometry or reference-video FPS/geometry restrictions are imposed. Local videos use built-in MP4 metadata parsing with `ffprobe` fallback for other containers or parse failures; a missing required parser reports a local capability error. Existing `ssupload` inputs pass through for full server validation. Submit and cost share the same Drama defaults; quotes come from the API.
+
+Image 2.5 Fast/Pro supports the five standard ratios plus `3:2`, `2:3`, `21:9`, and `9:21`. Model `3.1` image generation supports `--aspect-ratio auto` (sent as an empty ratio for backend intent analysis) and a custom positive `w:h` within 1:10–10:1. Other image models also accept a parseable positive `w:h` or an empty automatic ratio; ordinary Vidu video ratios are forwarded, while SD/Drama/Wan retain their own explicit ratio sets. Passing syntax validation does not prove that an external execution service supports every custom ratio.
 
 Wan 3 defaults to 5 seconds, 720p, 16:9 and `normal` credits.
 It accepts 1-4 samples and rejects
-automatic duration (`-1`), transitions, materials, off-peak and pass modes.
+automatic duration (`-1`), materials, off-peak and pass modes. Transition is forwarded for backend policy.
 `text2video` accepts text only; `img2video` requires one image;
 `headtailimg2video` requires two images, in first/last order. Frame modes do not
 accept audio/video references. `character2video` requires at least one reference
 and allows up to 10 images, 5 videos and 5 audio files (20 media total), including
-audio-only references. Local images must be JPEG/PNG/BMP/WEBP, ≤20MB, sides
-240-8000 px and ratio 1:8-8:1. Local MP4/MOV videos must be ≤100MB, sides
-240-4096 px, ratio 1:8-8:1 and average ≥16 fps. Each video/audio must be 1-15s,
+audio-only references. Prepared uploaded images must be JPEG/PNG/BMP/WEBP with a 20 MiB model limit, sides
+240-8000 px and ratio 1:8-8:1, and must also fit the general upload limit. Parseable local videos must be ≤100 MiB, sides
+240-4096 px, ratio 1:8-8:1. Each video/audio must be 1-15s,
 with at most 15s total per kind; input video plus output duration must be ≤30s.
-Local audio is WAV/MP3, ≤15MB. Existing `ssupload` references are checked by the
+Local audio is WAV/MP3, ≤15 MiB. Existing `ssupload` references are checked by the
 server, including the complete duration set when local and uploaded inputs mix.
 Quotes are returned by the backend.
 
@@ -271,7 +261,7 @@ Cancellation is allowed before `processing`, except for `clip_compose`. Deletion
 
 `rerun` creates a new paid task from one of the six existing image/video submit types. Override the prompt (including `--prompt-path` / `--prompt-file`), model (`--model-version` / `--model`), duration, or resolution; historical references stay in place and a seed does not guarantee identical output. Extension requires an accessible completed 1080p video creation, uses model 3.1 and 1080p, and adds 1–7 seconds. The transition defaults to `extendspeed`, with `extendpro` also available; subscription and total-duration rules apply. Image upscaling takes an existing image creation and defaults to 2k; 720p, 1080p, 2k, and 4k are supported.
 
-When `--model-version` actually changes, rerun preserves a transition accepted by the target type/model. Otherwise it selects `stable` for 3.0 image/first-last-frame video, selects `speed` where 3.1/3.2 requires `pro` or `speed`, or removes unsupported transitions. Incompatible scheduling falls back to the target model default (Q4/Drama: `normal`); the inherited vendor model is cleared for server selection. Historical style is preserved, with `general` used when switching to 3.0 without a style. Duration and resolution stay unchanged unless overridden, so adjust them when the target model requires different values.
+When `--model-version` actually changes, rerun keeps its existing migration behavior for variant settings: it preserves compatible selections, or selects `stable` for 3.0 image/first-last-frame video, selects `speed` where 3.1/3.2 requires `pro` or `speed`, or removes a transition the target generation model does not consume. This is a CLI model-migration default, not a backend prohibition. With no model change, explicit historical transitions are preserved for backend trial, entitlement and pricing checks. Historical `codec: unspecified` uses the backend's default codec when rerun. Incompatible scheduling falls back to the target model default (Q4/Drama: `normal`); the inherited vendor model is cleared for server selection. Historical style is preserved, with `general` used when switching to 3.0 without a style. Duration and resolution stay unchanged unless overridden, so adjust them when the target model requires different values.
 
 #### Video upscaling and credit estimates
 

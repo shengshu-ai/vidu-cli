@@ -7,6 +7,8 @@ use clap::builder::PossibleValuesParser;
 use clap::{Args, Parser, Subcommand};
 use std::process::ExitCode;
 
+const SAMPLE_COUNT_HELP: &str = "Positive sample count. Drama/Wan support 1-4; other models use the protocol's positive int32 range with entitlement and any dynamic limits checked by the server.";
+
 // Share membership wording across submit, cost, and rerun so model help stays consistent.
 const MODEL_VERSION_HELP: &str = concat!(
     "Model version (per-type compatibility enforced after parse; 3.4 = Q4). ",
@@ -130,42 +132,46 @@ enum TaskAction {
     ///   Models: 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro
     ///   Duration: 0 (image generation)
     ///   Resolution: 1080p, 2k, 4k
-    ///   Aspect Ratio: 4:3, 3:4, 1:1, 9:16, 16:9
+    ///   Aspect Ratio: positive w:h or auto; 3.1 requires 1:10 to 10:1; Image 2.5 includes 3:2/2:3/21:9/9:21
     ///
     /// TYPE: text2video
     ///   Models: 3.0, 3.1, 3.2, 3.2_a, viduq3.1-drama-std
-    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s, Drama→4-30s (default 5)
-    ///   Resolution: 1080p; Drama→480p/720p/1080p (default 720p)
-    ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
-    ///   Transition: 3.2 only (pro/speed)
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s, Drama→4-30s (default 5)
+    ///   Resolution: 1080p; SD: 480p/720p/1080p/2k/4k; Drama→480p/720p/1080p (default 720p)
+    ///   Aspect Ratio: Vidu positive w:h; SD uses 16:9/9:16/1:1/4:3/3:4/21:9/adaptive; Drama uses the five standard ratios
+    ///   Transition: known values are forwarded; pro/speed select 3.2 variants
     ///
     /// TYPE: img2video
-    ///   Models: 3.0, 3.1, 3.2, 3.2_a, 3.4 (Q4, credits only)
-    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s, 3.4→3-16s
-    ///   Resolution: 1080p; Q4 also supports 540p, 720p, 2k, 4k
-    ///   Transition: 3.0→creative/stable, 3.1/3.2→required pro/speed
+    ///   Models: 3.0, 3.1, 3.2, 3.2_a, 3.4 (Q4, normal/nopeak)
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s, 3.4→3-16s
+    ///   Resolution: 1080p; SD: 480p/720p/1080p/2k/4k; Q4 also supports 540p, 720p, 2k, 4k
+    ///   Transition: 3.0→creative/stable (default stable); img2video 3.1/3.2 requires a transition; known values are forwarded for backend policy
     ///   Images: 1 required
     ///
     /// TYPE: headtailimg2video
     ///   Models: 3.0, 3.1, 3.2, 3.2_a
-    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→4-15s
-    ///   Resolution: 1080p
-    ///   Transition: 3.0→creative/stable, 3.1/3.2→required pro/speed
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s
+    ///   Resolution: 1080p; SD: 480p/720p/1080p/2k/4k
+    ///   Transition: optional; 3.0 creative/stable and 3.1/3.2 pro/speed select variants
     ///   Images: 2 required (head + tail)
     ///
     /// TYPE: reference2image
     ///   Models: 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro
     ///   Duration: 0 (image generation)
     ///   Resolution: 1080p, 2k, 4k
-    ///   Aspect Ratio: 4:3, 3:4, 1:1, 9:16, 16:9
-    ///   Inputs: image + material ≤ 7
+    ///   Aspect Ratio: positive w:h or auto; 3.1 requires 1:10 to 10:1; Image 2.5 includes 3:2/2:3/21:9/9:21
+    ///   Inputs: up to 19 direct images with one text prompt; material images are expanded/allocated by the server
     ///
     /// TYPE: character2video
-    ///   Models: 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.4 (Q4, credits only), viduq3.1-drama-std
-    ///   Duration: 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→4-15s, 3.4→1-16s, Drama→4-30s (default 5)
-    ///   Resolution: 1080p; Q4 also supports 540p, 720p, 2k, 4k; Drama supports 480p/720p/1080p (default 720p)
-    ///   Aspect Ratio: 16:9, 9:16, 1:1, 4:3, 3:4
-    ///   Inputs: image + material ≤ 7 (Drama: image ≤ 9, video ≤ 3, audio ≤ 10; no material)
+    ///   Models: 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.4 (Q4, normal/nopeak), viduq3.1-drama-std
+    ///   Duration: 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→-1/4-15s, 3.4→1-16s, Drama→4-30s (default 5)
+    ///   Resolution: 1080p; SD: 480p/720p/1080p/2k/4k; Q4 also supports 540p, 720p, 2k, 4k; Drama supports 480p/720p/1080p (default 720p)
+    ///   Aspect Ratio: Vidu positive w:h; SD uses 16:9/9:16/1:1/4:3/3:4/21:9/adaptive; Drama uses the five standard ratios
+    ///   Inputs: direct images Q4 ≤15, 3.2_a ≤9; other legacy models fit the total 20-prompt limit (normally ≤19 images)
+    ///   With materials, ordinary legacy models share a 7-image budget; Q4=15, SD=9, 3.1_pro uses server frame slots
+    ///   Drama: image ≤9, video ≤3, audio ≤10; no material. SD: video/audio ≤3 each; 3.1_pro references share a 48-slot server budget; references that do not fit may be omitted
+    ///   Q4 accepts image/audio references; SD requires an image/material/video reference, even when audio is present
+    ///   3.2 character2video also accepts pro_ad (duration 3-16s). SD rejects nopeak
     ///
     /// MEMBERSHIP DURATION LIMITS (video tasks):
     ///   3.1 / 3.1_pro: free users max 5s; membership required for 6-8s
@@ -183,7 +189,7 @@ enum TaskAction {
     ///   Types: text2video, img2video, headtailimg2video, character2video
     ///   Duration: 2-30s (default 5); resolution: 480p/720p/1080p (default 720p)
     ///   Aspect Ratio: 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive
-    ///   Credits only; no transition. References: max 10 images, 5 videos, 5 audios, 20 total
+    ///   Credits only; transition is forwarded for backend policy. References: max 10 images, 5 videos, 5 audios, 20 total
     ///   Each video/audio: 1-15s; total 15s per kind; input video + output ≤30s
     Submit {
         #[arg(long = "type", value_name = "TYPE",
@@ -192,7 +198,7 @@ enum TaskAction {
         task_type: String,
         #[arg(
             long,
-            help = "Text prompt (mutually preferred over --prompt-path when both are given)."
+            help = "Non-empty text prompt. Length limits are checked by the backend. Preferred over --prompt-path when both are given."
         )]
         prompt: Option<String>,
         #[arg(
@@ -209,17 +215,17 @@ enum TaskAction {
         #[arg(
             long = "audio",
             action = clap::ArgAction::Append,
-            help = "Reference audio for character2video + 3.2_a, 3.4 (Q4), Drama, or Wan 3. Local WAV/MP3 (max 15MB) or ssupload URI. 3.2_a: max 3, each 2-15s (15s total). Q4: max 3, each 1-16s. Drama: max 10, total 30s; local audio 4-30s without --video, 2-30s with --video. With --video the server determines task type and enforces 4s for non-edit tasks. Wan 3: max 5, each 1-15s, total 15s."
+            help = "Reference audio for character2video + 3.2_a, Q4, Drama, or Wan 3. Local audio or ssupload URI. SD accepts parseable audio, max 3 and ≤20 MiB each; its duration metadata is left to the server. Q4 WAV/MP3: max 3, ≤20 MiB, each 1-16s. Drama WAV/MP3: max 10, local size ≤15 MiB, each 4-30s and total ≤30s after server-style rounding. Wan 3 WAV/MP3: max 5, local size ≤15 MiB, each 1-15s, total ≤15s."
         )]
         audios: Vec<String>,
         #[command(flatten)]
         audio_output: OutputAudioOptions,
-        #[arg(long = "video", action = clap::ArgAction::Append, help = "Video input (local path or ssupload:?id=xxx). Repeatable. character2video + 3.2_a, viduq3.1-drama-std, or viduq2-drama-std. Legacy/Drama: max 3; Drama local MP4/MOV clips: 4-30s each, total ≤30s. Wan 3: max 5, each 1-15s, total ≤15s, ≤100MB, ≥16 fps; input video + output ≤30s.")]
+        #[arg(long = "video", action = clap::ArgAction::Append, help = "Reference video (local path or ssupload URI), repeatable for character2video. SD/Drama: max 3; 3.1_pro references are selected by the server slot budget. Local video uses built-in MP4 parsing with ffprobe fallback. Drama: rounded duration 4-30s each, total ≤30s; no extra FPS/geometry limit. Wan 3: max 5, each 1-15s, total ≤15s, ≤100 MiB; input video + output ≤30s.")]
         videos: Vec<String>,
         #[arg(
             long,
             allow_negative_numbers = true,
-            help = "Video duration: 3.0(5), 3.1(2-8), 3.2(1-16), 3.2_a(4-15), Q4 img2video(3-16)/character2video(1-16), Drama(4-30, default 5), Wan 3(2-30, default 5). Ignored for images. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
+            help = "Video duration: 3.0(5), 3.1(2-8), 3.1_pro(-1/2-8), 3.2(1-16; pro_ad 3-16), 3.2_a(-1/4-15), Q4 img2video(3-16)/character2video(1-16), Drama(4-30, default 5), Wan 3(2-30, default 5). Ignored for images. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
         )]
         duration: Option<i64>,
         #[arg(long,
@@ -228,18 +234,18 @@ enum TaskAction {
             help = MODEL_VERSION_HELP)]
         model_version: String,
         #[arg(long,
-            value_parser = PossibleValuesParser::new(validators::ASPECT_RATIOS),
-            help = "Aspect ratio: 16:9, 9:16, 1:1, 4:3, 3:4; Wan 3 also supports 21:9 and adaptive, including img2video/headtailimg2video")]
+            value_parser = validators::parse_aspect_ratio,
+            help = "Aspect ratio (validated per model): images accept positive w:h or auto, 3.1 within 1:10 to 10:1; Image 2.5 includes 3:2/2:3/21:9/9:21; ordinary Vidu videos accept positive w:h; SD/Wan use their own ratio sets, including 21:9/adaptive")]
         aspect_ratio: Option<String>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::TRANSITIONS),
-            help = "Transition style. img2video/headtailimg2video: 3.0 uses creative/stable, 3.1/3.2 require pro/speed; character2video 3.2 requires pro/speed; text2video supports it only on 3.2.")]
+            help = "Transition forwarded unchanged for backend trials, entitlement and pricing. img2video 3.0/3.1/3.2 and character2video 3.2 require a value; headtailimg2video allows omission. creative/stable select Q1 variants, pro/speed select Q2/Q3 variants, and pro_ad selects Q3 reference marketing mode. Q4 clears it later; Drama/Wan generation does not use it.")]
         transition: Option<String>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::RESOLUTIONS),
             help = "Resolution: required for legacy submit models; Drama/Wan 3 default to 720p (480p/720p/1080p), Q4 supports 540p/720p/1080p/2k/4k")]
         resolution: Option<String>,
-        #[arg(long, default_value = "1", value_parser = clap::value_parser!(i64).range(1..))]
+        #[arg(long, default_value = "1", value_parser = clap::value_parser!(i64).range(1..), help = SAMPLE_COUNT_HELP)]
         sample_count: i64,
         #[arg(long, default_value = "h265",
             value_parser = PossibleValuesParser::new(validators::CODECS))]
@@ -248,7 +254,7 @@ enum TaskAction {
         movement_amplitude: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Q4 defaults to normal, allows nopeak subject to server rules, and rejects claw_pass; Drama/Wan 3 support only normal credits. Other models auto-detect pass status if omitted.")]
+            help = "Q4 defaults to normal, allows nopeak subject to server rules, and rejects claw_pass; SD rejects nopeak; Drama/Wan 3 support only normal credits. Other models auto-detect pass status if omitted.")]
         schedule_mode: Option<String>,
         #[command(flatten)]
         submission: SubmissionOptions,
@@ -473,19 +479,19 @@ enum TaskAction {
             help = "Resolution. Defaults to 1080p for legacy models and 720p for Drama/Wan 3.")]
         resolution: Option<String>,
         #[arg(long,
-            value_parser = PossibleValuesParser::new(validators::ASPECT_RATIOS))]
+            value_parser = validators::parse_aspect_ratio)]
         aspect_ratio: Option<String>,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::TRANSITIONS))]
         transition: Option<String>,
-        #[arg(long, default_value = "1", value_parser = clap::value_parser!(i64).range(1..))]
+        #[arg(long, default_value = "1", value_parser = clap::value_parser!(i64).range(1..), help = SAMPLE_COUNT_HELP)]
         sample_count: i64,
         #[arg(long, default_value = "h265",
             value_parser = PossibleValuesParser::new(validators::CODECS))]
         codec: String,
         #[arg(long,
             value_parser = PossibleValuesParser::new(validators::SCHEDULE_MODES),
-            help = "Q4 defaults to normal, allows nopeak subject to server rules, and rejects claw_pass; Drama/Wan 3 support only normal credits. Other models auto-detect pass status if omitted.")]
+            help = "Q4 defaults to normal, allows nopeak subject to server rules, and rejects claw_pass; SD rejects nopeak; Drama/Wan 3 support only normal credits. Other models auto-detect pass status if omitted.")]
         schedule_mode: Option<String>,
     },
     /// Query credit cost for a TTS task before submitting
@@ -1242,6 +1248,66 @@ mod tests {
     #[test]
     fn clap_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn generation_ratio_parser_and_shared_video_options_are_available() {
+        for command in ["submit", "cost"] {
+            for (ratio, expected) in [("9:21", "9:21"), ("7:5", "7:5"), ("auto", "")] {
+                let cli = Cli::try_parse_from([
+                    "vidu-cli",
+                    "task",
+                    command,
+                    "--type",
+                    "text2image",
+                    "--model-version",
+                    "3.1",
+                    "--aspect-ratio",
+                    ratio,
+                    "--codec",
+                    "h265_pro",
+                    "--transition",
+                    "pro_ad",
+                ])
+                .expect("clap parses syntax; shared settings validate model compatibility");
+                let Some(Group::Task { action }) = cli.group else {
+                    unreachable!()
+                };
+                match *action {
+                    TaskAction::Submit {
+                        aspect_ratio,
+                        codec,
+                        transition,
+                        ..
+                    }
+                    | TaskAction::Cost {
+                        aspect_ratio,
+                        codec,
+                        transition,
+                        ..
+                    } => {
+                        assert_eq!(aspect_ratio.as_deref(), Some(expected));
+                        assert_eq!(codec, "h265_pro");
+                        assert_eq!(transition.as_deref(), Some("pro_ad"));
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            for ratio in ["0:1", "NaN:1", "invalid"] {
+                assert!(Cli::try_parse_from([
+                    "vidu-cli",
+                    "task",
+                    command,
+                    "--type",
+                    "text2image",
+                    "--model-version",
+                    "3.1",
+                    "--aspect-ratio",
+                    ratio,
+                ])
+                .is_err());
+            }
+        }
     }
 
     #[test]
