@@ -1,5 +1,6 @@
 /target
-/docs/
+/docs/*
+!/docs/parameter-alignment-audit.zh.md
 /.env
 /.env.*
 !/.env.example
