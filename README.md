@@ -91,13 +91,23 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `--codec` | h265 | `h264`, `h265`, `h264_pro`, `h265_pro`; the server checks membership for pro codecs |
 | `--movement-amplitude` | auto | Video motion intensity |
 
-Text prompts must be nonempty; their length limits are checked by the backend. UTF-8 prompt files read through `--prompt-path` / `--prompt-file` must not exceed 1 MiB. Ordinary tasks allow up to 20 prompt objects; Drama/Wan use their separate media-count rules.
+Text prompts must be nonempty. The server applies the following generation limits per text prompt, counted as Unicode characters rather than UTF-8 bytes. The CLI forwards the text unchanged and leaves length validation to the backend:
+
+| Model / task | Maximum characters per text prompt |
+|--------------|------------------------------------|
+| Q4 (`3.4`) `img2video` and `character2video` | 20000 |
+| Wan 3 (`viduq2-drama-std`), all four video task types | 20000 |
+| Other supported generation combinations, including SD, Q3.1 Drama, and image tasks | 5000 |
+
+UTF-8 prompt files read through `--prompt-path` / `--prompt-file` must also fit the local 1 MiB file-reading limit. Ordinary tasks allow up to 20 prompt objects, counting text, images, materials, and other prompts; Drama/Wan use their separate media-count rules. TTS has the separate segment and combined limits documented below.
 
 Output codec selection does not depend on local `ffprobe` availability: submit/cost/rerun preserve the same requested codec. All images are prepared and validated before any upload. The general upload limit is 512 B–10 MiB for the final bytes; larger source images can be compressed to that limit, and model format/geometry checks apply to the prepared result. Material IDs and versions must be positive int64 values; an empty name remains valid.
 
 `--with-audio` controls generated output audio; `--audio` supplies a reference file and does not enable output audio by itself. Use the same audio choice for `task cost` and `task submit`. Omit the switch to keep current behavior; `task rerun` preserves the historical choice unless overridden. `task rerun --with-audio=false` also disables historical lip-sync settings. Audio support and quotes are determined by the model and backend.
 
 **Task types and constraints:**
+
+The table lists combinations supported by the current CLI. Limits were checked against infer source on 2026-11-16; see the [verification record (Chinese)](docs/parameter-alignment-audit.zh.md#2026-11-16-文档复核). Membership, trials, off-peak quota, and deployment configuration remain subject to server validation.
 
 | Type | Models | Duration | Resolution | Aspect Ratio | Member features |
 |------|--------|----------|------------|--------------|-----------------|
@@ -107,15 +117,17 @@ Output codec selection does not depend on local `ffprobe` availability: submit/c
 | `img2video` (Q4) | 3.4 | 3-16s | 540p, 720p, 1080p, 2k, 4k | Inferred from image | Membership required above 10s and for 2k/4k |
 | `headtailimg2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s | 1080p; SD: 480p/720p/1080p/2k/4k | — | Seedance 2.0; membership above 5s for 3.1, above 10s for Q3 |
 | `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→-1/4-15s | 1080p; SD: 480p/720p/1080p/2k/4k | Positive w:h; SD uses its own set | Seedance 2.0; membership above 5s for 3.1 / 3.1_pro, above 10s for Q3 |
-| `character2video` (Q4) | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | Positive w:h | Membership required above 10s |
+| `character2video` (Q4) | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | Positive w:h | Membership required above 10s and for 2k/4k |
 | `character2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 | Seedance 2.5 |
 | `text2video`, `img2video`, `headtailimg2video`, `character2video` (Wan 3) | `viduq2-drama-std` | 2-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive | Wan 3 |
-| `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | Positive w:h/auto; 3.1 limited to 1:10–10:1 | Image 2.5 Fast / Pro |
-| `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | Positive w:h/auto; 3.1 limited to 1:10–10:1 | Image 2.5 Fast / Pro |
+| `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | Positive w:h/auto; 3.1 limited to 1:10–10:1 | 3.2_pro_m, 3.2_image_2, Image 2.5 Fast / Pro |
+| `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | Positive w:h/auto; 3.1 limited to 1:10–10:1 | 3.2_pro_m, 3.2_image_2, Image 2.5 Fast / Pro |
 
-**Member features**: Seedance 2.0 (`3.2_a`), Seedance 2.5 (`viduq3.1-drama-std`, also labeled Q3.1 Drama below), Wan 3 (`viduq2-drama-std`), and Image 2.5 (`3.2_image_2_5_fast` / `3.2_image_2_5_pro`) require active membership entitlements; the server validates eligibility. These requirements also apply when `task rerun` creates a new task with these models, and `task cost --help` includes the membership notice. Credit billing does not establish model access eligibility. A “—” in the table means no membership requirement is documented here.
+**Member features**: Seedance 2.0 (`3.2_a`), Seedance 2.5 (`viduq3.1-drama-std`, also labeled Q3.1 Drama below), Wan 3 (`viduq2-drama-std`), `3.2_pro_m`, `3.2_image_2`, and Image 2.5 (`3.2_image_2_5_fast` / `3.2_image_2_5_pro`) require active membership entitlements, subject to any applicable server-approved trial. These requirements also apply when `task rerun` creates a new task with these models. Credit billing does not establish model access eligibility. A “—” in the table means no membership requirement is documented here.
 
 **Image 2.5 Fast / Pro free trials**: Member features. Free trials are available only with remaining trial quota; active membership entitlements are required after trials are exhausted. Trial eligibility and remaining quota are determined by the server. Trial quotas are tracked separately for Fast / Pro and for text-to-image (`text2image`) / reference-to-image (`reference2image`).
+
+**Image trial settings**: Dedicated trials for `3.2_fast_m`, `3.2_pro_m`, `3.2_image_2`, and Image 2.5 require `1080p`, a single sample, and a mode other than `nopeak`, plus a matching server-side task type, model, and remaining trial quota. These trials do not cover 2k/4k or batch requests; the server determines whether paid generation is available.
 
 **Video duration membership limits**: `3.1` / `3.1_pro` allow up to 5 seconds for free users; 6–8 seconds require membership. Q3 (`3.2`) / Q4 (`3.4`) allow up to 10 seconds for free users; 11–16 seconds require membership. These limits do not apply to image tasks.
 
@@ -123,9 +135,11 @@ Reference counts are model-specific. For `character2video`, Q4 accepts up to **1
 
 `reference2image` does not share the legacy 7-image validator. With one text prompt, up to **19 direct images** fit the backend's 20-prompt limit. When materials are present, the backend's separate image/material budget is 7: more than 7 direct images are rejected, and expanded material images use the remaining budget. Quote and submit do not resolve materials locally.
 
-Q4 reference audio is WAV/MP3, ≤20 MiB per local file, 1–16 rounded seconds each, up to 3 files, without a combined 15-second limit. SD accepts identifiable local audio files up to 20 MiB; the CLI no longer imposes the old 2–15s / 15s-total rule because the ordinary backend path has disabled that duration check. SD output duration accepts `-1` (automatic) or 4–15s and rejects `nopeak`. Output resolutions are 480p/720p/1080p/2k/4k; ratios are 16:9, 9:16, 1:1, 4:3, 3:4, 21:9 and adaptive. Upscaling availability is determined by backend configuration. Audio validation runs before uploads. Existing `ssupload` references and complete mixed-reference metadata are checked by the server.
+Q4 reference audio is WAV/MP3, ≤20 MiB per local file, 1–16 rounded seconds each, up to 3 files, without a combined 15-second limit. SD accepts identifiable local audio files up to 20 MiB; the CLI no longer imposes the old 2–15s / 15s-total rule because the ordinary backend path has disabled that duration check. SD output duration accepts `-1` (automatic) or 4–15s and rejects `nopeak`. Output resolutions are 480p/720p/1080p/2k/4k; output ratios are 16:9, 9:16, 1:1, 4:3, 3:4, 21:9 and adaptive. Upscaling availability is determined by backend configuration. Audio validation runs before uploads. Existing `ssupload` references and complete mixed-reference metadata are checked by the server.
 
-Q3.1 Drama `text2video` accepts text only. Use `character2video` for references; it requires at least one image, video, or audio and accepts up to 9 images, 3 videos, and 10 audio files. It does not support materials or automatic output duration; transition is forwarded for backend policy. It accepts only `--schedule-mode normal`. Local WAV/MP3 is ≤15 MiB each; every reference audio and video must be 4–30 seconds after rounding each clip to integer seconds, with at most 30 seconds total per media kind. An accompanying video does not lower the audio minimum to 2 seconds. Prepared uploaded images accept PNG/JPEG/WebP with a 50 MiB model limit and must also fit the general upload limit; no additional image geometry or reference-video FPS/geometry restrictions are imposed. Local videos use built-in MP4 metadata parsing with `ffprobe` fallback for other containers or parse failures; a missing required parser reports a local capability error. Existing `ssupload` inputs pass through for full server validation. Submit and cost share the same Drama defaults; quotes come from the API.
+**SD reference images**: `3.2_a` image-to-video, first/last-frame, and character-to-video tasks require positive image width and height, with `0.4 ≤ width / height ≤ 2.5` (2:5–5:2, inclusive). Image-to-video requires exactly one image and first/last-frame requires exactly two; these modes reject reference video/audio. Character-to-video allows up to 9 image inputs, 3 video inputs, and 3 audio inputs. The ratio check covers every direct image and every image expanded from an image material, including existing uploaded references. Missing metadata or any invalid image causes server rejection. This is an input-image requirement; `--aspect-ratio` controls output and cannot fix an invalid input ratio. The current CLI leaves this ratio check to the server.
+
+Q3.1 Drama `text2video` accepts text only. Use `character2video` for references; it requires at least one image, video, or audio and accepts up to 9 images, 3 videos, and 10 audio files. It does not support materials or automatic output duration; transition is forwarded for backend policy. It accepts only `--schedule-mode normal`. Local WAV/MP3 is ≤15 MiB each; every reference audio and video must be 4–30 seconds after rounding each clip to integer seconds, with at most 30 seconds total per media kind. An accompanying video does not lower the audio minimum to 2 seconds. Prepared uploaded images accept PNG/JPEG/WebP with a 50 MiB model limit and must also fit the general upload limit. Each image must have positive dimensions and an input ratio of `0.4–2.5` inclusive, checked by the server using media metadata. This image check adds no side-length or pixel-count cap; reference videos have no additional FPS/geometry restriction. Local videos use built-in MP4 metadata parsing with `ffprobe` fallback for other containers or parse failures; a missing required parser reports a local capability error. Existing `ssupload` inputs pass through for full server validation. Submit and cost share the same Drama defaults; cost does not submit reference media, so a successful quote does not validate input images.
 
 Image 2.5 Fast/Pro supports the five standard ratios plus `3:2`, `2:3`, `21:9`, and `9:21`. Model `3.1` image generation supports `--aspect-ratio auto` (sent as an empty ratio for backend intent analysis) and a custom positive `w:h` within 1:10–10:1. Other image models also accept a parseable positive `w:h` or an empty automatic ratio; ordinary Vidu video ratios are forwarded, while SD/Drama/Wan retain their own explicit ratio sets. Passing syntax validation does not prove that an external execution service supports every custom ratio.
 
@@ -323,8 +337,9 @@ vidu-cli task tts \
   --text "Hello everyone!" \
   --text "This is exciting news." \
   --voice-id English_Trustworth_Man \
-  --emotion "cheerful" \
-  --emotion "excited" \
+  --emotion happy \
+  --emotion surprised \
+  --subtitle-enable=false \
   --speed 1.2 \
   --volume 80 \
   --language-boost "English"
@@ -332,16 +347,19 @@ vidu-cli task tts \
 
 `--prompt` (single segment) and `--text` (repeatable, multi-segment) are mutually exclusive. When using `--text`, each `--emotion` flag pairs with the corresponding `--text` segment by order.
 
+The CLI accepts at most 20 nonempty segments, each up to 2000 characters. Infer trims each segment and checks their concatenation: at most 2500 Han characters and 5000 total Unicode characters. Splitting text does not bypass these combined limits. `--subtitle-enable` defaults to true, and the server supports subtitles for a single segment only; multi-segment requests must set `--subtitle-enable=false`. Emotions must be `happy`, `sad`, `angry`, `fearful`, `disgusted`, `surprised`, `calm`, or `neutral`. The current CLI only checks emotion length; the enum and combined character counts are validated by the backend.
+
 **Parameters:**
 
 | Parameter | Required | Default | Range | Description |
 |-----------|----------|---------|-------|-------------|
 | `--prompt` | Yes* | - | 1-2000 chars | Single-segment text (*mutually exclusive with `--text`) |
-| `--text` | Yes* | - | repeatable | Multi-segment text (*mutually exclusive with `--prompt`) |
+| `--text` | Yes* | - | 1–20 segments, 1–2000 chars each | Multi-segment text (*mutually exclusive with `--prompt`); also subject to the combined limits above |
 | `--voice-id` | Yes | - | See voice list | Voice ID for speech synthesis |
 | `--speed` | No | 1.0 | 0.5-2.0 | Speech speed multiplier |
 | `--volume` | No | 80 | 0-100 | Audio volume level |
-| `--emotion` | No | - | repeatable | Emotion per segment (paired by order with `--text`) |
+| `--emotion` | No | - | English enum above, repeatable | Paired by order with `--text`; cannot outnumber text segments |
+| `--subtitle-enable` | No | true | true / false | Subtitle JSON for a single segment; set false for multiple segments; alias `--subtitle-enabled` |
 | `--language-boost` | No | - | Chinese, English, auto, etc. | Enhance recognition of specific languages/dialects |
 | `--schedule-mode` | No | auto | claw_pass, nopeak, normal | Billing/queue mode. `nopeak` uses off-peak quota subject to server rules; `claw_pass` uses pass quota; `normal` uses credits. If omitted, an active claw pass is auto-detected; otherwise normal is used |
 

@@ -91,13 +91,23 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `--codec` | h265 | `h264`、`h265`、`h264_pro`、`h265_pro`；pro 编码的会员资格由服务端校验 |
 | `--movement-amplitude` | auto | 视频运动幅度 |
 
-文本提示词必须非空，长度限制由后端校验。通过 `--prompt-path` / `--prompt-file` 读取的 UTF-8 提示词文件仍须不超过 1 MiB。普通任务最多 20 个 prompt 对象，Drama/Wan 使用各自独立的媒体数量规则。
+文本提示词必须非空。生成任务的服务端长度上限如下，按每个 text prompt 的 Unicode 字符数统计，不按 UTF-8 字节数统计；CLI 原样发送文本，由后端执行长度校验：
+
+| 模型 / 任务 | 每个文本提示词上限 |
+|-------------|-------------------|
+| Q4（`3.4`）的 `img2video`、`character2video` | 20000 字符 |
+| Wan 3（`viduq2-drama-std`）的四类视频任务 | 20000 字符 |
+| 其他已支持的生成组合，包括 SD、Q3.1 Drama 和图片任务 | 5000 字符 |
+
+通过 `--prompt-path` / `--prompt-file` 读取的 UTF-8 提示词文件还须不超过 1 MiB，这是本地文件读取限制。普通任务最多 20 个 prompt 对象，文本、图片和素材等均占用对象数量；Drama/Wan 使用各自独立的媒体数量规则。TTS 另有下文的分段及合计长度限制。
 
 输出编码不会因本机是否安装 `ffprobe` 而从 h265 自动改为 h264，submit/cost/rerun 保持相同编码选择。图片在任何上传前全部准备并校验，通用上传的最终字节为 512 B–10 MiB；较大的源图可以先压缩至该上限，模型格式和几何规则针对最终上传产物。素材 ID 和版本必须为正的 int64，名称仍可为空。
 
 `--with-audio` 控制输出视频生成音频；`--audio` 仅提供参考文件，不会自动开启输出音频。查询 `task cost` 与提交 `task submit` 时请使用相同的音频选项。不传开关时保持现有行为；`task rerun` 默认保留历史音频选择，传开关可覆盖，`task rerun --with-audio=false` 也会关闭历史唇音同步设置。音频能力取决于模型，报价由后端返回。
 
 **任务类型与约束：**
+
+以下列出当前 CLI 支持的组合，参数限制已于 2026-11-16 按 infer 源码复核，详见[复核记录](docs/parameter-alignment-audit.zh.md#2026-11-16-文档复核)。会员、试用、闲时额度和部署配置以服务端实际校验为准。
 
 | 类型 | 模型 | 时长 | 分辨率 | 宽高比 | 会员功能 |
 |------|------|------|--------|--------|--------|
@@ -107,15 +117,17 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `img2video`（Q4） | 3.4 | 3-16s | 540p, 720p, 1080p, 2k, 4k | 按输入图片确定 | 超过 10 秒及 2k/4k 需会员 |
 | `headtailimg2video` | 3.0, 3.1, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s | 1080p；SD：480p/720p/1080p/2k/4k | — | Seedance 2.0；3.1 超过 5 秒、Q3 超过 10 秒需会员 |
 | `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→-1/4-15s | 1080p；SD：480p/720p/1080p/2k/4k | 正数 w:h；SD 按自身枚举 | Seedance 2.0；3.1 / 3.1_pro 超过 5 秒、Q3 超过 10 秒需会员 |
-| `character2video`（Q4） | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 正数 w:h | 超过 10 秒需会员 |
+| `character2video`（Q4） | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 正数 w:h | 超过 10 秒及 2k/4k 需会员 |
 | `character2video`（Q3.1 Drama） | `viduq3.1-drama-std` | 4–30 秒（默认 5 秒） | 480p、720p（默认）、1080p | 16:9（默认）、9:16、1:1、4:3、3:4 | Seedance 2.5 |
 | `text2video`、`img2video`、`headtailimg2video`、`character2video`（Wan 3） | `viduq2-drama-std` | 2–30 秒（默认 5 秒） | 480p、720p（默认）、1080p | 16:9（默认）、9:16、1:1、4:3、3:4、21:9、adaptive | Wan 3 |
-| `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0（图片） | 1080p, 2k, 4k | 正数w:h/auto；3.1限1:10–10:1 | Image 2.5 Fast / Pro |
-| `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0（图片） | 1080p, 2k, 4k | 正数w:h/auto；3.1限1:10–10:1 | Image 2.5 Fast / Pro |
+| `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0（图片） | 1080p, 2k, 4k | 正数w:h/auto；3.1限1:10–10:1 | 3.2_pro_m、3.2_image_2、Image 2.5 Fast / Pro |
+| `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0（图片） | 1080p, 2k, 4k | 正数w:h/auto；3.1限1:10–10:1 | 3.2_pro_m、3.2_image_2、Image 2.5 Fast / Pro |
 
-**会员功能**：Seedance 2.0（`3.2_a`）、Seedance 2.5（`viduq3.1-drama-std`，下文也称 Q3.1 Drama）、Wan 3（`viduq2-drama-std`）和 Image 2.5（`3.2_image_2_5_fast` / `3.2_image_2_5_pro`）需有效会员权益，使用资格由服务端校验。会员权益要求同样适用于 `task rerun` 使用这些模型生成新任务；`task cost --help` 也会提示模型的会员要求。积分计费说明不代表已具备模型使用权益。表中“—”表示此处未标注会员要求。
+**会员功能**：Seedance 2.0（`3.2_a`）、Seedance 2.5（`viduq3.1-drama-std`，下文也称 Q3.1 Drama）、Wan 3（`viduq2-drama-std`）、`3.2_pro_m`、`3.2_image_2` 和 Image 2.5（`3.2_image_2_5_fast` / `3.2_image_2_5_pro`）需有效会员权益，可用试用以服务端判定为准。会员权益要求同样适用于 `task rerun` 使用这些模型生成新任务。积分计费说明不代表已具备模型使用权益。表中“—”表示此处未标注会员要求。
 
 **Image 2.5 Fast / Pro 免费试用**：会员功能；有剩余试用额度时可免费试用，额度用完后需有效会员权益。试用资格及剩余额度以服务端为准。Fast / Pro 的文生图（`text2image`）、参考生图（`reference2image`）试用额度分别计算。
+
+**图片试用参数**：`3.2_fast_m`、`3.2_pro_m`、`3.2_image_2` 和 Image 2.5 的专用试用仅适用于 `1080p`、单样本、非 `nopeak` 请求，并须匹配服务端的任务类型、模型及剩余试用次数。2k/4k 或批量请求不能沿用该试用；是否走付费流程仍由服务端判断。
 
 **视频时长会员限制**：`3.1` / `3.1_pro` 免费账号最长 5 秒，6–8 秒需会员；Q3（`3.2`）/ Q4（`3.4`）免费账号最长 10 秒，11–16 秒需会员。此说明不适用于图片任务。
 
@@ -123,9 +135,11 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 
 `reference2image` 不共用旧参考生视频的 7 张校验。只传一个文本 prompt 时，最多 **19 张直接图片**可满足后端总共 20 个 prompt 的限制。混用 material 时，后端另按 7 张额度分配直接图片和素材展开图；此时超过 7 张直接图片会被拒绝，素材展开图按剩余额度分配。CLI 的报价和提交都不在本地解析素材。
 
-Q4 本地参考音频支持 WAV/MP3，每段 ≤20 MiB、取整后 1–16 秒，最多 3 段，没有合计 15 秒的限制。SD 支持本地可识别音频文件、每段 ≤20 MiB；普通后端链路已停用参考时长检查，因此 CLI 移除旧的每段 2–15 秒、合计 15 秒硬限制。SD 输出时长支持 `-1` 智能时长或 4–15 秒，并禁止 `nopeak`；分辨率支持 480p/720p/1080p/2k/4k，比例为 16:9、9:16、1:1、4:3、3:4、21:9、adaptive，超分可用性由后端配置决定。音频校验在上传前完成；已有 `ssupload` 引用和混合输入的完整元数据交给服务端校验。
+Q4 本地参考音频支持 WAV/MP3，每段 ≤20 MiB、取整后 1–16 秒，最多 3 段，没有合计 15 秒的限制。SD 支持本地可识别音频文件、每段 ≤20 MiB；普通后端链路已停用参考时长检查，因此 CLI 移除旧的每段 2–15 秒、合计 15 秒硬限制。SD 输出时长支持 `-1` 智能时长或 4–15 秒，并禁止 `nopeak`；分辨率支持 480p/720p/1080p/2k/4k，输出比例为 16:9、9:16、1:1、4:3、3:4、21:9、adaptive，超分可用性由后端配置决定。音频校验在上传前完成；已有 `ssupload` 引用和混合输入的完整元数据交给服务端校验。
 
-Q3.1 Drama 的 `text2video` 只接受文本。多模态参考使用 `character2video`，至少提供图片、视频或音频之一，最多 9 张图、3 段视频、10 段音频。不支持 material 或智能输出时长，转场参数透传给后端策略判断，且仅支持 `--schedule-mode normal`。本地 WAV/MP3 每段 ≤15 MiB；参考音频和视频均逐段四舍五入到整数秒后校验每段 4–30 秒，每类合计最多 30 秒。混入视频也不会将音频下限降至 2 秒。准备后实际上传的图片支持 PNG/JPEG/WebP、模型上限 50 MiB，且仍须满足通用上传限制；不额外限制图片几何或参考视频帧率、几何。本地视频优先使用内建 MP4 解析器，其他容器或解析失败时使用 `ffprobe`；缺少所需解析器时提示本地能力错误。已有 `ssupload` 输入由服务端完整校验。submit 和 cost 使用相同的 Drama 默认参数，报价由后端返回。
+**SD 参考图限制**：`3.2_a` 的图生、首尾帧、参考生任务都要求每张输入图片宽高为正，且 `0.4 ≤ 宽 / 高 ≤ 2.5`（即 2:5–5:2，包含边界）。图生恰好 1 张图，首尾帧恰好 2 张图，这两类任务不能混入参考视频或音频；参考生最多 9 个图片输入、3 个视频输入和 3 个音频输入。宽高比校验覆盖直接图片和图片素材展开后的每张图，也覆盖已有上传引用；元数据不完整或任意一张不合格都会被后端拒绝。此限制针对输入图，`--aspect-ratio` 控制输出，不能修复输入图比例。当前 CLI 将这项比例校验交给服务端执行。
+
+Q3.1 Drama 的 `text2video` 只接受文本。多模态参考使用 `character2video`，至少提供图片、视频或音频之一，最多 9 张图、3 段视频、10 段音频。不支持 material 或智能输出时长，转场参数透传给后端策略判断，且仅支持 `--schedule-mode normal`。本地 WAV/MP3 每段 ≤15 MiB；参考音频和视频均逐段四舍五入到整数秒后校验每段 4–30 秒，每类合计最多 30 秒。混入视频也不会将音频下限降至 2 秒。准备后实际上传的图片支持 PNG/JPEG/WebP、模型上限 50 MiB，且仍须满足通用上传限制；每张图片宽高必须为正，输入宽高比同样须在 `0.4–2.5` 内（包含边界），由后端读取元数据校验。该图片校验没有额外的边长或像素总数上限；参考视频也未增加帧率或几何限制。本地视频优先使用内建 MP4 解析器，其他容器或解析失败时使用 `ffprobe`；缺少所需解析器时提示本地能力错误。已有 `ssupload` 输入由服务端完整校验。submit 和 cost 使用相同的 Drama 默认参数；cost 不提交参考媒体，报价成功不代表输入图片已通过校验。
 
 Image 2.5 Fast/Pro 在五种常用比例外支持 `3:2`、`2:3`、`21:9`、`9:21`。`3.1` 生图支持 `--aspect-ratio auto`（以空比例交给后端意图分析），以及 1:10–10:1 内的正数 `w:h` 自定义比例。其他图片模型也接受可解析的正数 `w:h` 或智能空比例；普通 Vidu 视频比例允许透传，SD/Drama/Wan 仍使用各自明确的比例集合。语法校验通过不代表外部执行服务已验证支持每种自定义比例。
 
@@ -317,8 +331,9 @@ vidu-cli task tts \
   --text "大家好！" \
   --text "这是一个令人兴奋的消息。" \
   --voice-id "Chinese (Mandarin)_Reliable_Executive" \
-  --emotion "开心" \
-  --emotion "激动" \
+  --emotion happy \
+  --emotion surprised \
+  --subtitle-enable=false \
   --speed 1.2 \
   --volume 80 \
   --language-boost "Chinese"
@@ -326,16 +341,19 @@ vidu-cli task tts \
 
 `--prompt`（单段）和 `--text`（可重复，多段）互斥。使用 `--text` 时，每个 `--emotion` 按顺序与对应的 `--text` 段配对。
 
+CLI 最多接受 20 段，每段非空且不超过 2000 个字符。infer 会将各段去除首尾空白后拼接，要求合计不超过 2500 个汉字（Unicode Han）且总字符数不超过 5000；拆段不会绕过合计限制。`--subtitle-enable` 默认开启，后端只允许单段生成字幕，因此多段请求必须显式传 `--subtitle-enable=false`。情绪仅支持 `happy`、`sad`、`angry`、`fearful`、`disgusted`、`surprised`、`calm`、`neutral`；当前 CLI 仅检查情绪长度，枚举和合计字符数由后端校验。
+
 **参数：**
 
 | 参数 | 必填 | 默认值 | 范围 | 说明 |
 |------|------|--------|------|------|
 | `--prompt` | 是* | - | 1-2000 字符 | 单段文本（*与 `--text` 互斥） |
-| `--text` | 是* | - | 可重复 | 多段文本（*与 `--prompt` 互斥） |
+| `--text` | 是* | - | 1–20 段，每段 1–2000 字符 | 多段文本（*与 `--prompt` 互斥）；另受上述合计长度限制 |
 | `--voice-id` | 是 | - | 见声音列表 | 语音合成声音 ID |
 | `--speed` | 否 | 1.0 | 0.5-2.0 | 语速倍率 |
 | `--volume` | 否 | 80 | 0-100 | 音量 |
-| `--emotion` | 否 | - | 可重复 | 每段情绪（按顺序与 `--text` 配对） |
+| `--emotion` | 否 | - | 上述英文枚举，可重复 | 按顺序与 `--text` 配对，数量不能多于文本段数 |
+| `--subtitle-enable` | 否 | true | true / false | 生成字幕 JSON；仅支持单段，多段须传 false；别名 `--subtitle-enabled` |
 | `--language-boost` | 否 | - | Chinese, English, auto 等 | 增强特定语言/方言识别 |
 | `--schedule-mode` | 否 | auto | claw_pass, nopeak, normal | 计费/排队模式：`nopeak` 使用闲时额度并由服务端校验资格、剩余额度和任务/模型限制；`claw_pass` 使用通行证额度；`normal` 使用积分。省略时若有有效 claw pass 则自动选择，否则使用 `normal` |
 
