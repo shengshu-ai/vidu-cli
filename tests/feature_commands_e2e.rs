@@ -142,6 +142,8 @@ impl Mock {
             .env("VIDU_BASE_URL", &self.base)
             .env("VIDU_TOKEN", "e2e-test-token")
             .env_remove("VIDU_DEBUG")
+            .env_remove("VIDU_ELEMENT_PLATFORM_ASSETS")
+            .env("VIDU_ELEMENT_PLATFORM_ASSETS", "true")
             .envs(env.iter().copied())
             .timeout(Duration::from_secs(12))
             .args(args)
@@ -1811,6 +1813,7 @@ fn personal(token: &str, response: Value) -> Step {
         ("pager.page_token", token),
         ("pager.pagesz", "20"),
         ("modalities", "image"),
+        ("without_preset", "true"),
     ])
 }
 #[test]
@@ -1846,9 +1849,9 @@ fn personal_element_cursor_numeric_page_and_past_end() {
 fn element_update_labels_recaption_and_delete() {
     let server = Mock::new(|_| {
         vec![
-            get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","name":"old name","modality":"image","recaption":{"style":"realistic","description":"old"}}})),
+            get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","edition":1,"name":"old name","modality":"image","recaption":{"style":"realistic","description":"old"}}})),
             Step::json("PUT","/vidu/v1/material/elements/42",json!({"version":"2"})).body(json!({"mask":"name,labels,recaption","element":{"id":"42","name":"new","labels":[{"id":"7"},{"id":"8"}],"modality":"image","recaption":{"style":"realistic","description":"fresh"}}})),
-            get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","name":"new","modality":"image","recaption":{"style":"realistic","description":"fresh"}}})),
+            get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","edition":1,"name":"new","modality":"image","recaption":{"style":"realistic","description":"fresh"}}})),
             Step::json("PUT","/vidu/v1/material/elements/42",json!({})).body(json!({"mask":"labels","element":{"id":"42","name":"new","modality":"image","recaption":{"style":"realistic","description":"fresh"},"labels":[]}})),
             Step::json("DELETE","/vidu/v1/material/elements/42",json!({})),
         ]
@@ -1877,6 +1880,372 @@ fn element_update_labels_recaption_and_delete() {
         true,
     );
     envelope(&server.run(&["element", "delete", "42"]), true);
+    server.finish();
+}
+
+#[test]
+fn element_create_uses_one_step_material_contract_and_preserves_image_order() {
+    let server = Mock::new(|_| {
+        vec![
+        Step::json("POST", "/vidu/v1/material/elements/create", json!({"id":42,"version":"9007199254740993"}))
+            .body(json!({"name":"角色", "modality":"image", "tag_ids":["9007199254740993"],
+                "components":[
+                    {"content":"ssupload:?id=11","src_img":"ssupload:?id=11","content_type":"image","type":"main"},
+                    {"content":"ssupload:?id=22","src_img":"ssupload:?id=22","content_type":"image","type":"auxiliary"},
+                    {"content":"ssupload:?id=33","src_img":"ssupload:?id=33","content_type":"image","type":"auxiliary"}],
+                "recaption":{"description":"角色描述"}}))
+    ]
+    });
+    let result = envelope(
+        &server.run(&[
+            "element",
+            "create",
+            "--name",
+            "角色",
+            "--tag",
+            "9007199254740993",
+            "--image",
+            "ssupload:?id=11",
+            "--image",
+            "ssupload:?id=22",
+            "--image",
+            "ssupload:?id=33",
+            "--description",
+            "角色描述",
+        ]),
+        true,
+    );
+    assert_eq!(result["id"], "42");
+    assert_eq!(result["version"], "9007199254740993");
+    server.finish();
+}
+
+/// Exercise real decoding/upload bytes without external files or credentials.
+fn element_image_fixture() -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("character.png");
+    let mut seed = 0x1234_5678u32;
+    image::RgbImage::from_fn(64, 64, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        let bytes = seed.to_le_bytes();
+        image::Rgb([bytes[0], bytes[1], bytes[2]])
+    })
+    .save(&path)
+    .unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(bytes.len() > 512);
+    (directory, path, bytes)
+}
+
+fn element_upload_steps(base: &str, id: &str, bytes: Vec<u8>) -> Vec<Step> {
+    vec![
+        Step::json("POST", "/tools/v1/assets/uploads", json!({"upload_token":id,"put_url":format!("{base}/blob/image"),"headers":{"x-upload-test":"required"}}))
+            .body(json!({"file_name":"image.png","content_type":"image/png","scene":"material"})),
+        Step::json("PUT", "/blob/image", json!({})).check(move |request| {
+            assert_eq!(request.body, bytes);
+            assert_eq!(request.headers["content-type"], "image/png");
+            assert_eq!(request.headers["x-upload-test"], "required");
+            assert!(!request.headers.contains_key("authorization"));
+        }),
+        Step::json("PUT", "/tools/v1/assets/uploads/complete", json!({"upload_uri":format!("ssupload:?id={id}")}))
+            .body(json!({"upload_token":id,"etag":"test-etag"})),
+    ]
+}
+
+#[test]
+fn element_create_uploads_local_and_http_images_before_material_write() {
+    let (_directory, path, bytes) = element_image_fixture();
+    let server = Mock::new(|base| {
+        let mut steps = element_upload_steps(base, "11", bytes.clone());
+        steps.push(Step::json("GET", "/blob/source", json!({})).raw("image/png", &bytes));
+        steps.extend(element_upload_steps(base, "22", bytes));
+        steps.push(Step::json("POST", "/vidu/v1/material/elements/create", json!({"id":"42","version":"2"}))
+            .body(json!({"name":"uploaded", "modality":"image", "tag_ids":["1"], "components":[
+                {"content":"ssupload:?id=11","src_img":"ssupload:?id=11","content_type":"image","type":"main"},
+                {"content":"ssupload:?id=22","src_img":"ssupload:?id=22","content_type":"image","type":"auxiliary"}]})));
+        steps
+    });
+    let url = format!("{}/blob/source", server.base);
+    envelope(
+        &server.run(&[
+            "element",
+            "create",
+            "--name",
+            "uploaded",
+            "--tag",
+            "1",
+            "--image",
+            path.to_str().unwrap(),
+            "--image",
+            &url,
+        ]),
+        true,
+    );
+    server.finish();
+}
+
+#[test]
+fn element_update_replaces_images_and_caption_without_changing_taxonomy() {
+    let (_directory, path, bytes) = element_image_fixture();
+    let server = Mock::new(|base| {
+        let mut steps = vec![get(
+            "/vidu/v1/material/elements/detail/42",
+            json!({"element":{
+            "id":"42","name":"old","modality":"image","recaption":{"description":"old description","style":"old style","extra":"keep"},
+            "components":[{"content":"https://private.invalid/old-image"}],"voice":{"id":"voice-1"},"tag_ids":["99"]}}),
+        )];
+        steps.extend(element_upload_steps(base, "11", bytes));
+        steps.push(Step::json("PUT", "/vidu/v2/material/elements/42", json!({"id":"42","version":"2"}))
+            .body(json!({"mask":"name,recaption,components","element":{
+                "id":"42","name":"new","modality":"image",
+                "recaption":{"description":"fresh","style":"old style","extra":"keep"},
+                "components":[{"content":"ssupload:?id=11","src_img":"ssupload:?id=11","content_type":"image","type":"main"}]}})));
+        steps
+    });
+    let result = envelope(
+        &server.run(&[
+            "element",
+            "update",
+            "42",
+            "--name",
+            "new",
+            "--recaption",
+            "fresh",
+            "--image",
+            path.to_str().unwrap(),
+        ]),
+        true,
+    );
+    assert_eq!(result["version"], "2");
+    server.finish();
+}
+
+#[test]
+fn element_metadata_edits_work_with_asset_mode_without_media_registration() {
+    for (args, expected) in [
+        (
+            vec!["--recaption", "updated"],
+            json!({"mask":"recaption","element":{"id":"42","name":"old","modality":"image","recaption":{"style":"anime","description":"updated"}}}),
+        ),
+        (
+            vec!["--name", "updated"],
+            json!({"mask":"name","element":{"id":"42","name":"updated","modality":"image","recaption":{"style":"anime","description":"keep"}}}),
+        ),
+    ] {
+        let server = Mock::new(|_| {
+            vec![
+                get(
+                    "/vidu/v1/material/elements/detail/42",
+                    json!({"element":{"id":"42","name":"old","modality":"image","recaption":{"style":"anime","description":"keep"},"components":[{"content":"untouched"}]}}),
+                ),
+                Step::json(
+                    "PUT",
+                    "/vidu/v2/material/elements/42",
+                    json!({"version":"2"}),
+                )
+                .body(expected),
+            ]
+        });
+        let mut command = vec!["element", "update", "42"];
+        command.extend(args);
+        envelope(
+            &server.run_env(&command, &[("VIDU_ELEMENT_PLATFORM_ASSETS", "true")]),
+            true,
+        );
+        server.finish();
+    }
+}
+
+/// Enabling platform assets allows direct asset references without uploads.
+#[test]
+fn element_asset_ids_create_and_replace_without_uploads() {
+    let server = Mock::new(|_| {
+        vec![
+        Step::json("POST", "/vidu/v1/material/elements/create", json!({"id":"42","version":"1"}))
+            .body(json!({"name":"test","modality":"image","tag_ids":["1"],"components":[
+                {"asset_id":"9007199254740993","type":"main","content_type":"image"},
+                {"asset_id":"8","type":"auxiliary","content_type":"image"}]})),
+        get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","name":"test","modality":"image","recaption":{"style":"realistic","description":"keep"}}})),
+        Step::json("PUT", "/vidu/v2/material/elements/42", json!({"id":"42","version":"2","components":[{"asset_id":"9","content":"https://preview.invalid/image"}]}))
+            .body(json!({"mask":"components","element":{"id":"42","name":"test","modality":"image","recaption":{"style":"realistic","description":"keep"},"components":[{"asset_id":"9","type":"main","content_type":"image"}]}})),
+    ]
+    });
+    envelope(
+        &server.run_env(
+            &[
+                "element",
+                "create",
+                "--name",
+                "test",
+                "--tag",
+                "1",
+                "--asset_id",
+                "9007199254740993",
+                "--asset-id",
+                "8",
+            ],
+            &[("VIDU_ELEMENT_PLATFORM_ASSETS", "true")],
+        ),
+        true,
+    );
+    let result = envelope(
+        &server.run(&["element", "update", "42", "--asset_id", "9"]),
+        true,
+    );
+    assert_eq!(result["components"][0]["asset_id"], "9");
+    server.finish();
+}
+
+#[test]
+fn element_removed_switch_and_conflicting_inputs_fail_at_parse() {
+    let server = Mock::new(|_| vec![]);
+    for args in [
+        vec![
+            "element",
+            "create",
+            "--name",
+            "test",
+            "--tag",
+            "1",
+            "--asset-id",
+            "7",
+            "--platform-assets",
+        ],
+        vec![
+            "element",
+            "create",
+            "--name",
+            "test",
+            "--tag",
+            "1",
+            "--asset-id",
+            "7",
+            "--image",
+            "ssupload:?id=1",
+        ],
+        vec![
+            "element",
+            "update",
+            "42",
+            "--asset-id",
+            "7",
+            "--clear-labels",
+        ],
+    ] {
+        assert_eq!(server.run(&args).status.code(), Some(2));
+    }
+    server.finish();
+}
+
+#[test]
+fn element_invalid_media_metadata_and_modes_never_reach_http() {
+    let server = Mock::new(|_| vec![]);
+    let long_name = "名".repeat(31);
+    for options in [
+        vec![],
+        vec!["--image", ""],
+        vec!["--image", "ssupload:?id=1", "--tag", "0"],
+        vec!["--image", "ssupload:?id=1", "--tag", "9223372036854775808"],
+        vec!["--image", "ssupload:?id=1", "--description", ""],
+        vec!["--image", "ssupload:?id=1", "--name", &long_name],
+        vec!["--asset-id", "not-an-id"],
+        vec![
+            "--image", "1", "--image", "2", "--image", "3", "--image", "4",
+        ],
+    ] {
+        // Keep one name/tag occurrence: clap rejects repeats before command code.
+        let mut command = vec!["element", "create"];
+        if !options.contains(&"--name") {
+            command.extend(["--name", "test"]);
+        }
+        if !options.contains(&"--tag") {
+            command.extend(["--tag", "1"]);
+        }
+        command.extend(options);
+        let result = envelope(&server.run(&command), false);
+        assert_eq!(result["error"]["type"], "client_error");
+    }
+    server.finish();
+}
+
+#[test]
+fn element_media_replacement_rejects_other_modalities_before_upload() {
+    for modality in ["video", "text"] {
+        let server = Mock::new(|_| {
+            vec![get(
+                "/vidu/v1/material/elements/detail/42",
+                json!({"element":{
+            "id":"42","name":"old","modality":modality,"recaption":{"style":"","description":"keep"}}}),
+            )]
+        });
+        let result = envelope(
+            &server.run(&["element", "update", "42", "--image", "missing.png"]),
+            false,
+        );
+        assert_eq!(result["error"]["type"], "client_error");
+        server.finish();
+    }
+}
+
+#[test]
+fn element_library_errors_are_not_retried_or_replayed_to_legacy() {
+    let server = Mock::new(|_| {
+        vec![
+            Step::json(
+                "POST",
+                "/vidu/v1/material/elements/create",
+                json!({"code":"NotImplemented","message":"not deployed"}),
+            )
+            .status(501)
+            .check(|request| assert!(request.json().get("components").is_some())),
+            Step::json(
+                "POST",
+                "/vidu/v1/material/elements/create",
+                json!({"version":"2"}),
+            )
+            .check(|request| assert!(request.json().get("components").is_some())),
+        ]
+    });
+    let args = [
+        "element",
+        "create",
+        "--name",
+        "test",
+        "--tag",
+        "1",
+        "--image",
+        "ssupload:?id=11",
+    ];
+    envelope(&server.run(&args), false);
+    let result = envelope(&server.run(&args), false);
+    assert_eq!(result["error"]["type"], "parse_error");
+    assert!(result["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("may have succeeded"));
+    server.finish();
+}
+
+#[test]
+fn element_tags_requests_first_level_from_server_and_projects_fields() {
+    let response = json!({"tags":[
+        {"id":1,"display_name_zh":"角色","display_name_en":"Character","rank":5,"extra":{"element":{"selectable":true}}},
+        {"id":"3","parent_id":"0","display_name_zh":"场景","extra":{"element":{"selectable":false}}},
+        {"id":"4","display_name_zh":"道具"}
+    ]});
+    let server = Mock::new(|_| {
+        vec![get("/vidu/v1/material/elements/tags", response).query(&[("parent_id", "0")])]
+    });
+    assert_eq!(
+        envelope(&server.run(&["element", "tags"]), true),
+        json!({"ok":true,"tags":[
+            {"id":"1","name":"角色","name_en":"Character"},
+            {"id":"3","name":"场景","name_en":""},
+            {"id":"4","name":"道具","name_en":""}
+        ]})
+    );
     server.finish();
 }
 
@@ -1913,6 +2282,7 @@ fn each_element_update_keeps_required_context_without_expanding_mask() {
         ),
     ] {
         let mut expected = json!({"mask":mask,"element":{"id":"42","name":name,"modality":"image","recaption":{"style":"realistic","description":description}}});
+        let legacy_labels = labels.is_some();
         if let Some(labels) = labels {
             expected["element"]["labels"] = labels;
         }
@@ -1920,11 +2290,15 @@ fn each_element_update_keeps_required_context_without_expanding_mask() {
             vec![
                 get(
                     "/vidu/v1/material/elements/detail/42",
-                    json!({"element":{"id":"42","name":"original name","modality":"image","recaption":{"style":"realistic","description":"original description"}}}),
+                    json!({"element":{"id":"42","edition":1,"name":"original name","modality":"image","recaption":{"style":"realistic","description":"original description"}}}),
                 ),
                 Step::json(
                     "PUT",
-                    "/vidu/v1/material/elements/42",
+                    if legacy_labels {
+                        "/vidu/v1/material/elements/42"
+                    } else {
+                        "/vidu/v2/material/elements/42"
+                    },
                     json!({"version":"2"}),
                 )
                 .body(expected),
@@ -1976,7 +2350,7 @@ fn shared_search_favorites_and_collect_use_shared_id() {
                 ("keyword", "cat"),
                 ("category", "character"),
                 ("topic", "summer"),
-                ("sort_by", "hot"),
+                ("sort_by", "time"),
                 ("modalities", "image"),
                 ("is_like", "false"),
                 ("is_collect", "false"),
@@ -2011,7 +2385,7 @@ fn shared_search_favorites_and_collect_use_shared_id() {
             "--topic",
             "summer",
             "--sort-by",
-            "hot",
+            "time",
         ]),
         true,
     );
@@ -2689,4 +3063,655 @@ fn extend_rejects_unknown_or_zero_length_source_without_submitting() {
             .contains("duration"));
         server.finish();
     }
+}
+
+#[test]
+fn element_single_tag_and_service_owned_style_reject_invalid_cli_inputs() {
+    let server = Mock::new(|_| vec![]);
+    for action in ["create", "update"] {
+        for extra in [
+            vec!["--tag", "1", "--tag", "2"],
+            vec!["--tag", "1", "--style", "realistic"],
+        ] {
+            let mut args = vec!["element", action];
+            if action == "create" {
+                args.extend(["--name", "test", "--image", "missing.png"]);
+            } else {
+                args.push("42");
+            }
+            let extra = if action == "update" && extra.contains(&"--style") {
+                vec!["--style", "realistic"]
+            } else {
+                extra
+            };
+            args.extend(extra);
+            let output = server.run(&args);
+            assert_eq!(output.status.code(), Some(2));
+            assert!(String::from_utf8_lossy(&output.stderr).contains(
+                if args.contains(&"--style") {
+                    "--style"
+                } else {
+                    "--tag"
+                }
+            ));
+        }
+    }
+    server.finish();
+}
+
+#[test]
+fn element_update_rejects_even_a_single_taxonomy_change_before_http() {
+    let server = Mock::new(|_| vec![]);
+    let output = server.run(&["element", "update", "42", "--name", "new", "--tag", "1"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("--tag"));
+    server.finish();
+}
+
+/// Discovery and collections must use server-side filtering with opaque cursors.
+#[test]
+fn official_queries_preserve_filters_identity_and_cursor() {
+    for command in ["list", "search", "favorites"] {
+        let collected = if command == "favorites" {
+            "true"
+        } else {
+            "false"
+        };
+        let server = Mock::new(|_| {
+            vec![get(
+                "/vidu/v1/material/elements/official",
+                json!({
+                    "elements":[{"id":42,"version":"9007199254740993","tag_ids":[1],
+                        "source":"preset","is_favorited":true}],"next_page_token":"next/+="
+                }),
+            )
+            .query(&[
+                ("query.pager.pagesz", "20"),
+                ("query.pager.page_token", "opaque/+=token"),
+                ("query.keyword", "女孩"),
+                ("query.tag_ids", "1"),
+                ("collected_only", collected),
+            ])]
+        });
+        let result = envelope(
+            &server.run(&[
+                "element",
+                command,
+                "--source",
+                "official",
+                "--keyword",
+                "女孩",
+                "--tag",
+                "1",
+                "--page-token",
+                "opaque/+=token",
+            ]),
+            true,
+        );
+        assert_eq!(
+            result["elements"],
+            json!([{"id":"42","version":"9007199254740993","name":""}])
+        );
+        assert!(result.get("library_source").is_none());
+        assert_eq!(result["next_page_token"], "next/+=");
+        server.finish();
+    }
+}
+
+/// Official collection uses element identity directly, including offline removal.
+#[test]
+fn official_collection_never_resolves_share_or_detail() {
+    let server = Mock::new(|_| {
+        vec![
+            Step::json("PUT", "/tools/v1/votes/official_element/42", json!({}))
+                .body(json!({"obj_type":"official_element","obj_id":"42","vote":"collect"})),
+            Step::json("DELETE", "/tools/v1/votes/official_element/42", json!({}))
+                .query(&[("vote", "collect")]),
+        ]
+    });
+    for command in ["favorite", "unfavorite"] {
+        envelope(
+            &server.run(&["element", command, "42", "--source", "official"]),
+            true,
+        );
+    }
+    server.finish();
+}
+
+#[test]
+fn official_errors_do_not_fallback_or_retry() {
+    for status in [403, 404, 501] {
+        let server = Mock::new(|_| {
+            vec![Step::json(
+                "PUT",
+                "/tools/v1/votes/official_element/42",
+                json!({"message":"unavailable"}),
+            )
+            .body(json!({"obj_type":"official_element","obj_id":"42","vote":"collect"}))
+            .status(status)]
+        });
+        envelope(
+            &server.run(&["element", "favorite", "42", "--source", "official"]),
+            false,
+        );
+        server.finish();
+    }
+}
+
+/// Unsupported combinations fail before touching the network.
+#[test]
+fn official_filters_are_not_silently_ignored() {
+    let server = Mock::new(|_| vec![]);
+    for args in [
+        vec!["element", "favorites", "--keyword", "女孩"],
+        vec!["element", "search", "--keyword", "女孩", "--tag", "1"],
+        vec![
+            "element",
+            "search",
+            "--source",
+            "official",
+            "--keyword",
+            "女孩",
+            "--sort-by",
+            "recommend",
+        ],
+        vec![
+            "element",
+            "search",
+            "--source",
+            "official",
+            "--keyword",
+            "女孩",
+            "--category",
+            "character",
+        ],
+        vec![
+            "element",
+            "search",
+            "--source",
+            "official",
+            "--keyword",
+            "女孩",
+            "--topic",
+            "summer",
+        ],
+        vec!["element", "list", "--source", "official", "--tag", "0"],
+    ] {
+        envelope(&server.run(&args), false);
+    }
+    for args in [
+        vec!["element", "list", "--source", "community"],
+        vec![
+            "element", "list", "--source", "official", "--tag", "1", "--tag", "2",
+        ],
+    ] {
+        assert_eq!(server.run(&args).status.code(), Some(2));
+    }
+    server.finish();
+}
+
+#[test]
+fn official_numeric_pages_walk_server_cursors() {
+    let server = Mock::new(|_| {
+        vec![
+            get(
+                "/vidu/v1/material/elements/official",
+                json!({"elements":[],"next_page_token":"cursor-1"}),
+            )
+            .query(&[
+                ("query.pager.pagesz", "20"),
+                ("query.pager.page_token", ""),
+                ("collected_only", "false"),
+            ]),
+            get(
+                "/vidu/v1/material/elements/official",
+                json!({"elements":[{"id":"42","version":"1"}]}),
+            )
+            .query(&[
+                ("query.pager.pagesz", "20"),
+                ("query.pager.page_token", "cursor-1"),
+                ("collected_only", "false"),
+            ]),
+        ]
+    });
+    let result = envelope(
+        &server.run(&["element", "list", "--source", "official", "--page", "1"]),
+        true,
+    );
+    assert_eq!(result["elements"][0]["id"], "42");
+    assert_eq!(result["next_page_token"], "");
+    server.finish();
+}
+
+/// The 20261119 API declares flat Element arrays and opaque string cursors.
+#[test]
+fn official_list_contract_rejects_malformed_responses() {
+    for response in [
+        json!([]),
+        json!({"elements":{}}),
+        json!({"elements":[null]}),
+        json!({"next_page_token":42}),
+    ] {
+        let server = Mock::new(|_| {
+            vec![
+                get("/vidu/v1/material/elements/official", response).query(&[
+                    ("query.pager.pagesz", "20"),
+                    ("query.pager.page_token", ""),
+                    ("collected_only", "false"),
+                ]),
+            ]
+        });
+        envelope(
+            &server.run(&["element", "list", "--source", "official"]),
+            false,
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn search_rejects_unknown_sort_and_blank_keyword_before_network() {
+    let server = Mock::new(|_| vec![]);
+    assert_eq!(
+        server
+            .run(&["element", "search", "--keyword", "女孩", "--sort-by", "hot"])
+            .status
+            .code(),
+        Some(2)
+    );
+    envelope(
+        &server.run(&["element", "search", "--keyword", "   "]),
+        false,
+    );
+    server.finish();
+}
+
+/// A failed or malformed asset completion must never create a subject or fall
+/// back to the old Files service. Each mock permits only the specified stages.
+#[test]
+fn element_asset_upload_failures_stop_before_subject_write() {
+    let (_directory, path, bytes) = element_image_fixture();
+    for stage in ["ticket", "complete", "missing_uri"] {
+        let server = Mock::new(|base| {
+            if stage == "ticket" {
+                return vec![Step::json(
+                    "POST",
+                    "/tools/v1/assets/uploads",
+                    json!({"message":"denied"}),
+                )
+                .body(
+                    json!({"file_name":"image.png","content_type":"image/png","scene":"material"}),
+                )
+                .status(403)];
+            }
+            let mut steps = element_upload_steps(base, "11", bytes.clone());
+            steps.pop();
+            steps.push(
+                Step::json(
+                    "PUT",
+                    "/tools/v1/assets/uploads/complete",
+                    if stage == "missing_uri" {
+                        json!({"asset_id":"99"})
+                    } else {
+                        json!({"message":"audit rejected"})
+                    },
+                )
+                .body(json!({"upload_token":"11","etag":"test-etag"}))
+                .status(if stage == "complete" { 403 } else { 200 }),
+            );
+            steps
+        });
+        envelope(
+            &server.run(&[
+                "element",
+                "create",
+                "--name",
+                "test",
+                "--tag",
+                "1",
+                "--image",
+                path.to_str().unwrap(),
+            ]),
+            false,
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn element_asset_binding_error_is_not_retried_or_downgraded() {
+    let server = Mock::new(|_| {
+        vec![
+        get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","name":"test","modality":"image","recaption":{"style":"","description":"keep"}}})),
+        Step::json("PUT", "/vidu/v2/material/elements/42", json!({"message":"asset forbidden"}))
+            .body(json!({"mask":"components","element":{"id":"42","name":"test","modality":"image","recaption":{"style":"","description":"keep"},"components":[{"asset_id":"9","content_type":"image","type":"main"}]}})).status(403),
+    ]
+    });
+    envelope(
+        &server.run(&["element", "update", "42", "--asset-id", "9"]),
+        false,
+    );
+    server.finish();
+}
+
+#[test]
+fn element_get_omits_allowed_usages_and_keeps_asset_references() {
+    let server = Mock::new(|_| {
+        vec![get(
+            "/vidu/v1/material/elements/detail/42",
+            json!({
+                "element":{"id":"42","allowed_usages":["creation","tool"],"edition":1,
+                "components":[{"asset_id":"9007199254740993","content":"https://example.com/image.png"}]},
+                "trace_id":"trace-detail"
+            }),
+        )]
+    });
+    let result = envelope(&server.run(&["element", "get", "42"]), true);
+    assert!(result["element"].get("allowed_usages").is_none());
+    assert_eq!(
+        result["element"]["components"][0]["asset_id"],
+        "9007199254740993"
+    );
+    assert!(result["element"].get("edition").is_none());
+    assert_eq!(result["trace_id"], "trace-detail");
+    server.finish();
+}
+
+#[test]
+fn element_update_omits_allowed_usages_for_both_write_endpoints() {
+    for labels in [false, true] {
+        let server = Mock::new(|_| {
+            vec![
+            get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","edition":1,"name":"test","modality":"image","recaption":{"description":"keep","style":""}}})),
+            Step::json("PUT", if labels {"/vidu/v1/material/elements/42"} else {"/vidu/v2/material/elements/42"},
+                json!({"id":"42","allowed_usages":["agent"],"edition":2,"components":[{"asset_id":"9","content":"https://example.com/image.png"}]}))
+                .body(if labels {json!({"mask":"labels","element":{"id":"42","name":"test","modality":"image","recaption":{"description":"keep","style":""},"labels":[]}})}
+                    else {json!({"mask":"name","element":{"id":"42","name":"new","modality":"image","recaption":{"description":"keep","style":""}}})}),
+        ]
+        });
+        let args = if labels {
+            vec!["element", "update", "42", "--clear-labels"]
+        } else {
+            vec!["element", "update", "42", "--name", "new"]
+        };
+        let result = envelope(&server.run(&args), true);
+        assert!(result.get("allowed_usages").is_none());
+        assert_eq!(result["components"][0]["asset_id"], "9");
+        assert!(result.get("edition").is_none());
+        server.finish();
+    }
+}
+
+/// Conditional search shares server filtering with browse, including cursor
+/// scope and preset exclusion, without imposing list's 10-item minimum.
+#[test]
+fn personal_search_and_list_support_single_taxonomy_tag() {
+    for command in ["search", "list"] {
+        let pagesz = if command == "search" { "1" } else { "20" };
+        let server = Mock::new(|_| {
+            vec![get(
+                "/vidu/v1/material/elements/personal",
+                json!({"elements":[{"id":"42","version":"1","name":"男生"}]}),
+            )
+            .query(&[
+                ("pager.pagesz", pagesz),
+                ("pager.page_token", "cursor"),
+                ("without_preset", "true"),
+                ("modalities", "image"),
+                ("tag_ids", "1"),
+                ("keyword", "男生"),
+            ])]
+        });
+        let result = envelope(
+            &server.run(&[
+                "element",
+                command,
+                "--source",
+                "personal",
+                "--tag",
+                "1",
+                "--keyword",
+                "男生",
+                "--pagesz",
+                pagesz,
+                "--page-token",
+                "cursor",
+            ]),
+            true,
+        );
+        assert_eq!(
+            result["elements"],
+            json!([{"id":"42","version":"1","name":"男生"}])
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn official_search_accepts_tag_without_keyword() {
+    let server = Mock::new(|_| {
+        vec![get(
+            "/vidu/v1/material/elements/official",
+            json!({"elements":[]}),
+        )
+        .query(&[
+            ("query.pager.pagesz", "20"),
+            ("query.pager.page_token", ""),
+            ("query.tag_ids", "1"),
+            ("collected_only", "false"),
+        ])]
+    });
+    envelope(
+        &server.run(&["element", "search", "--source", "official", "--tag", "1"]),
+        true,
+    );
+    server.finish();
+}
+
+#[test]
+fn community_search_accepts_category_without_keyword_and_stays_default() {
+    let server = Mock::new(|_| {
+        vec![get(
+            "/vidu/v1/material/share_elements/feed",
+            json!({"share_elements":[]}),
+        )
+        .query(&[
+            ("pager.pagesz", "20"),
+            ("pager.page_token", ""),
+            ("category", "character"),
+            ("keyword", ""),
+            ("sort_by", "recommend"),
+            ("is_collect", "false"),
+            ("is_like", "false"),
+            ("modalities", "image"),
+        ])]
+    });
+    envelope(
+        &server.run(&["element", "search", "--category", "character"]),
+        true,
+    );
+    server.finish();
+}
+
+#[test]
+fn search_validates_conditions_and_source_before_http() {
+    let server = Mock::new(|_| vec![]);
+    for args in [
+        vec!["element", "search"],
+        vec!["element", "search", "--source", "personal"],
+        vec!["element", "search", "--source", "official"],
+        vec!["element", "search", "--tag", "1"],
+        vec!["element", "search", "--source", "personal", "--tag", "0"],
+        vec![
+            "element",
+            "search",
+            "--source",
+            "personal",
+            "--category",
+            "character",
+        ],
+        vec![
+            "element",
+            "search",
+            "--source",
+            "official",
+            "--keyword",
+            " ",
+        ],
+        vec!["element", "search", "--topic", " "],
+    ] {
+        envelope(&server.run(&args), false);
+    }
+    assert_eq!(
+        server
+            .run(&["element", "search", "--source", "personal", "--tag", "1", "--tag", "2"])
+            .status
+            .code(),
+        Some(2)
+    );
+    server.finish();
+}
+
+/// The default/explicit V1 flow must remain preprocess then legacy create,
+/// with no platform asset registration or taxonomy requirement.
+#[test]
+fn legacy_element_create_keeps_original_write_protocol() {
+    let components = json!([{"content":"ssupload:?id=old","src_img":"ssupload:?id=old","content_type":"image","type":"main"}]);
+    let server = Mock::new(|_| {
+        vec![
+        get("/vidu/v1/material/elements/create/check", json!({})).query(&[("name", "old character")]),
+        Step::json("POST", "/vidu/v1/material/elements/pre-process", json!({"id":"42","creator_id":"7","recaption":{"style":"realistic","description":"generated"}}))
+            .body(json!({"components":components,"name":"old character","type":"user"})),
+        Step::json("POST", "/vidu/v1/material/elements", json!({"id":"42","version":"1"}))
+            .body(json!({"id":"42","name":"old character","modality":"image","type":"user","components":components,"creator_id":"7","recaption":{"style":"realistic","description":"generated"}})),
+    ]
+    });
+    assert_eq!(
+        envelope(
+            &server.run_env(
+                &[
+                    "element",
+                    "create",
+                    "--name",
+                    "old character",
+                    "--image",
+                    "ssupload:?id=old"
+                ],
+                &[("VIDU_ELEMENT_PLATFORM_ASSETS", "false")]
+            ),
+            true
+        ),
+        json!({"ok":true,"id":"42","version":"1"})
+    );
+    server.finish();
+}
+
+#[test]
+fn legacy_element_name_update_stays_on_v1_and_preserves_raw_detail() {
+    let current = json!({"id":"42","name":"old","modality":"image","recaption":{"style":"realistic","description":"old"},"allowed_usages":["creation"]});
+    let server = Mock::new(|_| {
+        vec![
+        get("/vidu/v1/material/elements/detail/42", json!({"element":current})),
+        Step::json("PUT", "/vidu/v1/material/elements/42", json!({"version":"2"}))
+            .body(json!({"mask":"name","element":{"id":"42","name":"renamed","modality":"image","recaption":{"style":"realistic","description":"old"}}})),
+        get("/vidu/v1/material/elements/detail/42", json!({"element":current})),
+    ]
+    });
+    envelope(
+        &server.run_env(
+            &["element", "update", "42", "--name", "renamed"],
+            &[("VIDU_ELEMENT_PLATFORM_ASSETS", "false")],
+        ),
+        true,
+    );
+    let detail = envelope(
+        &server.run_env(
+            &["element", "get", "42"],
+            &[("VIDU_ELEMENT_PLATFORM_ASSETS", "false")],
+        ),
+        true,
+    );
+    assert_eq!(detail["element"]["allowed_usages"], json!(["creation"]));
+    server.finish();
+}
+
+/// Only the API display fields determine names; output-shaped fields are ignored.
+#[test]
+fn element_tags_reads_only_api_display_names() {
+    let server = Mock::new(|_| {
+        vec![
+        get("/vidu/v1/material/elements/tags", json!({"tags":[
+            {"id":"1","display_name_zh":"角色","display_name_en":"Character","name":"忽略","name_en":"Ignored"},
+            {"id":2,"name":"忽略","name_en":"Ignored","display_name_zh":"场景","display_name_en":"Scene"}
+        ]})).query(&[("parent_id", "0")])
+    ]
+    });
+    assert_eq!(
+        envelope(&server.run(&["element", "tags"]), true),
+        json!({"ok":true,"tags":[
+            {"id":"1","name":"角色","name_en":"Character"},
+            {"id":"2","name":"场景","name_en":"Scene"}
+        ]})
+    );
+    server.finish();
+}
+
+/// A single GET must precede the edition decision; rejected requests never PUT.
+#[test]
+fn element_label_edits_reject_new_missing_and_unknown_editions() {
+    for edition in [
+        Some(json!(2)),
+        Some(json!("2")),
+        Some(json!(3)),
+        Some(json!(0)),
+        None,
+    ] {
+        for options in [
+            vec!["--label", "7"],
+            vec!["--clear-labels"],
+            vec!["--name", "blocked", "--clear-labels"],
+        ] {
+            let mut current = json!({"id":"42","name":"original","modality":"image","recaption":{"style":"realistic","description":"keep"}});
+            if let Some(value) = &edition {
+                current["edition"] = value.clone();
+            }
+            let server = Mock::new(|_| {
+                vec![get(
+                    "/vidu/v1/material/elements/detail/42",
+                    json!({"element":current}),
+                )]
+            });
+            let mut args = vec!["element", "update", "42"];
+            args.extend(options);
+            let result = envelope(&server.run(&args), false);
+            assert_eq!(
+                result["error"]["type"],
+                if edition == Some(json!(2)) || edition == Some(json!("2")) {
+                    "client_error"
+                } else {
+                    "api_error"
+                }
+            );
+            server.finish();
+        }
+    }
+}
+
+#[test]
+fn element_legacy_label_string_edition_uses_one_get_then_v1_update() {
+    let server = Mock::new(|_| {
+        vec![
+        get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","edition":"1","name":"old","recaption":{"description":"keep","style":"realistic"}}})),
+        Step::json("PUT","/vidu/v1/material/elements/42",json!({"id":"42","edition":1,"allowed_usages":["creation"],"version":"2"}))
+            .body(json!({"mask":"labels","element":{"id":"42","name":"old","labels":[],"recaption":{"description":"keep","style":"realistic"}}}))
+    ]
+    });
+    let result = envelope(
+        &server.run(&["element", "update", "42", "--clear-labels"]),
+        true,
+    );
+    assert_eq!(result["version"], "2");
+    assert!(result.get("edition").is_none());
+    assert!(result.get("allowed_usages").is_none());
+    server.finish();
 }

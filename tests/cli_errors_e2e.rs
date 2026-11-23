@@ -13,7 +13,11 @@ use predicates::prelude::*;
 use predicates::str::contains;
 
 fn cli() -> Command {
-    Command::cargo_bin("vidu-cli").expect("vidu-cli binary should build")
+    {
+        let mut command = Command::cargo_bin("vidu-cli").expect("vidu-cli binary should build");
+        command.env_remove("VIDU_ELEMENT_PLATFORM_ASSETS");
+        command
+    }
 }
 
 // --- Success-path exit codes ---------------------------------------------
@@ -21,6 +25,20 @@ fn cli() -> Command {
 #[test]
 fn help_flag_exits_zero() {
     cli().arg("--help").assert().success();
+}
+
+#[test]
+fn element_help_hides_the_temporary_storage_switch() {
+    for action in ["create", "update"] {
+        for help in ["--help", "-h"] {
+            cli()
+                .args(["element", action, help])
+                .assert()
+                .success()
+                .stdout(contains("--platform-assets").not())
+                .stdout(contains("VIDU_ELEMENT_PLATFORM_ASSETS").not());
+        }
+    }
 }
 
 #[test]
@@ -382,4 +400,72 @@ fn q4_pass_is_rejected_before_auth_or_upload() {
             .failure()
             .stdout(contains("Q4 does not support claw_pass"));
     }
+}
+
+#[test]
+fn element_help_documents_sources_and_immutable_taxonomy() {
+    for action in ["list", "search", "favorites", "favorite", "unfavorite"] {
+        cli()
+            .env("VIDU_ELEMENT_PLATFORM_ASSETS", "true")
+            .args(["element", action, "--help"])
+            .assert()
+            .success()
+            .stdout(contains("--source"))
+            .stdout(contains("official"));
+    }
+    cli()
+        .env("VIDU_ELEMENT_PLATFORM_ASSETS", "true")
+        .args(["element", "create", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--tag"))
+        .stdout(contains("--style").not());
+    cli()
+        .env("VIDU_ELEMENT_PLATFORM_ASSETS", "true")
+        .args(["element", "update", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--tag").not())
+        .stdout(contains("--style").not())
+        .stdout(contains("--label"))
+        .stdout(contains("--clear-labels"));
+}
+
+#[test]
+fn default_element_help_and_validation_preserve_legacy_contract() {
+    cli()
+        .args(["element", "create", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--style"))
+        .stdout(contains("--tag").not())
+        .stdout(contains("--asset-id").not())
+        .stdout(contains("VIDU_ELEMENT_PLATFORM_ASSETS").not());
+    cli()
+        .args(["element", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("tags").not());
+    cli()
+        .args(["element", "list", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--source").not());
+    cli()
+        .args(["element", "create", "--name", "test", "--asset-id", "42"])
+        .assert()
+        .code(2)
+        .stderr(contains("unexpected argument"));
+    cli()
+        .env("VIDU_ELEMENT_PLATFORM_ASSETS", "true")
+        .args(["element", "create", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--asset-id"));
+    cli()
+        .env("VIDU_ELEMENT_PLATFORM_ASSETS", "invalid")
+        .args(["element", "create", "--help"])
+        .assert()
+        .code(2)
+        .stderr(contains("must be true or false"));
 }
