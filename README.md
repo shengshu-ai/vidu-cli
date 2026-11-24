@@ -444,6 +444,44 @@ vidu-cli element unfavorite 42
 
 `--label` takes numeric label IDs and replaces the label set; it conflicts with `--clear-labels`. `--recaption` changes the description while preserving its style. Updates require at least one change; the server checks sharing, version, and deletion rules. Favorites take an element ID and resolve the share ID internally. `element favorites` is a separate cursor list accepting pagination only, without search filters.
 
+#### Platform asset mode
+
+Set `VIDU_ELEMENT_PLATFORM_ASSETS=true` to use the subject workflows below. When unset or `false`, the existing commands above keep their behavior and help.
+
+`element create` creates a second-generation image element. Supply one category from `element tags` and 1–3 local images, HTTP image URLs, or existing platform asset IDs. Image inputs and asset IDs cannot be combined. The first input is the main image; the remaining inputs are auxiliary. The service generates a description when omitted. Creation does not accept `--edition` or `--style`.
+
+```bash
+export VIDU_ELEMENT_PLATFORM_ASSETS=true
+vidu-cli element tags
+vidu-cli element create --name "Product" --tag "$TAG_ID" --image ./product.png
+vidu-cli element create --name "Product" --tag "$TAG_ID" --asset-id "$ASSET_ID"
+# --asset_id is also accepted for creation and image replacement.
+vidu-cli element update "$ELEMENT_ID" --asset_id "$ASSET_ID"
+```
+
+Generation is an optional discovery condition: `--edition 1` selects first-generation elements and `--edition 2` selects second-generation elements. Usually no selection is needed; omit it to browse without a generation filter. It can be combined with supported keyword/category conditions and pagination; the server filters before pagination.
+
+| Command and source | Generation filter |
+| --- | --- |
+| `list` / `search --source personal` | `--edition 1` or `2` |
+| `list` / `search --source official` | `--edition 1` or `2` |
+| `favorites --source official` | `--edition 1` or `2` |
+| `search` / `favorites --source community` | Not supported |
+
+`list` defaults to personal; `search` and `favorites` default to community. Second-generation elements cannot currently be published to the community. Community discovery rejects `--edition` rather than silently ignoring it. Personal/official search accepts edition as its only condition.
+
+```bash
+vidu-cli element list --edition 2
+vidu-cli element list --source official --edition 2 --keyword "Product"
+vidu-cli element search --source personal --edition 1 --keyword "Character"
+vidu-cli element search --source official --edition 2
+vidu-cli element favorites --source official --edition 2
+```
+
+List/search/favorites summaries include the server-provided `edition` alongside existing fields; GET and update also preserve it. JSON uses the numeric field (`1` or `2`); table output displays 第一代 / 第二代. If the server omits edition, the CLI omits it rather than inferring generation from source or assets. `edition` identifies generation, not permission to use every product feature; the server checks compatibility for each operation.
+
+Get, update, delete and collection actions take an element ID without an edition argument. First-generation elements support personal label edits through `--label` / `--clear-labels`. Second-generation elements do not support personal label edits or category changes; creation requires one `--tag`, and update has no `--tag` option. The server validates edit permissions atomically. The CLI fetches current metadata for audit context without relying on edition to permit label writes. Existing name/description editing and ordered image replacement stay available subject to server rules. `--recaption` edits the description; a name/description edit does not re-upload images.
+
 ### Creations
 
 ```bash

@@ -1,4 +1,5 @@
 use crate::{client, validators};
+use clap::builder::TypedValueParser;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -104,6 +105,18 @@ fn extract_string_id(data: &Value, key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Shared discovery filter. Generation describes the subject, not the API route.
+/// Keep it separate from source and pagination so filters compose on the server.
+#[derive(clap::Args)]
+pub struct EditionArgs {
+    /// Filter by element generation: 1 (first generation), 2 (second generation).
+    ///
+    /// Usually no selection is needed. Omit to browse without a generation filter.
+    /// Supported for personal/official sources only.
+    #[arg(long, value_name = "EDITION", value_parser = clap::builder::PossibleValuesParser::new(["1", "2"]).map(|value| value.parse::<u8>().expect("validated generation value")))]
+    pub edition: Option<u8>,
+}
+
 /// The gateway fixes ownership to the authenticated user. Keep the existing
 /// --type/--modality spellings without allowing preset ownership writes.
 #[derive(clap::Args)]
@@ -130,10 +143,10 @@ pub struct UpdateArgs {
     element_id: String,
     #[arg(long)]
     name: Option<String>,
-    /// Replace legacy personal labels; these are not the element category.
+    /// Replace first-generation personal labels. Second-generation elements do not support personal label or category edits.
     #[arg(long = "label", value_name = "LABEL_ID", action = clap::ArgAction::Append, conflicts_with_all = ["clear_labels", "images", "asset_ids"])]
     labels: Vec<String>,
-    /// Clear legacy personal labels; does not change the element category.
+    /// Clear first-generation personal labels; not supported for second-generation elements.
     #[arg(long, conflicts_with_all = ["images", "asset_ids"])]
     clear_labels: bool,
     /// Replace description, preserving the existing style.
@@ -244,7 +257,9 @@ pub fn create(args: &CreateArgs) {
     {
         client::fail("parse_error", "Create response is missing a valid element ID or version; the write may have succeeded. Check element list before retrying.", None, None, Some("create_element"));
     }
-    client::ok(json!({"id": id, "version": version}));
+    let mut result = json!({"id": id, "version": version});
+    copy_edition(&data, &mut result);
+    client::ok(result);
 }
 
 fn require_pagesz(pagesz: i64, minimum: i64) {
@@ -319,9 +334,12 @@ pub fn list_elements(
     page: i64,
     pagesz: i64,
     page_token: Option<&str>,
+    edition: Option<u8>,
 ) {
     require_pagesz(pagesz, 10);
-    client::ok(personal_elements(keyword, tag, page, pagesz, page_token));
+    client::ok(personal_elements(
+        keyword, tag, page, pagesz, page_token, edition,
+    ));
 }
 
 pub fn personal_elements(
@@ -330,6 +348,7 @@ pub fn personal_elements(
     page: i64,
     pagesz: i64,
     page_token: Option<&str>,
+    edition: Option<u8>,
 ) -> Value {
     require_pagesz(pagesz, 1);
     require_valid(validate_tag_id(tag));
@@ -348,6 +367,9 @@ pub fn personal_elements(
     // Personal discovery excludes preset subjects, including the first page;
     // official discovery has its own source and endpoint.
     params.insert("without_preset".into(), "true".into());
+    if let Some(edition) = edition {
+        params.insert("edition".into(), edition.to_string());
+    }
     if let Some(tag) = tag {
         params.insert("tag_ids".into(), tag.into());
     }
@@ -407,7 +429,9 @@ fn feed_result(data: &Value) -> Value {
         let el = se.get("element").unwrap_or(&empty_obj);
         let sh = se.get("share").unwrap_or(&empty_obj);
         let desc: String = el.get("recaption").and_then(|r| r.get("description")).and_then(Value::as_str).unwrap_or("").chars().take(100).collect();
-        json!({"id": extract_string_id(el, "id"), "version": extract_string_id(el, "version"), "name": el.get("name").and_then(Value::as_str).unwrap_or(""), "description": desc, "category": sh.get("category_display").unwrap_or(&empty_arr)})
+        let mut item = json!({"id": extract_string_id(el, "id"), "version": extract_string_id(el, "version"), "name": el.get("name").and_then(Value::as_str).unwrap_or(""), "description": desc, "category": sh.get("category_display").unwrap_or(&empty_arr)});
+        copy_edition(el, &mut item);
+        item
     }).collect();
     json!({"elements": items, "next_page_token": data.get("next_page_token").and_then(Value::as_str).unwrap_or("")})
 }
@@ -455,6 +479,7 @@ pub fn validate_search(
     category: Option<&str>,
     topic: Option<&str>,
     sort_by: Option<&str>,
+    edition: Option<u8>,
 ) {
     for (flag, value) in [
         ("--keyword", keyword),
@@ -476,8 +501,17 @@ pub fn validate_search(
         && category.is_none()
         && topic.is_none()
         && sort_by.is_none()
+        && edition.is_none()
     {
-        client::fail("client_error", "search requires --keyword, --tag or community --category/--topic/--sort-by; use list to browse without conditions", None, None, None);
+        client::fail("client_error", "search requires --keyword, --tag, --edition or community --category/--topic/--sort-by; use list to browse without conditions", None, None, None);
+    }
+}
+
+/// Community shares currently contain first-generation subjects only. Reject
+/// an unsupported filter before HTTP; never silently ignore it or filter a page.
+pub fn reject_community_edition(edition: Option<u8>) {
+    if edition.is_some() {
+        client::fail("client_error", "--edition requires --source personal or official; second-generation elements cannot currently be published to the community", None, None, None);
     }
 }
 
@@ -518,6 +552,7 @@ pub fn official_elements(
     page_token: &str,
     pagesz: i64,
     collected_only: bool,
+    edition: Option<u8>,
 ) -> Value {
     require_pagesz(pagesz, 1);
     require_valid(validate_tag_id(tag));
@@ -530,6 +565,9 @@ pub fn official_elements(
     }
     if let Some(tag) = tag {
         params.insert("query.tag_ids".into(), tag.into());
+    }
+    if let Some(edition) = edition {
+        params.insert("query.edition".into(), edition.to_string());
     }
     let data = walk_personal_pages(page, page_token, |token| {
         params.insert("query.pager.page_token".into(), token.into());
@@ -548,11 +586,38 @@ pub fn official_elements(
     json!({"elements":items,"next_page_token":data.get("next_page_token").and_then(Value::as_str).unwrap_or("")})
 }
 
+/// Preserve server-owned generation metadata. Absence is not a first-generation
+/// default; callers must not infer compatibility from an incomplete response.
+fn copy_edition(element: &Value, item: &mut Value) {
+    if let Some(edition) = element.get("edition") {
+        item["edition"] = edition.clone();
+        if client::table_output_enabled() {
+            format_edition(item);
+        }
+    }
+}
+
+/// JSON keeps the numeric API field. Human-readable names are table-only and
+/// scoped to the new subject commands so legacy output remains unchanged.
+fn format_edition(element: &mut Value) {
+    let edition = element.get("edition");
+    let number = edition
+        .and_then(Value::as_u64)
+        .or_else(|| edition.and_then(Value::as_str).and_then(|v| v.parse().ok()));
+    match number {
+        Some(1) => element["edition"] = json!("第一代"),
+        Some(2) => element["edition"] = json!("第二代"),
+        _ => {}
+    }
+}
+
 /// Both personal and official lists expose the same stable summary fields.
 /// Identifiers stay strings so consumers can preserve int64 precision.
 fn list_item(element: &Value) -> Value {
-    json!({"id":extract_string_id(element,"id"),"version":extract_string_id(element,"version"),
-        "name":element.get("name").and_then(Value::as_str).unwrap_or("")})
+    let mut item = json!({"id":extract_string_id(element,"id"),"version":extract_string_id(element,"version"),
+        "name":element.get("name").and_then(Value::as_str).unwrap_or("")});
+    copy_edition(element, &mut item);
+    item
 }
 
 /// The gateway returns ListElementsReply with flat vidu.v1.Element items.
@@ -618,8 +683,8 @@ pub fn get(element_id: &str) -> Value {
     subject_output(get_detail(element_id))
 }
 
-/// Internal decisions need the server-owned edition before public projection.
-/// Keep raw detail private so internal fields never leak through get/update output.
+/// Read current metadata for the update audit context. Edition is public, but
+/// editing permissions belong to the server and are never inferred from it.
 fn get_detail(element_id: &str) -> Value {
     require_id(element_id);
     client::request_json(
@@ -635,15 +700,19 @@ fn get_detail(element_id: &str) -> Value {
 }
 
 /// Detail wraps its subject in element; updates return the subject directly.
-/// Hide internal usage/edition fields in V2 output without touching media or
+/// Hide internal usage fields in V2 output without touching generation, media or
 /// the public version used for identity. Legacy output has its own unchanged path.
 fn subject_output(mut data: Value) -> Value {
     if let Some(object) = data.as_object_mut() {
         object.remove("allowed_usages");
-        object.remove("edition");
         if let Some(element) = object.get_mut("element").and_then(Value::as_object_mut) {
             element.remove("allowed_usages");
-            element.remove("edition");
+        }
+    }
+    if client::table_output_enabled() {
+        format_edition(&mut data);
+        if let Some(element) = data.get_mut("element") {
+            format_edition(element);
         }
     }
     data
@@ -779,23 +848,6 @@ fn library_update_body(args: &UpdateArgs, current: Option<&Value>) -> Result<Val
     Ok(json!({"mask":mask.join(","),"element":element}))
 }
 
-/// Edition is the API discriminator: 1 is legacy, 2 uses platform assets.
-/// Never infer it from tags, labels or media. Missing/unknown editions must not
-/// silently authorize a legacy write. Accept numeric and protobuf string forms.
-fn legacy_labels_allowed(current: Option<&Value>) -> Result<bool, &'static str> {
-    let edition = current.and_then(|element| element.get("edition"));
-    let edition = edition.and_then(|value| {
-        value
-            .as_i64()
-            .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
-    });
-    match edition {
-        Some(1) => Ok(true),
-        Some(2) => Ok(false),
-        _ => Err("Missing or unsupported element edition; refusing personal label edits"),
-    }
-}
-
 /// New edits use V2; legacy personal labels retain their compatible endpoint.
 /// One command never splits into two writes that could partially succeed.
 pub fn update(args: &UpdateArgs) -> Value {
@@ -814,16 +866,11 @@ pub fn update(args: &UpdateArgs) -> Value {
             args.recaption.as_deref(),
         ));
     }
-    // Fetch exactly once before choosing a write branch. Public get() removes
-    // edition, so it cannot be used to decide whether legacy labels are legal.
+    // Fetch exactly once for audit context. Label writes use V1 and the server
+    // validates generation and permissions atomically, even if edition is absent.
     let detail = get_detail(&args.element_id);
     let current = detail.get("element");
     if edits_labels {
-        let allowed = legacy_labels_allowed(current)
-            .unwrap_or_else(|error| client::fail("api_error", error, None, None, None));
-        if !allowed {
-            client::fail("client_error", "--label and --clear-labels are only supported for legacy elements; new elements do not allow personal label edits", None, None, None);
-        }
         return update_legacy_labels(
             &args.element_id,
             args.name.as_deref(),

@@ -3412,7 +3412,7 @@ fn element_get_omits_allowed_usages_and_keeps_asset_references() {
         result["element"]["components"][0]["asset_id"],
         "9007199254740993"
     );
-    assert!(result["element"].get("edition").is_none());
+    assert_eq!(result["element"]["edition"], 1);
     assert_eq!(result["trace_id"], "trace-detail");
     server.finish();
 }
@@ -3437,7 +3437,7 @@ fn element_update_omits_allowed_usages_for_both_write_endpoints() {
         let result = envelope(&server.run(&args), true);
         assert!(result.get("allowed_usages").is_none());
         assert_eq!(result["components"][0]["asset_id"], "9");
-        assert!(result.get("edition").is_none());
+        assert_eq!(result["edition"], 2);
         server.finish();
     }
 }
@@ -3656,16 +3656,11 @@ fn element_tags_reads_only_api_display_names() {
     server.finish();
 }
 
-/// A single GET must precede the edition decision; rejected requests never PUT.
+/// Generation permissions are server-owned. Even absent metadata must reach
+/// the server once; a rejected combined edit must not split into partial writes.
 #[test]
-fn element_label_edits_reject_new_missing_and_unknown_editions() {
-    for edition in [
-        Some(json!(2)),
-        Some(json!("2")),
-        Some(json!(3)),
-        Some(json!(0)),
-        None,
-    ] {
+fn element_label_permissions_are_checked_by_server_without_edition_dependency() {
+    for edition in [Some(json!(2)), Some(json!("2")), None] {
         for options in [
             vec!["--label", "7"],
             vec!["--clear-labels"],
@@ -3676,22 +3671,20 @@ fn element_label_edits_reject_new_missing_and_unknown_editions() {
                 current["edition"] = value.clone();
             }
             let server = Mock::new(|_| {
-                vec![get(
-                    "/vidu/v1/material/elements/detail/42",
-                    json!({"element":current}),
-                )]
+                vec![
+                get("/vidu/v1/material/elements/detail/42",json!({"element":current})),
+                Step::json("PUT","/vidu/v1/material/elements/42",json!({"message":"second-generation elements do not support personal label edits"})).status(400).check(|request| {
+                    let body = request.json();
+                    assert!(body["mask"].as_str().unwrap().contains("labels"));
+                    assert!(body["element"].get("edition").is_none());
+                    assert!(body["element"].get("tag_ids").is_none());
+                })
+            ]
             });
             let mut args = vec!["element", "update", "42"];
             args.extend(options);
             let result = envelope(&server.run(&args), false);
-            assert_eq!(
-                result["error"]["type"],
-                if edition == Some(json!(2)) || edition == Some(json!("2")) {
-                    "client_error"
-                } else {
-                    "api_error"
-                }
-            );
+            assert_eq!(result["error"]["type"], "http_error");
             server.finish();
         }
     }
@@ -3711,7 +3704,199 @@ fn element_legacy_label_string_edition_uses_one_get_then_v1_update() {
         true,
     );
     assert_eq!(result["version"], "2");
-    assert!(result.get("edition").is_none());
+    assert_eq!(result["edition"], 1);
     assert!(result.get("allowed_usages").is_none());
+    server.finish();
+}
+
+/// Exercise all supported source/command combinations against exact HTTP query
+/// contracts. Filters reach the server, and returned edition is not inferred.
+#[test]
+fn element_edition_filters_compose_with_source_and_pagination() {
+    for source in ["personal", "official"] {
+        for command in ["list", "search", "favorites"] {
+            if source == "personal" && command == "favorites" {
+                continue;
+            }
+            for edition in ["1", "2"] {
+                let official = source == "official";
+                let query = if official {
+                    vec![
+                        ("query.pager.pagesz", "20"),
+                        ("query.pager.page_token", "cursor"),
+                        ("query.keyword", "test"),
+                        ("query.edition", edition),
+                        (
+                            "collected_only",
+                            if command == "favorites" {
+                                "true"
+                            } else {
+                                "false"
+                            },
+                        ),
+                    ]
+                } else {
+                    vec![
+                        ("pager.pagesz", "20"),
+                        ("pager.page_token", "cursor"),
+                        ("keyword", "test"),
+                        ("edition", edition),
+                        ("modalities", "image"),
+                        ("without_preset", "true"),
+                    ]
+                };
+                let server = Mock::new(|_| {
+                    vec![get(
+                    if official {"/vidu/v1/material/elements/official"} else {"/vidu/v1/material/elements/personal"},
+                    json!({"elements":[{"id":"42","version":"9","name":"test","edition":edition.parse::<u8>().unwrap()}],"next_page_token":"next"})
+                ).query(&query)]
+                });
+                let result = envelope(
+                    &server.run(&[
+                        "element",
+                        command,
+                        "--source",
+                        source,
+                        "--edition",
+                        edition,
+                        "--keyword",
+                        "test",
+                        "--page-token",
+                        "cursor",
+                    ]),
+                    true,
+                );
+                assert_eq!(
+                    result["elements"][0]["edition"],
+                    edition.parse::<u8>().unwrap()
+                );
+                assert_eq!(result["next_page_token"], "next");
+                server.finish();
+            }
+        }
+    }
+}
+
+/// The same filter must be present on every page walked for numeric pagination.
+#[test]
+fn element_edition_filter_is_preserved_on_each_page() {
+    let server = Mock::new(|_| {
+        vec![
+            get(
+                "/vidu/v1/material/elements/personal",
+                json!({"elements":[],"next_page_token":"next"}),
+            )
+            .query(&[
+                ("pager.pagesz", "20"),
+                ("pager.page_token", ""),
+                ("edition", "2"),
+                ("modalities", "image"),
+                ("without_preset", "true"),
+            ]),
+            get(
+                "/vidu/v1/material/elements/personal",
+                json!({"elements":[{"id":"42","version":"9","name":"second","edition":2}]}),
+            )
+            .query(&[
+                ("pager.pagesz", "20"),
+                ("pager.page_token", "next"),
+                ("edition", "2"),
+                ("modalities", "image"),
+                ("without_preset", "true"),
+            ]),
+        ]
+    });
+    let result = envelope(
+        &server.run(&["element", "list", "--edition", "2", "--page", "1"]),
+        true,
+    );
+    assert_eq!(result["elements"][0]["edition"], 2);
+    server.finish();
+}
+
+#[test]
+fn element_search_accepts_edition_only_for_personal_and_official() {
+    for source in ["personal", "official"] {
+        let server = Mock::new(|_| {
+            vec![get(
+                if source == "personal" {
+                    "/vidu/v1/material/elements/personal"
+                } else {
+                    "/vidu/v1/material/elements/official"
+                },
+                json!({"elements":[]}),
+            )
+            .query(if source == "personal" {
+                &[
+                    ("pager.pagesz", "20"),
+                    ("pager.page_token", ""),
+                    ("edition", "2"),
+                    ("modalities", "image"),
+                    ("without_preset", "true"),
+                ]
+            } else {
+                &[
+                    ("query.pager.pagesz", "20"),
+                    ("query.pager.page_token", ""),
+                    ("query.edition", "2"),
+                    ("collected_only", "false"),
+                ]
+            })]
+        });
+        envelope(
+            &server.run(&["element", "search", "--source", source, "--edition", "2"]),
+            true,
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn element_edition_rejects_unsupported_community_and_invalid_values_before_http() {
+    for command in ["search", "favorites"] {
+        for source_args in [vec![], vec!["--source", "community"]] {
+            let server = Mock::new(|_| vec![]);
+            let mut args = vec!["element", command, "--edition", "2"];
+            args.extend(source_args);
+            let result = envelope(&server.run(&args), false);
+            assert!(result["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("--source personal or official"));
+            server.finish();
+        }
+    }
+    for edition in ["0", "3", "v2", "-1"] {
+        let server = Mock::new(|_| vec![]);
+        let output = server.run(&["element", "list", "--edition", edition]);
+        assert_eq!(output.status.code(), Some(2));
+        server.finish();
+    }
+}
+
+#[test]
+fn element_edition_summary_does_not_guess_missing_metadata_or_filter_locally() {
+    let server = Mock::new(|_| {
+        vec![get("/vidu/v1/material/elements/personal",json!({"elements":[{"id":"1","version":"9","name":"first","edition":1},{"id":"2","version":"9","name":"second","edition":2},{"id":"3","version":"9","name":"unknown"}]})).query(&[("pager.pagesz","20"),("pager.page_token",""),("modalities","image"),("without_preset","true")])]
+    });
+    let result = envelope(&server.run(&["element", "list"]), true);
+    assert_eq!(result["elements"].as_array().unwrap().len(), 3);
+    assert_eq!(result["elements"][0]["edition"], 1);
+    assert_eq!(result["elements"][1]["edition"], 2);
+    assert!(result["elements"][2].get("edition").is_none());
+    server.finish();
+}
+
+#[test]
+fn element_table_displays_generation_names_without_changing_json() {
+    let server = Mock::new(|_| {
+        vec![get(
+            "/vidu/v1/material/elements/detail/42",
+            json!({"element":{"id":"42","edition":2}}),
+        )]
+    });
+    let output = server.run(&["--format", "table", "element", "get", "42"]);
+    assert!(output.status.success());
+    assert!(String::from_utf8(output.stdout).unwrap().contains("第二代"));
     server.finish();
 }

@@ -557,6 +557,8 @@ enum ElementAction {
     Delete { element_id: String },
     /// List collected community or official elements
     Favorites {
+        #[command(flatten)]
+        generation: commands::elements::EditionArgs,
         #[arg(long, default_value = "community", value_parser = ["community", "official"])]
         source: String,
         /// Filter official collections by keyword.
@@ -597,10 +599,12 @@ enum ElementAction {
         #[arg(long = "image", action = clap::ArgAction::Append)]
         images: Vec<String>,
     },
-    /// Create an image element
+    /// Create a second-generation image element
     Create(commands::elements::CreateArgs),
     /// List personal or official elements
     List {
+        #[command(flatten)]
+        generation: commands::elements::EditionArgs,
         #[arg(long, default_value = "personal", value_parser = ["personal", "official"])]
         source: String,
         /// Filter personal or official elements by a single category ID.
@@ -617,9 +621,12 @@ enum ElementAction {
     },
     /// Search personal, community or official elements by conditions
     ///
-    /// Supply at least one keyword, tag or community category/topic/sort-by.
+    /// Supply at least one keyword, tag, edition or community category/topic/sort-by.
     /// Source defaults to community; a tag does not automatically change it.
+    /// Second-generation elements cannot currently be published to the community.
     Search {
+        #[command(flatten)]
+        generation: commands::elements::EditionArgs,
         #[arg(long, default_value = "community", value_parser = ["community", "official", "personal"])]
         source: String,
         /// Filter personal or official elements by a single category ID.
@@ -1059,6 +1066,7 @@ fn main() -> ExitCode {
                 client::ok(commands::elements::delete(&element_id))
             }
             ElementAction::Favorites {
+                generation,
                 source,
                 keyword,
                 tag,
@@ -1073,8 +1081,10 @@ fn main() -> ExitCode {
                         &page_token,
                         pagesz,
                         true,
+                        generation.edition,
                     ));
                 }
+                commands::elements::reject_community_edition(generation.edition);
                 commands::elements::reject_official_only_filters(
                     keyword.is_some() || tag.is_some(),
                 );
@@ -1106,6 +1116,7 @@ fn main() -> ExitCode {
             }
             ElementAction::Create(args) => commands::elements::create(&args),
             ElementAction::List {
+                generation,
                 source,
                 tag,
                 keyword,
@@ -1121,6 +1132,7 @@ fn main() -> ExitCode {
                         page_token.as_deref().unwrap_or(""),
                         pagesz,
                         false,
+                        generation.edition,
                     ));
                 }
                 commands::elements::list_elements(
@@ -1129,9 +1141,11 @@ fn main() -> ExitCode {
                     page.unwrap_or(0),
                     pagesz,
                     page_token.as_deref(),
+                    generation.edition,
                 );
             }
             ElementAction::Search {
+                generation,
                 source,
                 tag,
                 category,
@@ -1147,6 +1161,7 @@ fn main() -> ExitCode {
                     category.as_deref(),
                     topic.as_deref(),
                     sort_by.as_deref(),
+                    generation.edition,
                 );
                 if source != "community" {
                     commands::elements::reject_community_only_filters(
@@ -1159,6 +1174,7 @@ fn main() -> ExitCode {
                             0,
                             pagesz,
                             Some(&page_token),
+                            generation.edition,
                         )
                     } else {
                         commands::elements::official_elements(
@@ -1168,10 +1184,12 @@ fn main() -> ExitCode {
                             &page_token,
                             pagesz,
                             false,
+                            generation.edition,
                         )
                     };
                     client::ok(data);
                 }
+                commands::elements::reject_community_edition(generation.edition);
                 if tag.is_some() {
                     client::fail("client_error", "--tag requires --source personal or official; community supports --keyword/--category/--topic/--sort-by", None, None, None);
                 }
