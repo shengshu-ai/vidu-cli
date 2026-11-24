@@ -138,20 +138,23 @@ pub struct CreateArgs {
 }
 
 #[derive(clap::Args)]
-#[command(group(clap::ArgGroup::new("changes").required(true).multiple(true).args(["name", "labels", "clear_labels", "recaption", "images", "asset_ids"])))]
+#[command(group(clap::ArgGroup::new("changes").required(true).multiple(true).args(["name", "labels", "clear_labels", "recaption", "tag_id", "images", "asset_ids"])))]
 pub struct UpdateArgs {
     element_id: String,
     #[arg(long)]
     name: Option<String>,
-    /// Replace first-generation personal labels. Second-generation elements do not support personal label or category edits.
-    #[arg(long = "label", value_name = "LABEL_ID", action = clap::ArgAction::Append, conflicts_with_all = ["clear_labels", "images", "asset_ids"])]
+    /// Replace first-generation personal labels.
+    #[arg(long = "label", value_name = "LABEL_ID", action = clap::ArgAction::Append, conflicts_with_all = ["clear_labels", "tag_id", "asset_ids"])]
     labels: Vec<String>,
-    /// Clear first-generation personal labels; not supported for second-generation elements.
-    #[arg(long, conflicts_with_all = ["images", "asset_ids"])]
+    /// Clear first-generation personal labels.
+    #[arg(long, conflicts_with_all = ["tag_id", "asset_ids"])]
     clear_labels: bool,
-    /// Replace description, preserving the existing style.
+    /// Replace description; first-generation edits preserve the existing style.
     #[arg(long)]
     recaption: Option<String>,
+    /// Replace the single second-generation platform category with an ID from element tags.
+    #[arg(long = "tag", value_name = "TAG_ID")]
+    tag_id: Option<String>,
     #[command(flatten)]
     media: super::element_storage::MediaArgs,
 }
@@ -615,7 +618,9 @@ fn format_edition(element: &mut Value) {
 /// Identifiers stay strings so consumers can preserve int64 precision.
 fn list_item(element: &Value) -> Value {
     let mut item = json!({"id":extract_string_id(element,"id"),"version":extract_string_id(element,"version"),
-        "name":element.get("name").and_then(Value::as_str).unwrap_or("")});
+        "name":element.get("name").and_then(Value::as_str).unwrap_or(""),
+        "description":element.get("recaption").and_then(|caption| caption.get("description"))
+            .and_then(Value::as_str).unwrap_or("").chars().take(100).collect::<String>()});
     copy_edition(element, &mut item);
     item
 }
@@ -683,8 +688,8 @@ pub fn get(element_id: &str) -> Value {
     subject_output(get_detail(element_id))
 }
 
-/// Read current metadata for the update audit context. Edition is public, but
-/// editing permissions belong to the server and are never inferred from it.
+/// Read generation for protocol selection and metadata for update audit context.
+/// Service-side permissions are still checked independently of CLI routing.
 fn get_detail(element_id: &str) -> Value {
     require_id(element_id);
     client::request_json(
@@ -699,16 +704,8 @@ fn get_detail(element_id: &str) -> Value {
     )
 }
 
-/// Detail wraps its subject in element; updates return the subject directly.
-/// Hide internal usage fields in V2 output without touching generation, media or
-/// the public version used for identity. Legacy output has its own unchanged path.
+/// Keep server response fields intact; format generation only for table output.
 fn subject_output(mut data: Value) -> Value {
-    if let Some(object) = data.as_object_mut() {
-        object.remove("allowed_usages");
-        if let Some(element) = object.get_mut("element").and_then(Value::as_object_mut) {
-            element.remove("allowed_usages");
-        }
-    }
     if client::table_output_enabled() {
         format_edition(&mut data);
         if let Some(element) = data.get_mut("element") {
@@ -753,43 +750,8 @@ fn update_body(
     recaption: Option<&str>,
     current: Option<&Value>,
 ) -> Result<Value, String> {
-    validate_update_args(name, labels, clear_labels, recaption)?;
-    let current = current
-        .filter(|value| value.is_object())
-        .ok_or("Missing current element in detail response; refusing to update")?;
-    let current_name = name
-        .or_else(|| current.get("name").and_then(Value::as_str))
-        .ok_or("Missing current element name in detail response; refusing to update")?;
-    let mut caption = current
-        .get("recaption")
-        .filter(|value| value.is_object())
-        .cloned()
-        .ok_or("Missing valid current recaption in detail response; refusing to update")?;
-    // PatchAudit reads name and recaption even when they are absent from the mask.
-    // Carry the current values for audit context without widening the update mask.
-    let mut element = json!({"id": element_id, "name": current_name});
-    let mut mask = Vec::new();
-    if name.is_some() {
-        mask.push("name");
-    }
-    if !labels.is_empty() || clear_labels {
-        element["labels"] = json!(labels
-            .iter()
-            .map(|id| json!({"id": id}))
-            .collect::<Vec<_>>());
-        mask.push("labels");
-    }
-    if let Some(description) = recaption {
-        // The backend supports the whole recaption mask only. Preserve its existing style.
-        caption["description"] = json!(description);
-        mask.push("recaption");
-    }
-    element["recaption"] = caption;
-    if let Some(modality) = current.get("modality") {
-        element["modality"] = modality.clone();
-    }
-    // Protobuf JSON encodes FieldMask as a comma-separated string.
-    Ok(json!({"mask": mask.join(","), "element": element}))
+    // Share the default-mode request builder so V1 masks and audit context cannot drift.
+    super::elements_legacy::update_body(element_id, name, labels, clear_labels, recaption, current)
 }
 
 fn update_legacy_labels(
@@ -841,6 +803,12 @@ fn library_update_body(args: &UpdateArgs, current: Option<&Value>) -> Result<Val
     if args.recaption.is_some() {
         mask.push("recaption");
     }
+    if let Some(tag_id) = &args.tag_id {
+        element["tag_ids"] = json!([tag_id]);
+        // V2 sends FieldMask through query binding, which accepts proto field
+        // names directly. Keep the query path aligned with the element field.
+        mask.push("tag_ids");
+    }
     element["recaption"] = caption;
     if let Some(modality) = current.get("modality") {
         element["modality"] = modality.clone();
@@ -848,17 +816,31 @@ fn library_update_body(args: &UpdateArgs, current: Option<&Value>) -> Result<Val
     Ok(json!({"mask":mask.join(","),"element":element}))
 }
 
-/// New edits use V2; legacy personal labels retain their compatible endpoint.
+/// Route writes by server-owned generation, never by labels or media shape.
+/// Missing/unknown metadata cannot safely identify a protocol and must fail
+/// before uploads or writes. Numeric and protobuf string forms are accepted.
+fn update_edition(current: Option<&Value>) -> Result<u8, &'static str> {
+    let value = current.and_then(|element| element.get("edition"));
+    let edition = value.and_then(Value::as_u64).or_else(|| {
+        value
+            .and_then(Value::as_str)
+            .and_then(|value| value.parse().ok())
+    });
+    match edition {
+        Some(1) => Ok(1),
+        Some(2) => Ok(2),
+        _ => Err("Missing or unsupported element edition; refusing to choose an update API"),
+    }
+}
+
+/// First-generation writes use V1; second-generation writes use V2.
 /// One command never splits into two writes that could partially succeed.
 pub fn update(args: &UpdateArgs) -> Value {
     require_id(&args.element_id);
-    require_valid(validate_metadata(
-        args.name.as_deref(),
-        args.recaption.as_deref(),
-    ));
     require_valid(args.media.validate(false));
+    require_valid(validate_tag_id(args.tag_id.as_deref()));
     let edits_labels = !args.labels.is_empty() || args.clear_labels;
-    if edits_labels {
+    if edits_labels || (!args.media.has_files() && args.tag_id.is_none()) {
         require_valid(validate_update_args(
             args.name.as_deref(),
             &args.labels,
@@ -866,11 +848,24 @@ pub fn update(args: &UpdateArgs) -> Value {
             args.recaption.as_deref(),
         ));
     }
-    // Fetch exactly once for audit context. Label writes use V1 and the server
-    // validates generation and permissions atomically, even if edition is absent.
+    // Read exactly once, then choose the generation protocol before uploading.
+    // Keep the raw edition out of the update body; generation is read-only.
     let detail = get_detail(&args.element_id);
     let current = detail.get("element");
-    if edits_labels {
+    let edition = update_edition(current)
+        .unwrap_or_else(|error| client::fail("api_error", error, None, None, None));
+    if edition == 1 {
+        // First-generation editing stays metadata-only until the legacy image
+        // preprocessing chain has reliable concurrency and failure handling.
+        if args.tag_id.is_some() || args.media.has_files() {
+            client::fail(
+                "client_error",
+                "--image, --tag and --asset-id updates require a second-generation element",
+                None,
+                None,
+                None,
+            );
+        }
         return update_legacy_labels(
             &args.element_id,
             args.name.as_deref(),
@@ -878,6 +873,18 @@ pub fn update(args: &UpdateArgs) -> Value {
             args.clear_labels,
             args.recaption.as_deref(),
             current,
+        );
+    }
+    // Like the default editor, leave update-name validity to the service.
+    // Description bounds still apply before media uploads, including mixed edits.
+    require_valid(validate_metadata(None, args.recaption.as_deref()));
+    if edits_labels {
+        client::fail(
+            "client_error",
+            "Second-generation elements do not support --label or --clear-labels",
+            None,
+            None,
+            None,
         );
     }
     let mut body = library_update_body(args, current)
@@ -906,6 +913,13 @@ pub fn update(args: &UpdateArgs) -> Value {
             format!("{mask},components")
         });
     }
+    // V2 binds the HTTP body to element; FieldMask remains a query parameter.
+    // V1 above retains its whole-request JSON binding.
+    let mut params = HashMap::new();
+    params.insert(
+        "mask".to_string(),
+        body["mask"].as_str().unwrap_or("").to_string(),
+    );
     subject_output(client::request_json(
         "PUT",
         &format!(
@@ -914,8 +928,8 @@ pub fn update(args: &UpdateArgs) -> Value {
             args.element_id
         ),
         None,
-        Some(&body),
-        None,
+        Some(&body["element"]),
+        Some(&params),
     ))
 }
 
@@ -969,6 +983,27 @@ pub fn favorite(element_id: &str, enabled: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Summary descriptions use character boundaries, never byte truncation.
+    #[test]
+    fn list_summary_description_is_bounded_and_always_present() {
+        let description = "女生🧤".repeat(50);
+        let item = list_item(
+            &json!({"id":"42","version":"9","name":"test","edition":2,"recaption":{"description":description}}),
+        );
+        assert_eq!(
+            item["description"],
+            description.chars().take(100).collect::<String>()
+        );
+        assert_eq!(item["description"].as_str().unwrap().chars().count(), 100);
+        for element in [
+            json!({}),
+            json!({"recaption":null}),
+            json!({"recaption":{"description":""}}),
+        ] {
+            assert_eq!(list_item(&element)["description"], "");
+        }
+    }
 
     #[test]
     fn update_preserves_caption_style_and_replaces_labels() {

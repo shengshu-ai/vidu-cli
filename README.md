@@ -457,6 +457,7 @@ vidu-cli element create --name "Product" --tag "$TAG_ID" --image ./product.png
 vidu-cli element create --name "Product" --tag "$TAG_ID" --asset-id "$ASSET_ID"
 # --asset_id is also accepted for creation and image replacement.
 vidu-cli element update "$ELEMENT_ID" --asset_id "$ASSET_ID"
+vidu-cli element update "$ELEMENT_ID" --tag "$TAG_ID"
 ```
 
 Generation is an optional discovery condition: `--edition 1` selects first-generation elements and `--edition 2` selects second-generation elements. Usually no selection is needed; omit it to browse without a generation filter. It can be combined with supported keyword/category conditions and pagination.
@@ -481,9 +482,11 @@ vidu-cli element search --source official --edition 2
 vidu-cli element favorites --source official --edition 2
 ```
 
+Personal, official and community discovery lists include `description`, truncated to 100 characters; missing descriptions are returned as an empty string. Use `get` for the full description.
+
 The response field `edition` identifies element generation: `1` for first generation and `2` for second generation. Table output displays 第一代 / 第二代. Usually no generation filter is needed.
 
-Get, update, delete and collection actions take an element ID without an edition argument. First-generation elements support personal label edits through `--label` / `--clear-labels`. Second-generation elements do not support personal label edits or category changes; creation requires one `--tag`, and update has no `--tag` option. Editing names, descriptions or images requires permission to edit the element. `--recaption` edits the description; a name/description edit does not re-upload images.
+Get, update, delete and collection actions take an element ID without an edition argument. First-generation elements support personal label edits through `--label` / `--clear-labels`. Second-generation elements do not support personal labels. Create and second-generation updates accept one `--tag` platform category ID. Both generations support name and description edits. Update-name validity is checked by the service. First-generation updates support personal labels and preserve the existing style when editing the description; image replacement is currently unavailable. Image replacement with `--image` or `--asset-id` is supported only for second-generation image elements. Updating the tag replaces the existing category and can be combined with name, description or image changes, but not with --label / --clear-labels. Editing names, descriptions or images requires permission to edit the element. `--recaption` edits the description; a name/description edit does not re-upload images.
 
 ### Creations
 

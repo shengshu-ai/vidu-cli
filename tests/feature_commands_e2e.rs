@@ -43,6 +43,16 @@ impl Step {
         self.check = Box::new(move |r| assert_eq!(r.json(), value));
         self
     }
+    /// Assert the generation-specific HTTP binding for the same logical patch.
+    /// V1 carries the request envelope; V2 carries element with mask in query.
+    fn element_update_body(mut self, patch: Value) -> Self {
+        if self.path.starts_with("/vidu/v2/material/elements/") {
+            self.query = vec![("mask".into(), patch["mask"].as_str().unwrap().into())];
+            self.body(patch["element"].clone())
+        } else {
+            self.body(patch)
+        }
+    }
     fn check(mut self, check: impl FnOnce(&Request) + Send + 'static) -> Self {
         self.check = Box::new(check);
         self
@@ -1993,12 +2003,12 @@ fn element_update_replaces_images_and_caption_without_changing_taxonomy() {
         let mut steps = vec![get(
             "/vidu/v1/material/elements/detail/42",
             json!({"element":{
-            "id":"42","name":"old","modality":"image","recaption":{"description":"old description","style":"old style","extra":"keep"},
+            "id":"42","edition":2,"name":"old","modality":"image","recaption":{"description":"old description","style":"old style","extra":"keep"},
             "components":[{"content":"https://private.invalid/old-image"}],"voice":{"id":"voice-1"},"tag_ids":["99"]}}),
         )];
         steps.extend(element_upload_steps(base, "11", bytes));
         steps.push(Step::json("PUT", "/vidu/v2/material/elements/42", json!({"id":"42","version":"2"}))
-            .body(json!({"mask":"name,recaption,components","element":{
+            .element_update_body(json!({"mask":"name,recaption,components","element":{
                 "id":"42","name":"new","modality":"image",
                 "recaption":{"description":"fresh","style":"old style","extra":"keep"},
                 "components":[{"content":"ssupload:?id=11","src_img":"ssupload:?id=11","content_type":"image","type":"main"}]}})));
@@ -2038,14 +2048,14 @@ fn element_metadata_edits_work_with_asset_mode_without_media_registration() {
             vec![
                 get(
                     "/vidu/v1/material/elements/detail/42",
-                    json!({"element":{"id":"42","name":"old","modality":"image","recaption":{"style":"anime","description":"keep"},"components":[{"content":"untouched"}]}}),
+                    json!({"element":{"id":"42","edition":2,"name":"old","modality":"image","recaption":{"style":"anime","description":"keep"},"components":[{"content":"untouched"}]}}),
                 ),
                 Step::json(
                     "PUT",
                     "/vidu/v2/material/elements/42",
                     json!({"version":"2"}),
                 )
-                .body(expected),
+                .element_update_body(expected),
             ]
         });
         let mut command = vec!["element", "update", "42"];
@@ -2067,9 +2077,9 @@ fn element_asset_ids_create_and_replace_without_uploads() {
             .body(json!({"name":"test","modality":"image","tag_ids":["1"],"components":[
                 {"asset_id":"9007199254740993","type":"main","content_type":"image"},
                 {"asset_id":"8","type":"auxiliary","content_type":"image"}]})),
-        get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","name":"test","modality":"image","recaption":{"style":"realistic","description":"keep"}}})),
+        get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","edition":2,"name":"test","modality":"image","recaption":{"style":"realistic","description":"keep"}}})),
         Step::json("PUT", "/vidu/v2/material/elements/42", json!({"id":"42","version":"2","components":[{"asset_id":"9","content":"https://preview.invalid/image"}]}))
-            .body(json!({"mask":"components","element":{"id":"42","name":"test","modality":"image","recaption":{"style":"realistic","description":"keep"},"components":[{"asset_id":"9","type":"main","content_type":"image"}]}})),
+            .element_update_body(json!({"mask":"components","element":{"id":"42","name":"test","modality":"image","recaption":{"style":"realistic","description":"keep"},"components":[{"asset_id":"9","type":"main","content_type":"image"}]}})),
     ]
     });
     envelope(
@@ -2177,7 +2187,7 @@ fn element_media_replacement_rejects_other_modalities_before_upload() {
             vec![get(
                 "/vidu/v1/material/elements/detail/42",
                 json!({"element":{
-            "id":"42","name":"old","modality":modality,"recaption":{"style":"","description":"keep"}}}),
+            "id":"42","edition":2,"name":"old","modality":modality,"recaption":{"style":"","description":"keep"}}}),
             )]
         });
         let result = envelope(
@@ -2290,7 +2300,7 @@ fn each_element_update_keeps_required_context_without_expanding_mask() {
             vec![
                 get(
                     "/vidu/v1/material/elements/detail/42",
-                    json!({"element":{"id":"42","edition":1,"name":"original name","modality":"image","recaption":{"style":"realistic","description":"original description"}}}),
+                    json!({"element":{"id":"42","edition":if legacy_labels {1} else {2},"name":"original name","modality":"image","recaption":{"style":"realistic","description":"original description"}}}),
                 ),
                 Step::json(
                     "PUT",
@@ -2301,7 +2311,7 @@ fn each_element_update_keeps_required_context_without_expanding_mask() {
                     },
                     json!({"version":"2"}),
                 )
-                .body(expected),
+                .element_update_body(expected),
             ]
         });
         let mut command = vec!["element", "update", "42"];
@@ -2314,9 +2324,9 @@ fn each_element_update_keeps_required_context_without_expanding_mask() {
 #[test]
 fn element_update_without_safe_recaption_context_never_puts() {
     for element in [
-        json!({"id":"42","name":"original name","modality":"image"}),
-        json!({"id":"42","name":"original name","modality":"image","recaption":null}),
-        json!({"id":"42","name":"original name","modality":"image","recaption":"malformed"}),
+        json!({"id":"42","edition":2,"name":"original name","modality":"image"}),
+        json!({"id":"42","edition":2,"name":"original name","modality":"image","recaption":null}),
+        json!({"id":"42","edition":2,"name":"original name","modality":"image","recaption":"malformed"}),
     ] {
         let server = Mock::new(|_| {
             vec![get(
@@ -3099,12 +3109,83 @@ fn element_single_tag_and_service_owned_style_reject_invalid_cli_inputs() {
     server.finish();
 }
 
+/// The old protocol keeps its original schema and rejects the new category flag.
 #[test]
-fn element_update_rejects_even_a_single_taxonomy_change_before_http() {
+fn legacy_element_update_rejects_taxonomy_change_before_http() {
     let server = Mock::new(|_| vec![]);
-    let output = server.run(&["element", "update", "42", "--name", "new", "--tag", "1"]);
+    let output = server.run_env(
+        &["element", "update", "42", "--name", "new", "--tag", "1"],
+        &[("VIDU_ELEMENT_PLATFORM_ASSETS", "false")],
+    );
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("--tag"));
+    server.finish();
+}
+
+/// Use the proto spelling tag_ids in the V2 query FieldMask; the element field
+/// stays tag_ids. Standalone and combined edits use a single V2 write.
+#[test]
+fn element_update_category_uses_camel_case_mask_and_single_id() {
+    for combined in [false, true] {
+        let server = Mock::new(|_| {
+            vec![
+            get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","name":"original","modality":"image","edition":2,"tag_ids":["1"],"recaption":{"description":"keep","style":"realistic"}}})),
+            Step::json("PUT","/vidu/v2/material/elements/42",json!({"id":"42","edition":2,"tag_ids":["9007199254740993"]})).element_update_body(if combined {
+                json!({"mask":"name,recaption,tag_ids,components","element":{"id":"42","name":"renamed","modality":"image","recaption":{"description":"updated","style":"realistic"},"tag_ids":["9007199254740993"],"components":[{"asset_id":"9","content_type":"image","type":"main"}]}})
+            } else {
+                json!({"mask":"tag_ids","element":{"id":"42","name":"original","modality":"image","recaption":{"description":"keep","style":"realistic"},"tag_ids":["9007199254740993"]}})
+            }),
+        ]
+        });
+        let mut args = vec!["element", "update", "42", "--tag", "9007199254740993"];
+        if combined {
+            args.extend([
+                "--name",
+                "renamed",
+                "--recaption",
+                "updated",
+                "--asset-id",
+                "9",
+            ]);
+        }
+        let result = envelope(&server.run(&args), true);
+        assert_eq!(result["tag_ids"], json!(["9007199254740993"]));
+        server.finish();
+    }
+}
+
+#[test]
+fn element_update_category_invalid_and_conflicting_args_never_reach_http() {
+    for options in [
+        vec!["--tag", "0"],
+        vec!["--tag", "bad"],
+        vec!["--tag", "9223372036854775808"],
+        vec!["--tag", "1", "--tag", "2"],
+        vec!["--tag", "1", "--label", "7"],
+        vec!["--tag", "1", "--clear-labels"],
+    ] {
+        let server = Mock::new(|_| vec![]);
+        let mut args = vec!["element", "update", "42"];
+        args.extend(options);
+        let output = server.run(&args);
+        assert!(!output.status.success());
+        server.finish();
+    }
+}
+
+#[test]
+fn element_update_category_server_rejection_does_not_fallback_or_retry() {
+    let server = Mock::new(|_| {
+        vec![
+        get("/vidu/v1/material/elements/detail/42",json!({"element":{"id":"42","edition":2,"name":"original","recaption":{"description":"keep","style":""}}})),
+        Step::json("PUT","/vidu/v2/material/elements/42",json!({"message":"invalid category"})).status(400).element_update_body(json!({"mask":"tag_ids","element":{"id":"42","name":"original","recaption":{"description":"keep","style":""},"tag_ids":["1"]}})),
+    ]
+    });
+    let result = envelope(
+        &server.run(&["element", "update", "42", "--tag", "1"]),
+        false,
+    );
+    assert_eq!(result["error"]["type"], "http_error");
     server.finish();
 }
 
@@ -3150,7 +3231,7 @@ fn official_queries_preserve_filters_identity_and_cursor() {
         );
         assert_eq!(
             result["elements"],
-            json!([{"id":"42","version":"9007199254740993","name":""}])
+            json!([{"id":"42","version":"9007199254740993","name":"","description":""}])
         );
         assert!(result.get("library_source").is_none());
         assert_eq!(result["next_page_token"], "next/+=");
@@ -3382,9 +3463,9 @@ fn element_asset_upload_failures_stop_before_subject_write() {
 fn element_asset_binding_error_is_not_retried_or_downgraded() {
     let server = Mock::new(|_| {
         vec![
-        get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","name":"test","modality":"image","recaption":{"style":"","description":"keep"}}})),
+        get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","edition":2,"name":"test","modality":"image","recaption":{"style":"","description":"keep"}}})),
         Step::json("PUT", "/vidu/v2/material/elements/42", json!({"message":"asset forbidden"}))
-            .body(json!({"mask":"components","element":{"id":"42","name":"test","modality":"image","recaption":{"style":"","description":"keep"},"components":[{"asset_id":"9","content_type":"image","type":"main"}]}})).status(403),
+            .element_update_body(json!({"mask":"components","element":{"id":"42","name":"test","modality":"image","recaption":{"style":"","description":"keep"},"components":[{"asset_id":"9","content_type":"image","type":"main"}]}})).status(403),
     ]
     });
     envelope(
@@ -3395,19 +3476,18 @@ fn element_asset_binding_error_is_not_retried_or_downgraded() {
 }
 
 #[test]
-fn element_get_omits_allowed_usages_and_keeps_asset_references() {
+fn element_get_keeps_asset_references() {
     let server = Mock::new(|_| {
         vec![get(
             "/vidu/v1/material/elements/detail/42",
             json!({
-                "element":{"id":"42","allowed_usages":["creation","tool"],"edition":1,
+                "element":{"id":"42","edition":1,
                 "components":[{"asset_id":"9007199254740993","content":"https://example.com/image.png"}]},
                 "trace_id":"trace-detail"
             }),
         )]
     });
     let result = envelope(&server.run(&["element", "get", "42"]), true);
-    assert!(result["element"].get("allowed_usages").is_none());
     assert_eq!(
         result["element"]["components"][0]["asset_id"],
         "9007199254740993"
@@ -3418,14 +3498,14 @@ fn element_get_omits_allowed_usages_and_keeps_asset_references() {
 }
 
 #[test]
-fn element_update_omits_allowed_usages_for_both_write_endpoints() {
+fn element_update_keeps_asset_references_for_both_write_endpoints() {
     for labels in [false, true] {
         let server = Mock::new(|_| {
             vec![
-            get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","edition":1,"name":"test","modality":"image","recaption":{"description":"keep","style":""}}})),
+            get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","edition":if labels {1} else {2},"name":"test","modality":"image","recaption":{"description":"keep","style":""}}})),
             Step::json("PUT", if labels {"/vidu/v1/material/elements/42"} else {"/vidu/v2/material/elements/42"},
-                json!({"id":"42","allowed_usages":["agent"],"edition":2,"components":[{"asset_id":"9","content":"https://example.com/image.png"}]}))
-                .body(if labels {json!({"mask":"labels","element":{"id":"42","name":"test","modality":"image","recaption":{"description":"keep","style":""},"labels":[]}})}
+                json!({"id":"42","edition":2,"components":[{"asset_id":"9","content":"https://example.com/image.png"}]}))
+                .element_update_body(if labels {json!({"mask":"labels","element":{"id":"42","name":"test","modality":"image","recaption":{"description":"keep","style":""},"labels":[]}})}
                     else {json!({"mask":"name","element":{"id":"42","name":"new","modality":"image","recaption":{"description":"keep","style":""}}})}),
         ]
         });
@@ -3435,7 +3515,6 @@ fn element_update_omits_allowed_usages_for_both_write_endpoints() {
             vec!["element", "update", "42", "--name", "new"]
         };
         let result = envelope(&server.run(&args), true);
-        assert!(result.get("allowed_usages").is_none());
         assert_eq!(result["components"][0]["asset_id"], "9");
         assert_eq!(result["edition"], 2);
         server.finish();
@@ -3451,7 +3530,7 @@ fn personal_search_and_list_support_single_taxonomy_tag() {
         let server = Mock::new(|_| {
             vec![get(
                 "/vidu/v1/material/elements/personal",
-                json!({"elements":[{"id":"42","version":"1","name":"男生"}]}),
+                json!({"elements":[{"id":"42","version":"1","name":"男生","recaption":{"description":"角色描述"}}]}),
             )
             .query(&[
                 ("pager.pagesz", pagesz),
@@ -3481,7 +3560,7 @@ fn personal_search_and_list_support_single_taxonomy_tag() {
         );
         assert_eq!(
             result["elements"],
-            json!([{"id":"42","version":"1","name":"男生"}])
+            json!([{"id":"42","version":"1","name":"男生","description":"角色描述"}])
         );
         server.finish();
     }
@@ -3608,7 +3687,7 @@ fn legacy_element_create_keeps_original_write_protocol() {
 
 #[test]
 fn legacy_element_name_update_stays_on_v1_and_preserves_raw_detail() {
-    let current = json!({"id":"42","name":"old","modality":"image","recaption":{"style":"realistic","description":"old"},"allowed_usages":["creation"]});
+    let current = json!({"id":"42","name":"old","modality":"image","recaption":{"style":"realistic","description":"old"},});
     let server = Mock::new(|_| {
         vec![
         get("/vidu/v1/material/elements/detail/42", json!({"element":current})),
@@ -3631,7 +3710,6 @@ fn legacy_element_name_update_stays_on_v1_and_preserves_raw_detail() {
         ),
         true,
     );
-    assert_eq!(detail["element"]["allowed_usages"], json!(["creation"]));
     server.finish();
 }
 
@@ -3656,11 +3734,17 @@ fn element_tags_reads_only_api_display_names() {
     server.finish();
 }
 
-/// Generation permissions are server-owned. Even absent metadata must reach
-/// the server once; a rejected combined edit must not split into partial writes.
+/// Routing decisions happen after one GET and before every upload or PUT.
 #[test]
-fn element_label_permissions_are_checked_by_server_without_edition_dependency() {
-    for edition in [Some(json!(2)), Some(json!("2")), None] {
+fn element_update_rejects_unknown_generation_and_second_generation_labels() {
+    for edition in [
+        None,
+        Some(json!(0)),
+        Some(json!(3)),
+        Some(json!("unknown")),
+        Some(json!(2)),
+        Some(json!("2")),
+    ] {
         for options in [
             vec!["--label", "7"],
             vec!["--clear-labels"],
@@ -3671,20 +3755,216 @@ fn element_label_permissions_are_checked_by_server_without_edition_dependency() 
                 current["edition"] = value.clone();
             }
             let server = Mock::new(|_| {
-                vec![
-                get("/vidu/v1/material/elements/detail/42",json!({"element":current})),
-                Step::json("PUT","/vidu/v1/material/elements/42",json!({"message":"second-generation elements do not support personal label edits"})).status(400).check(|request| {
-                    let body = request.json();
-                    assert!(body["mask"].as_str().unwrap().contains("labels"));
-                    assert!(body["element"].get("edition").is_none());
-                    assert!(body["element"].get("tag_ids").is_none());
-                })
-            ]
+                vec![get(
+                    "/vidu/v1/material/elements/detail/42",
+                    json!({"element":current}),
+                )]
             });
             let mut args = vec!["element", "update", "42"];
             args.extend(options);
             let result = envelope(&server.run(&args), false);
-            assert_eq!(result["error"]["type"], "http_error");
+            assert_eq!(
+                result["error"]["type"],
+                if edition == Some(json!(2)) || edition == Some(json!("2")) {
+                    "client_error"
+                } else {
+                    "api_error"
+                }
+            );
+            server.finish();
+        }
+    }
+}
+
+#[test]
+fn element_update_uses_generation_for_metadata_routing() {
+    for edition in [json!(1), json!("1"), json!(2), json!("2")] {
+        let first = edition == json!(1) || edition == json!("1");
+        let server = Mock::new(|_| {
+            vec![
+            get("/vidu/v1/material/elements/detail/42",json!({"element":{"id":"42","name":"original","edition":edition,"recaption":{"description":"keep","style":"realistic"}}})),
+            Step::json("PUT",if first {"/vidu/v1/material/elements/42"} else {"/vidu/v2/material/elements/42"},json!({"id":"42"})).element_update_body(json!({"mask":"name,recaption","element":{"id":"42","name":"updated","recaption":{"description":"changed","style":"realistic"}}}))
+        ]
+        });
+        envelope(
+            &server.run(&[
+                "element",
+                "update",
+                "42",
+                "--name",
+                "updated",
+                "--recaption",
+                "changed",
+            ]),
+            true,
+        );
+        server.finish();
+    }
+}
+
+#[test]
+fn element_generation_guards_precede_media_uploads_and_new_fields() {
+    for edition in [None, Some(json!(1)), Some(json!("1")), Some(json!(3))] {
+        for options in [
+            vec!["--name", "new"],
+            vec!["--tag", "1"],
+            vec!["--asset-id", "9"],
+            vec!["--image", "/missing.png"],
+        ] {
+            if options[0] == "--name" && (edition == Some(json!(1)) || edition == Some(json!("1")))
+            {
+                continue;
+            }
+            let mut current = json!({"id":"42","name":"original","modality":"image","recaption":{"description":"keep","style":""}});
+            if let Some(value) = &edition {
+                current["edition"] = value.clone();
+            }
+            let server = Mock::new(|_| {
+                vec![get(
+                    "/vidu/v1/material/elements/detail/42",
+                    json!({"element":current}),
+                )]
+            });
+            let mut args = vec!["element", "update", "42"];
+            args.extend(options);
+            envelope(&server.run(&args), false);
+            server.finish();
+        }
+    }
+}
+
+/// Reject the complete first-generation edit before uploads or any write,
+/// even when image replacement is combined with otherwise valid metadata.
+#[test]
+fn element_first_generation_image_updates_never_upload_or_write() {
+    for edition in [json!(1), json!("1")] {
+        for extra in [
+            vec![],
+            vec!["--name", "updated"],
+            vec!["--recaption", "custom"],
+            vec!["--clear-labels"],
+            vec!["--label", "91"],
+        ] {
+            let server = Mock::new(|_| {
+                vec![get(
+                    "/vidu/v1/material/elements/detail/42",
+                    json!({"element":{"id":"42","edition":edition,"name":"old","modality":"image","recaption":{"description":"keep","style":"realistic"}}}),
+                )]
+            });
+            let mut args = vec!["element", "update", "42", "--image", "/missing.png"];
+            args.extend(extra);
+            let result = envelope(&server.run(&args), false);
+            assert!(result["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("second-generation"));
+            server.finish();
+        }
+    }
+}
+
+/// Second-generation labels are rejected after GET, before any image upload.
+#[test]
+fn element_second_generation_labels_with_images_never_upload() {
+    for label_args in [vec!["--clear-labels"], vec!["--label", "91"]] {
+        let server = Mock::new(|_| {
+            vec![get(
+                "/vidu/v1/material/elements/detail/42",
+                json!({"element":{"id":"42","edition":2}}),
+            )]
+        });
+        let mut args = vec!["element", "update", "42", "--image", "/missing.png"];
+        args.extend(label_args);
+        let result = envelope(&server.run(&args), false);
+        assert!(result["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Second-generation"));
+        server.finish();
+    }
+}
+
+/// Both switch values issue the same V1 metadata request for first-generation elements.
+/// Update names reach the service unchanged; creation keeps its own validation.
+#[test]
+fn element_second_generation_update_leaves_name_validation_to_service() {
+    for name in ["".to_string(), " ".to_string(), "名".repeat(31)] {
+        for asset in [false, true] {
+            let mut element = json!({"id":"42","name":name,"modality":"image","recaption":{"description":"keep","style":""}});
+            if asset {
+                element["components"] =
+                    json!([{"asset_id":"9","type":"main","content_type":"image"}]);
+            }
+            let server = Mock::new(|_| {
+                vec![
+                get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","edition":2,"name":"old","modality":"image","recaption":{"description":"keep","style":""}}})),
+                Step::json("PUT", "/vidu/v2/material/elements/42", json!({"message":"invalid name"})).status(400)
+                    .element_update_body(json!({"mask":if asset {"name,components"} else {"name"},"element":element})),
+            ]
+            });
+            let mut args = vec!["element", "update", "42", "--name", name.as_str()];
+            if asset {
+                args.extend(["--asset-id", "9"]);
+            }
+            let result = envelope(&server.run(&args), false);
+            assert_eq!(result["error"]["http_status"], 400);
+            server.finish();
+        }
+    }
+}
+
+#[test]
+fn element_first_generation_update_matches_false_mode_request() {
+    for options in [
+        vec!["--name", "updated"],
+        vec![
+            "--name",
+            "a-name-longer-than-thirty-characters-is-left-to-the-service",
+        ],
+        vec!["--recaption", "updated"],
+        vec!["--label", "91", "--label", "92"],
+        vec!["--clear-labels"],
+    ] {
+        let mut element = json!({"id":"42","name":"old","modality":"image","recaption":{"description":"keep","style":"realistic"}});
+        let mask = match options[0] {
+            "--name" => {
+                element["name"] = json!(options[1]);
+                "name"
+            }
+            "--recaption" => {
+                element["recaption"]["description"] = json!(options[1]);
+                "recaption"
+            }
+            "--label" => {
+                element["labels"] = json!([{"id":"91"},{"id":"92"}]);
+                "labels"
+            }
+            _ => {
+                element["labels"] = json!([]);
+                "labels"
+            }
+        };
+        for switch in ["false", "true"] {
+            let server = Mock::new(|_| {
+                vec![
+                    get(
+                        "/vidu/v1/material/elements/detail/42",
+                        json!({"element":{"id":"42","edition":1,"name":"old","modality":"image","recaption":{"description":"keep","style":"realistic"}}}),
+                    ),
+                    Step::json(
+                        "PUT",
+                        "/vidu/v1/material/elements/42",
+                        json!({"id":"42","version":"2"}),
+                    )
+                    .body(json!({"mask":mask,"element":element})),
+                ]
+            });
+            let mut args = vec!["element", "update", "42"];
+            args.extend(options.iter().copied());
+            envelope(
+                &server.run_env(&args, &[("VIDU_ELEMENT_PLATFORM_ASSETS", switch)]),
+                true,
+            );
             server.finish();
         }
     }
@@ -3695,7 +3975,7 @@ fn element_legacy_label_string_edition_uses_one_get_then_v1_update() {
     let server = Mock::new(|_| {
         vec![
         get("/vidu/v1/material/elements/detail/42", json!({"element":{"id":"42","edition":"1","name":"old","recaption":{"description":"keep","style":"realistic"}}})),
-        Step::json("PUT","/vidu/v1/material/elements/42",json!({"id":"42","edition":1,"allowed_usages":["creation"],"version":"2"}))
+        Step::json("PUT","/vidu/v1/material/elements/42",json!({"id":"42","edition":1,"version":"2"}))
             .body(json!({"mask":"labels","element":{"id":"42","name":"old","labels":[],"recaption":{"description":"keep","style":"realistic"}}}))
     ]
     });
@@ -3705,7 +3985,6 @@ fn element_legacy_label_string_edition_uses_one_get_then_v1_update() {
     );
     assert_eq!(result["version"], "2");
     assert_eq!(result["edition"], 1);
-    assert!(result.get("allowed_usages").is_none());
     server.finish();
 }
 

@@ -451,6 +451,7 @@ vidu-cli element create --name "商品" --tag "$TAG_ID" --image ./product.png
 vidu-cli element create --name "商品" --tag "$TAG_ID" --asset-id "$ASSET_ID"
 # 创建和图片替换也支持 --asset_id 别名。
 vidu-cli element update "$ELEMENT_ID" --asset_id "$ASSET_ID"
+vidu-cli element update "$ELEMENT_ID" --tag "$TAG_ID"
 ```
 
 代际是可选查询条件：`--edition 1` 筛选第一代，`--edition 2` 筛选第二代。通常无需指定；不传则不按代际筛选。可以与该来源支持的关键词、分类和分页条件组合。
@@ -475,9 +476,11 @@ vidu-cli element search --source official --edition 2
 vidu-cli element favorites --source official --edition 2
 ```
 
+个人、官方和社区查询列表均返回 `description`，截取前 100 个字符；无描述时返回空字符串。完整描述通过 `get` 获取。
+
 响应中的 `edition` 表示主体代际：`1` 为第一代，`2` 为第二代；表格显示“第一代／第二代”。通常无需按代际筛选。
 
-详情、更新、删除、收藏和取消收藏直接使用主体 ID，无需指定代际。第一代支持 `--label` / `--clear-labels` 编辑个人标签；第二代不支持个人标签和分类编辑，创建时指定一个 `--tag`，更新不提供 `--tag`。名称、描述及整体替换图片需要具备主体编辑权限。`--recaption` 修改描述；仅修改名称或描述不会重新上传图片。
+详情、更新、删除、收藏和取消收藏直接使用主体 ID，无需指定代际。第一代支持 `--label` / `--clear-labels` 编辑个人标签；第二代不支持个人标签；创建和第二代更新可通过单个 `--tag` 指定平台预设分类。两代编辑时名称是否合法均由服务端校验。第一代更新支持名称、描述和个人标签，编辑描述时保留原风格，暂不支持换图。`--image` 和 `--asset-id` 图片更新仅支持第二代图片主体；非图片主体不能换图。`update --tag` 整体替换原分类，可与名称、描述或图片更新一起提交，不能与 `--label` / `--clear-labels` 混用。名称、描述及整体替换图片需要具备主体编辑权限。`--recaption` 修改描述；仅修改名称或描述不会重新上传图片。
 
 ### 作品
 

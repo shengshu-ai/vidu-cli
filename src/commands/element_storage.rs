@@ -8,10 +8,10 @@ use serde_json::{json, Value};
 
 #[derive(Args)]
 pub struct MediaArgs {
-    /// Ordered images; the first is main and the rest are auxiliary.
+    /// Ordered images; first is main, others auxiliary. Image replacement requires a second-generation element.
     #[arg(long = "image", action = clap::ArgAction::Append, conflicts_with = "asset_ids")]
     pub images: Vec<String>,
-    /// Existing platform asset IDs; replaces the entire ordered component set.
+    /// Existing platform asset IDs; image replacement requires a second-generation element.
     #[arg(long = "asset-id", visible_alias = "asset_id", action = clap::ArgAction::Append, conflicts_with = "images")]
     pub asset_ids: Vec<String>,
 }

@@ -403,7 +403,7 @@ fn q4_pass_is_rejected_before_auth_or_upload() {
 }
 
 #[test]
-fn element_help_documents_sources_and_immutable_taxonomy() {
+fn element_help_documents_sources_and_single_category_editing() {
     for action in ["list", "search", "favorites", "favorite", "unfavorite"] {
         cli()
             .env("VIDU_ELEMENT_PLATFORM_ASSETS", "true")
@@ -425,7 +425,7 @@ fn element_help_documents_sources_and_immutable_taxonomy() {
         .args(["element", "update", "--help"])
         .assert()
         .success()
-        .stdout(contains("--tag").not())
+        .stdout(contains("--tag"))
         .stdout(contains("--style").not())
         .stdout(contains("--label"))
         .stdout(contains("--clear-labels"));
