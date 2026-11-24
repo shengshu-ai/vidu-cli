@@ -459,7 +459,7 @@ vidu-cli element create --name "Product" --tag "$TAG_ID" --asset-id "$ASSET_ID"
 vidu-cli element update "$ELEMENT_ID" --asset_id "$ASSET_ID"
 ```
 
-Generation is an optional discovery condition: `--edition 1` selects first-generation elements and `--edition 2` selects second-generation elements. Usually no selection is needed; omit it to browse without a generation filter. It can be combined with supported keyword/category conditions and pagination; the server filters before pagination.
+Generation is an optional discovery condition: `--edition 1` selects first-generation elements and `--edition 2` selects second-generation elements. Usually no selection is needed; omit it to browse without a generation filter. It can be combined with supported keyword/category conditions and pagination.
 
 | Command and source | Generation filter |
 | --- | --- |
@@ -468,19 +468,22 @@ Generation is an optional discovery condition: `--edition 1` selects first-gener
 | `favorites --source official` | `--edition 1` or `2` |
 | `search` / `favorites --source community` | Not supported |
 
-`list` defaults to personal; `search` and `favorites` default to community. Second-generation elements cannot currently be published to the community. Community discovery rejects `--edition` rather than silently ignoring it. Personal/official search accepts edition as its only condition.
+`list` defaults to personal; `search` and `favorites` default to community. Community search and collection lists do not support `--edition`. Personal/official search accepts edition as its only condition.
 
 ```bash
-vidu-cli element list --edition 2
+# Usually no generation selection is needed
+vidu-cli element list --keyword "Product"
+
+# Filter by generation when needed
 vidu-cli element list --source official --edition 2 --keyword "Product"
 vidu-cli element search --source personal --edition 1 --keyword "Character"
 vidu-cli element search --source official --edition 2
 vidu-cli element favorites --source official --edition 2
 ```
 
-List/search/favorites summaries include the server-provided `edition` alongside existing fields; GET and update also preserve it. JSON uses the numeric field (`1` or `2`); table output displays 第一代 / 第二代. If the server omits edition, the CLI omits it rather than inferring generation from source or assets. `edition` identifies generation, not permission to use every product feature; the server checks compatibility for each operation.
+The response field `edition` identifies element generation: `1` for first generation and `2` for second generation. Table output displays 第一代 / 第二代. Usually no generation filter is needed.
 
-Get, update, delete and collection actions take an element ID without an edition argument. First-generation elements support personal label edits through `--label` / `--clear-labels`. Second-generation elements do not support personal label edits or category changes; creation requires one `--tag`, and update has no `--tag` option. The server validates edit permissions atomically. The CLI fetches current metadata for audit context without relying on edition to permit label writes. Existing name/description editing and ordered image replacement stay available subject to server rules. `--recaption` edits the description; a name/description edit does not re-upload images.
+Get, update, delete and collection actions take an element ID without an edition argument. First-generation elements support personal label edits through `--label` / `--clear-labels`. Second-generation elements do not support personal label edits or category changes; creation requires one `--tag`, and update has no `--tag` option. Editing names, descriptions or images requires permission to edit the element. `--recaption` edits the description; a name/description edit does not re-upload images.
 
 ### Creations
 

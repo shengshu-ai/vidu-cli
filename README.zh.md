@@ -453,7 +453,7 @@ vidu-cli element create --name "商品" --tag "$TAG_ID" --asset-id "$ASSET_ID"
 vidu-cli element update "$ELEMENT_ID" --asset_id "$ASSET_ID"
 ```
 
-代际是可选查询条件：`--edition 1` 筛选第一代，`--edition 2` 筛选第二代。通常无需指定；不传则不按代际筛选。可以与该来源支持的关键词、分类和分页条件组合，由服务端先筛选再分页。
+代际是可选查询条件：`--edition 1` 筛选第一代，`--edition 2` 筛选第二代。通常无需指定；不传则不按代际筛选。可以与该来源支持的关键词、分类和分页条件组合。
 
 | 命令和来源 | 代际筛选 |
 | --- | --- |
@@ -462,19 +462,22 @@ vidu-cli element update "$ELEMENT_ID" --asset_id "$ASSET_ID"
 | 官方 `favorites --source official` | 支持 `--edition 1/2` |
 | 社区 `search` / `favorites --source community` | 不支持 |
 
-`list` 默认查询个人，`search` 和 `favorites` 默认查询社区。第二代主体暂不支持发布到社区；社区查询传 `--edition` 会明确报错，不会忽略条件。个人和官方搜索允许仅用代际作为搜索条件。
+`list` 默认查询个人，`search` 和 `favorites` 默认查询社区。社区搜索和社区收藏列表不支持 `--edition`。个人和官方搜索允许仅用代际作为搜索条件。
 
 ```bash
-vidu-cli element list --edition 2
+# 通常无需指定代际
+vidu-cli element list --keyword "商品"
+
+# 需要时再按代际筛选
 vidu-cli element list --source official --edition 2 --keyword "商品"
 vidu-cli element search --source personal --edition 1 --keyword "角色"
 vidu-cli element search --source official --edition 2
 vidu-cli element favorites --source official --edition 2
 ```
 
-列表、搜索、收藏摘要在原有字段基础上保留服务端返回的 `edition`，详情和更新响应也保留。JSON 返回数字 `1/2`，表格显示“第一代／第二代”。服务端未返回时 CLI 不推断代际，也不硬编码社区为第一代。代际不代表支持所有产品功能，实际兼容性由对应操作的服务端校验。
+响应中的 `edition` 表示主体代际：`1` 为第一代，`2` 为第二代；表格显示“第一代／第二代”。通常无需按代际筛选。
 
-详情、更新、删除、收藏和取消收藏直接使用主体 ID，无需指定代际。第一代支持 `--label` / `--clear-labels` 编辑个人标签；第二代不支持个人标签和分类编辑，创建时指定一个 `--tag`，更新不提供 `--tag`。服务端原子校验编辑权限；CLI 先读取当前元数据作为审核上下文，不依赖 `edition` 判定是否允许 label 写入。名称、描述及整体替换图片仍按对应服务端规则处理。`--recaption` 修改描述；仅修改名称或描述不会重新上传图片。
+详情、更新、删除、收藏和取消收藏直接使用主体 ID，无需指定代际。第一代支持 `--label` / `--clear-labels` 编辑个人标签；第二代不支持个人标签和分类编辑，创建时指定一个 `--tag`，更新不提供 `--tag`。名称、描述及整体替换图片需要具备主体编辑权限。`--recaption` 修改描述；仅修改名称或描述不会重新上传图片。
 
 ### 作品
 
