@@ -1,6 +1,7 @@
 mod cli_errors;
 mod client;
 mod commands;
+mod element_legacy_cli;
 mod validators;
 
 use clap::builder::PossibleValuesParser;
@@ -548,32 +549,39 @@ enum TaskAction {
 enum ElementAction {
     /// Get latest visible element
     Get { element_id: String },
-    /// Update personal element metadata
-    #[command(group(clap::ArgGroup::new("changes").required(true).multiple(true).args(["name", "labels", "clear_labels", "recaption"])))]
-    Update {
-        element_id: String,
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(long = "label", value_name = "LABEL_ID", help = "Replace labels with these label IDs. Repeatable.", action = clap::ArgAction::Append, conflicts_with = "clear_labels")]
-        labels: Vec<String>,
-        #[arg(long)]
-        clear_labels: bool,
-        #[arg(long)]
-        recaption: Option<String>,
-    },
+    /// Update personal element metadata or replace its ordered images
+    Update(commands::elements::UpdateArgs),
+    /// Get first-level element tags (for --tag IDs)
+    Tags,
     /// Delete personal element
     Delete { element_id: String },
-    /// List favorite community elements
+    /// List collected community or official elements
     Favorites {
+        #[arg(long, default_value = "community", value_parser = ["community", "official"])]
+        source: String,
+        /// Filter official collections by keyword.
+        #[arg(long)]
+        keyword: Option<String>,
+        /// Filter official collections by a single category ID.
+        #[arg(long)]
+        tag: Option<String>,
         #[arg(long, default_value = "")]
         page_token: String,
         #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(1..=100))]
         pagesz: i64,
     },
-    /// Favorite community element
-    Favorite { element_id: String },
-    /// Unfavorite community element
-    Unfavorite { element_id: String },
+    /// Collect a community or official element (not a like)
+    Favorite {
+        element_id: String,
+        #[arg(long, default_value = "community", value_parser = ["community", "official"])]
+        source: String,
+    },
+    /// Remove a community or official element from collections
+    Unfavorite {
+        element_id: String,
+        #[arg(long, default_value = "community", value_parser = ["community", "official"])]
+        source: String,
+    },
 
     /// Check if element name exists
     Check {
@@ -589,23 +597,15 @@ enum ElementAction {
         #[arg(long = "image", action = clap::ArgAction::Append)]
         images: Vec<String>,
     },
-    /// Create element
-    Create {
-        #[arg(long)]
-        name: String,
-        #[arg(long, default_value = "image")]
-        modality: String,
-        #[arg(long = "type", default_value = "user")]
-        elem_type: String,
-        #[arg(long = "image", action = clap::ArgAction::Append)]
-        images: Vec<String>,
-        #[arg(long)]
-        description: Option<String>,
-        #[arg(long)]
-        style: Option<String>,
-    },
-    /// List personal elements
+    /// Create an image element
+    Create(commands::elements::CreateArgs),
+    /// List personal or official elements
     List {
+        #[arg(long, default_value = "personal", value_parser = ["personal", "official"])]
+        source: String,
+        /// Filter personal or official elements by a single category ID.
+        #[arg(long)]
+        tag: Option<String>,
         #[arg(long)]
         keyword: Option<String>,
         #[arg(long, value_parser = clap::value_parser!(i64).range(0..=i32::MAX as i64), conflicts_with = "page_token")]
@@ -615,18 +615,30 @@ enum ElementAction {
         #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(10..=100))]
         pagesz: i64,
     },
-    /// Search community elements
+    /// Search personal, community or official elements by conditions
+    ///
+    /// Supply at least one keyword, tag or community category/topic/sort-by.
+    /// Source defaults to community; a tag does not automatically change it.
     Search {
+        #[arg(long, default_value = "community", value_parser = ["community", "official", "personal"])]
+        source: String,
+        /// Filter personal or official elements by a single category ID.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Community category filter.
         #[arg(long)]
         category: Option<String>,
+        /// Community topic filter.
         #[arg(long)]
         topic: Option<String>,
+        /// Optional keyword; must not be blank when supplied.
         #[arg(long)]
-        keyword: String,
+        keyword: Option<String>,
         #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(1..=100))]
         pagesz: i64,
-        #[arg(long, default_value = "recommend")]
-        sort_by: String,
+        /// Community sort order (default recommend); not supported for personal/official.
+        #[arg(long, value_parser = ["recommend", "time", "unspecified"])]
+        sort_by: Option<String>,
         #[arg(long, default_value = "")]
         page_token: String,
     },
@@ -708,8 +720,63 @@ enum VoiceAction {
     },
 }
 
+/// Select the command contract before parsing so help and completion metadata
+/// describe exactly the protocol used for execution. No public switch is added.
+fn protocol_command(v2: bool) -> clap::Command {
+    use clap::CommandFactory;
+    let command = Cli::command();
+    if v2 {
+        command
+    } else {
+        command.mut_subcommand("element", |_| {
+            element_legacy_cli::ElementAction::augment_subcommands(
+                clap::Command::new("element").about("Element (主体) operations"),
+            )
+            .subcommand_required(true)
+            .arg_required_else_help(true)
+        })
+    }
+}
+
 fn main() -> ExitCode {
-    let cli = match cli_errors::parse_or_exit(Cli::try_parse) {
+    use clap::FromArgMatches;
+    // An absent switch retains the original contract. Invalid configuration must
+    // never silently select a different write protocol.
+    let v2 = match std::env::var("VIDU_ELEMENT_PLATFORM_ASSETS") {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(value) if value == "false" => false,
+        Ok(value) if value == "true" => true,
+        _ => {
+            eprintln!("VIDU_ELEMENT_PLATFORM_ASSETS must be true or false (default false)");
+            return ExitCode::from(2);
+        }
+    };
+    // Only the new protocol adds this diagnostic. Legacy debug output must
+    // remain identical to main, just like its requests and JSON responses.
+    if v2 && std::env::var_os("VIDU_DEBUG").is_some() {
+        eprintln!("element protocol: v2");
+    }
+    let mut command = protocol_command(v2);
+    let matches = match command.clone().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error) => return cli_errors::print_parse_error(&mut command, error),
+    };
+    if !v2 {
+        if let Some(("element", args)) = matches.subcommand() {
+            let action = match element_legacy_cli::ElementAction::from_arg_matches(args) {
+                Ok(action) => action,
+                Err(error) => return cli_errors::print_parse_error(&mut command, error),
+            };
+            client::set_output_format(
+                matches
+                    .get_one::<String>("format")
+                    .is_some_and(|format| format == "table"),
+            );
+            element_legacy_cli::run(action);
+            return ExitCode::SUCCESS;
+        }
+    }
+    let cli = match cli_errors::parse_or_exit(|| Cli::from_arg_matches(&matches)) {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -719,8 +786,7 @@ fn main() -> ExitCode {
     let group = match cli.group {
         Some(g) => g,
         None => {
-            use clap::CommandFactory;
-            Cli::command().print_help().unwrap();
+            protocol_command(v2).print_help().unwrap();
             println!();
             return ExitCode::from(0);
         }
@@ -987,30 +1053,46 @@ fn main() -> ExitCode {
         },
         Group::Element { action } => match action {
             ElementAction::Get { element_id } => client::ok(commands::elements::get(&element_id)),
-            ElementAction::Update {
-                element_id,
-                name,
-                labels,
-                clear_labels,
-                recaption,
-            } => client::ok(commands::elements::update(
-                &element_id,
-                name.as_deref(),
-                &labels,
-                clear_labels,
-                recaption.as_deref(),
-            )),
+            ElementAction::Update(args) => client::ok(commands::elements::update(&args)),
+            ElementAction::Tags => client::ok(commands::elements::tags()),
             ElementAction::Delete { element_id } => {
                 client::ok(commands::elements::delete(&element_id))
             }
-            ElementAction::Favorites { page_token, pagesz } => {
-                client::ok(commands::elements::favorites(&page_token, pagesz))
+            ElementAction::Favorites {
+                source,
+                keyword,
+                tag,
+                page_token,
+                pagesz,
+            } => {
+                if source == "official" {
+                    client::ok(commands::elements::official_elements(
+                        keyword.as_deref(),
+                        tag.as_deref(),
+                        0,
+                        &page_token,
+                        pagesz,
+                        true,
+                    ));
+                }
+                commands::elements::reject_official_only_filters(
+                    keyword.is_some() || tag.is_some(),
+                );
+                client::ok(commands::elements::favorites(&page_token, pagesz));
             }
-            ElementAction::Favorite { element_id } => {
-                client::ok(commands::elements::favorite(&element_id, true))
+            ElementAction::Favorite { element_id, source } => {
+                client::ok(commands::elements::favorite_from_source(
+                    &element_id,
+                    true,
+                    &source,
+                ));
             }
-            ElementAction::Unfavorite { element_id } => {
-                client::ok(commands::elements::favorite(&element_id, false))
+            ElementAction::Unfavorite { element_id, source } => {
+                client::ok(commands::elements::favorite_from_source(
+                    &element_id,
+                    false,
+                    &source,
+                ));
             }
             ElementAction::Check { name } => {
                 commands::elements::check(&name);
@@ -1022,37 +1104,36 @@ fn main() -> ExitCode {
             } => {
                 commands::elements::preprocess(&name, &elem_type, &images);
             }
-            ElementAction::Create {
-                name,
-                modality,
-                elem_type,
-                images,
-                description,
-                style,
-            } => {
-                commands::elements::create(
-                    &name,
-                    &modality,
-                    &elem_type,
-                    &images,
-                    description.as_deref(),
-                    style.as_deref(),
-                );
-            }
+            ElementAction::Create(args) => commands::elements::create(&args),
             ElementAction::List {
+                source,
+                tag,
                 keyword,
                 page,
                 pagesz,
                 page_token,
             } => {
+                if source == "official" {
+                    client::ok(commands::elements::official_elements(
+                        keyword.as_deref(),
+                        tag.as_deref(),
+                        page.unwrap_or(0),
+                        page_token.as_deref().unwrap_or(""),
+                        pagesz,
+                        false,
+                    ));
+                }
                 commands::elements::list_elements(
                     keyword.as_deref(),
+                    tag.as_deref(),
                     page.unwrap_or(0),
                     pagesz,
                     page_token.as_deref(),
                 );
             }
             ElementAction::Search {
+                source,
+                tag,
                 category,
                 topic,
                 keyword,
@@ -1060,10 +1141,44 @@ fn main() -> ExitCode {
                 sort_by,
                 page_token,
             } => {
+                commands::elements::validate_search(
+                    keyword.as_deref(),
+                    tag.as_deref(),
+                    category.as_deref(),
+                    topic.as_deref(),
+                    sort_by.as_deref(),
+                );
+                if source != "community" {
+                    commands::elements::reject_community_only_filters(
+                        category.is_some() || topic.is_some() || sort_by.is_some(),
+                    );
+                    let data = if source == "personal" {
+                        commands::elements::personal_elements(
+                            keyword.as_deref(),
+                            tag.as_deref(),
+                            0,
+                            pagesz,
+                            Some(&page_token),
+                        )
+                    } else {
+                        commands::elements::official_elements(
+                            keyword.as_deref(),
+                            tag.as_deref(),
+                            0,
+                            &page_token,
+                            pagesz,
+                            false,
+                        )
+                    };
+                    client::ok(data);
+                }
+                if tag.is_some() {
+                    client::fail("client_error", "--tag requires --source personal or official; community supports --keyword/--category/--topic/--sort-by", None, None, None);
+                }
                 commands::elements::search(
-                    &keyword,
+                    keyword.as_deref().unwrap_or(""),
                     pagesz,
-                    &sort_by,
+                    sort_by.as_deref().unwrap_or("recommend"),
                     &page_token,
                     category.as_deref(),
                     topic.as_deref(),

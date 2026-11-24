@@ -61,6 +61,18 @@ class Runner:
         os.chmod(self.path/'manifest.json',0o600)
     def emit(self, **row):
         print(json.dumps(redact_strings(row,self.config['VIDU_TOKEN']),ensure_ascii=False),flush=True)
+    def element_tag_args(self, operation):
+        """Require explicit taxonomy for new writes; never guess a legal selection.
+
+        Recorded writes are replayed from evidence, so a resume must not require
+        new tags or turn an ambiguous creation into another mutation.
+        """
+        if operation in self.state['operations']:
+            return []
+        value = getattr(self.args, 'element_tag', None)
+        if not value or not value.isascii() or not value.isdecimal() or not 0 < int(value) <= 9223372036854775807:
+            raise ValueError('provide one --element-tag ID from element tags for new element creation')
+        return ['--tag', value]
     def run(self, name, command, write=False, timeout=100):
         self.touched.add(name)
         if name in self.state['operations']:
@@ -182,9 +194,9 @@ class Runner:
             if first.get('ok') or not safe_local_retry:
                 el=first # Never create again after success or ambiguous transport error.
             else:
-                el=self.run('element_create_local',['element','create','--name',self.state['prefix'],'--image',str(local) if local else uri],True)
+                el=self.run('element_create_local',['element','create','--name',self.state['prefix'],'--image',str(local) if local else uri]+self.element_tag_args('element_create_local'),True)
         else:
-            el=self.run('element_create',['element','create','--name',self.state['prefix'],'--image',str(local) if local else uri],True)
+            el=self.run('element_create',['element','create','--name',self.state['prefix'],'--image',str(local) if local else uri]+self.element_tag_args('element_create'),True)
         eid=el.get('id') or el.get('element',{}).get('id')
         if eid:
             self.state['resources']['element']={'id':str(eid),'cleanup':'pending'};self.save()
@@ -443,6 +455,7 @@ def main():
     p.add_argument('--execute',action='store_true')
     p.add_argument('--state-dir',type=Path)
     p.add_argument('--env-file',type=Path)
+    p.add_argument('--element-tag',help='single taxonomy ID from element tags for new element creation')
     p.add_argument('--phase',choices=['baseline','wait','download','reruns','derived','lifecycle','cancel','headtail','voice','summary','cleanup','image_rerun','audit','official_tts','charges'],default='baseline')
     a=p.parse_args()
     if not a.execute:

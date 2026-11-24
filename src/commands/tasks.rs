@@ -341,63 +341,6 @@ fn validate_prepared_generation_image(
     Ok(())
 }
 
-pub fn process_image_input(input: &str) -> String {
-    // 1. If already ssupload URI, return directly
-    if input.starts_with("ssupload:") {
-        return input.to_string();
-    }
-
-    // 2. If HTTP/HTTPS URL, download and upload
-    if input.starts_with("http://") || input.starts_with("https://") {
-        return download_and_upload(input);
-    }
-
-    // 3. Otherwise treat as local file path, upload
-    upload_local_file(input)
-}
-
-fn download_and_upload(url: &str) -> String {
-    let resp = reqwest::blocking::get(url);
-    match resp {
-        Ok(mut r) => {
-            let temp_dir = tempfile::tempdir().unwrap();
-            let temp_path = temp_dir
-                .path()
-                .join(format!("vidu_{}", uuid::Uuid::new_v4()));
-            let mut file = std::fs::File::create(&temp_path).unwrap();
-            std::io::copy(&mut r, &mut file).unwrap();
-
-            let uri = crate::commands::upload::upload_and_get_uri(temp_path.to_str().unwrap());
-            uri
-        }
-        Err(e) => {
-            client::fail(
-                "client_error",
-                &format!(
-                    "Failed to download image: {}",
-                    client::network_error_message(e, url)
-                ),
-                None,
-                None,
-                None,
-            );
-        }
-    }
-}
-
-fn upload_local_file(path: &str) -> String {
-    if !Path::new(path).exists() {
-        client::fail(
-            "client_error",
-            &format!("Image file not found: {}", path),
-            None,
-            None,
-            None,
-        );
-    }
-    crate::commands::upload::upload_and_get_uri(path)
-}
-
 fn reference_audio_durations(
     task_type: &str,
     model_version: &str,

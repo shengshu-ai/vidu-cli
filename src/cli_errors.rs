@@ -29,24 +29,23 @@ where
 {
     match parser() {
         Ok(cli) => Ok(cli),
-        Err(err) => {
-            // Help / version requests are not real errors — let clap print as-is.
-            match err.kind() {
-                ErrorKind::DisplayHelp
-                | ErrorKind::DisplayVersion
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-                    let _ = err.print();
-                    return Err(ExitCode::from(0));
-                }
-                _ => {}
-            }
-
-            let mut cmd = T::command();
-            let rendered = render_friendly(&mut cmd, &err);
-            eprintln!("{}", rendered.trim_end());
-            Err(ExitCode::from(2))
-        }
+        Err(err) => Err(print_parse_error(&mut T::command(), err)),
     }
+}
+
+/// Render against the selected protocol's command tree, including suggestions.
+pub fn print_parse_error(command: &mut Command, error: ClapError) -> ExitCode {
+    if matches!(
+        error.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
+        let _ = error.print();
+        return ExitCode::SUCCESS;
+    }
+    eprintln!("{}", render_friendly(command, &error).trim_end());
+    ExitCode::from(2)
 }
 
 /// Render an agent-friendly message for `err`. Falls back to clap's own

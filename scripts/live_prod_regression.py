@@ -199,7 +199,7 @@ class ProductionRunner(Runner):
     def element(self):
         if 'element_create' not in self.state['operations']:
             self.prepare_fixtures('image')
-        d=self.run('element_create',['element','create','--name','cli-regression-prod-'+self.path.name[-8:],'--image',str(self.path/'robot.png')],True,timeout=180)
+        d=self.run('element_create',['element','create','--name','cli-regression-prod-'+self.path.name[-8:],'--image',str(self.path/'robot.png')]+self.element_tag_args('element_create'),True,timeout=180)
         eid=d.get('id') or d.get('element',{}).get('id')
         if not eid:return
         eid=str(eid);self.state['resources']['element']={'id':eid,'cleanup':'pending'};self.save()
@@ -427,6 +427,7 @@ def main():
     p.add_argument('--preflight-dir',type=Path)
     p.add_argument('--image-fixture',type=Path,help='local image file to copy into private production state (reused on resume)')
     p.add_argument('--audio-fixture',type=Path,help='local generic synthetic voice audio to copy into private production state (reused on resume)')
+    p.add_argument('--element-tag',help='single taxonomy ID from element tags for new element creation')
     p.add_argument('--phase',choices=['setup','bootstrap','regressions','derived','inspect','charges','cleanup','element','voice','voice_dependents','download_source','corrected_probes','element_fixed','finalize','extend_fixed','summary','parity'],default='setup')
     args=p.parse_args()
     if not args.execute:

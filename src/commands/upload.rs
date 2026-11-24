@@ -203,6 +203,74 @@ pub(super) fn upload_prepared_image(image: PreparedImage) -> String {
     format!("ssupload:?id={}", upload_id_str)
 }
 
+/// Subject uploads use the platform Assets contract, independently of the old
+/// task Files uploader. Material completion returns an upload URI; subject save
+/// promotes it to an asset with the authenticated ownership and audit context.
+pub(super) fn upload_asset_image(path: &str) -> String {
+    let image = prepare_image(path)
+        .unwrap_or_else(|error| client::fail("client_error", &error, None, None, None));
+    // Compression may change the format, so use a filename matching the bytes.
+    let extension = match image.mime.as_str() {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "png",
+    };
+    let base = client::base_url();
+    let data = client::request_json(
+        "POST",
+        &format!("{base}/tools/v1/assets/uploads"),
+        Some("create_asset_upload"),
+        Some(
+            &json!({"file_name":format!("image.{extension}"),"content_type":image.mime,"scene":"material"}),
+        ),
+        None,
+    );
+    let token = data
+        .get("upload_token")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty());
+    let url = data
+        .get("put_url")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty());
+    let (Some(token), Some(url)) = (token, url) else {
+        client::fail(
+            "parse_error",
+            "Asset upload response lacks upload_token or put_url",
+            None,
+            None,
+            Some("create_asset_upload"),
+        );
+    };
+    let headers = upload_headers(&data, image.mime);
+    let (etag,) = client::put_raw(url, image.bytes, &headers, Some("put_asset_image"));
+    let result = client::request_json(
+        "PUT",
+        &format!("{base}/tools/v1/assets/uploads/complete"),
+        Some("complete_asset_upload"),
+        Some(&json!({"upload_token":token,"etag":etag})),
+        None,
+    );
+    let uri = result
+        .get("upload_uri")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if uri
+        .strip_prefix("ssupload:?id=")
+        .and_then(|id| id.parse::<i64>().ok())
+        .is_none_or(|id| id <= 0)
+    {
+        client::fail(
+            "parse_error",
+            "Material asset completion lacks a valid upload_uri; the upload may have succeeded",
+            None,
+            None,
+            Some("complete_asset_upload"),
+        );
+    }
+    uri.into()
+}
+
 pub fn ffprobe_available() -> bool {
     std::process::Command::new("ffprobe")
         .arg("-version")

@@ -104,136 +104,147 @@ fn extract_string_id(data: &Value, key: &str) -> String {
         .unwrap_or_default()
 }
 
-pub fn create(
-    name: &str,
-    modality: &str,
-    elem_type: &str,
-    images: &[String],
-    description: Option<&str>,
-    style: Option<&str>,
-) {
-    if images.is_empty() || images.len() > 3 {
-        client::fail("client_error", "Must provide 1-3 images", None, None, None);
-    }
+/// The gateway fixes ownership to the authenticated user. Keep the existing
+/// --type/--modality spellings without allowing preset ownership writes.
+#[derive(clap::Args)]
+pub struct CreateArgs {
+    #[arg(long)]
+    name: String,
+    #[arg(long, default_value = "image", value_parser = ["image"])]
+    modality: String,
+    #[arg(long = "type", default_value = "user", value_parser = ["user"])]
+    elem_type: String,
+    #[command(flatten)]
+    media: super::element_storage::MediaArgs,
+    /// One taxonomy ID from `element tags`.
+    #[arg(long = "tag", value_name = "TAG_ID")]
+    tag_id: String,
+    /// Optional description; the service generates one when omitted.
+    #[arg(long)]
+    description: Option<String>,
+}
 
-    // Validate user-provided recaption fields
-    if let Some(s) = style {
-        if s.chars().count() > 64 {
-            client::fail(
-                "client_error",
-                "recaption.style must not exceed 64 characters",
-                None,
-                None,
-                None,
-            );
+#[derive(clap::Args)]
+#[command(group(clap::ArgGroup::new("changes").required(true).multiple(true).args(["name", "labels", "clear_labels", "recaption", "images", "asset_ids"])))]
+pub struct UpdateArgs {
+    element_id: String,
+    #[arg(long)]
+    name: Option<String>,
+    /// Replace legacy personal labels; these are not the element category.
+    #[arg(long = "label", value_name = "LABEL_ID", action = clap::ArgAction::Append, conflicts_with_all = ["clear_labels", "images", "asset_ids"])]
+    labels: Vec<String>,
+    /// Clear legacy personal labels; does not change the element category.
+    #[arg(long, conflicts_with_all = ["images", "asset_ids"])]
+    clear_labels: bool,
+    /// Replace description, preserving the existing style.
+    #[arg(long)]
+    recaption: Option<String>,
+    #[command(flatten)]
+    media: super::element_storage::MediaArgs,
+}
+
+/// Validate metadata before uploading; taxonomy selection stays server-side.
+fn validate_metadata(name: Option<&str>, description: Option<&str>) -> Result<(), String> {
+    if let Some(name) = name {
+        if name.trim().is_empty() || name.chars().count() > 30 {
+            return Err("name must contain 1-30 characters".into());
         }
     }
-    if let Some(d) = description {
-        let char_count = d.chars().count();
-        if d.is_empty() || char_count > 1280 {
-            client::fail(
-                "client_error",
-                "recaption.description must be 1-1280 characters",
-                None,
-                None,
-                None,
-            );
+    if let Some(description) = description {
+        if description.is_empty() || description.chars().count() > 1280 {
+            return Err("description must contain 1-1280 characters".into());
         }
     }
+    Ok(())
+}
 
-    let base = client::base_url();
+/// Protobuf int64 IDs stay strings on the wire to avoid JSON precision loss.
+fn validate_tag_id(id: Option<&str>) -> Result<(), String> {
+    if id.is_some_and(|id| id.parse::<i64>().map_or(true, |id| id <= 0)) {
+        return Err("--tag requires a positive taxonomy ID from element tags".into());
+    }
+    Ok(())
+}
 
-    // Step 1: Check name availability
-    let mut check_params = HashMap::new();
-    check_params.insert("name".into(), name.into());
-    let _check = client::request_json(
+fn require_valid(result: Result<(), String>) {
+    result.unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
+}
+
+/// Ask the service for first-level tags; hierarchy, visibility and ordering are
+/// business rules owned by the server. The CLI only projects display fields.
+pub fn tags() -> Value {
+    let params = HashMap::from([("parent_id".into(), "0".into())]);
+    let data = client::request_json(
         "GET",
-        &format!("{}/vidu/v1/material/elements/create/check", base),
-        Some("check_name"),
+        &format!("{}/vidu/v1/material/elements/tags", client::base_url()),
         None,
-        Some(&check_params),
-    );
-
-    // Step 2: Process images (auto-upload local files / URLs)
-    let processed_images: Vec<String> = images
-        .iter()
-        .map(|img| crate::commands::tasks::process_image_input(img))
-        .collect();
-
-    // Step 3: Preprocess
-    let components: Vec<Value> = processed_images
-        .iter()
-        .enumerate()
-        .map(|(i, img)| {
-            json!({
-                "content": img,
-                "src_img": img,
-                "content_type": "image",
-                "type": if i == 0 { "main" } else { "auxiliary" }
-            })
-        })
-        .collect();
-
-    let preprocess_body = json!({
-        "components": components,
-        "name": name,
-        "type": elem_type
-    });
-
-    let prep_data = client::request_json(
-        "POST",
-        &format!("{}/vidu/v1/material/elements/pre-process", base),
-        Some("preprocess"),
-        Some(&preprocess_body),
         None,
+        Some(&params),
     );
-
-    let elem_id = extract_string_id(&prep_data, "id");
-    let creator_id = extract_string_id(&prep_data, "creator_id");
-
-    let prep_style = prep_data
-        .get("recaption")
-        .and_then(|r| r.get("style"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let prep_desc = prep_data
-        .get("recaption")
-        .and_then(|r| r.get("description"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    // Use user-provided or preprocess values
-    let final_style = style.unwrap_or(prep_style);
-    let final_desc = description.unwrap_or(prep_desc);
-
-    // Step 4: Create
-    let mut recaption = json!({"description": final_desc});
-    if !final_style.is_empty() {
-        recaption["style"] = json!(final_style);
+    let nodes = match data.get("tags") {
+        None | Some(Value::Null) if data.is_object() => &[][..],
+        Some(Value::Array(nodes)) => nodes.as_slice(),
+        _ => client::fail(
+            "parse_error",
+            "Tag response must contain a tags array",
+            None,
+            None,
+            None,
+        ),
+    };
+    let mut items = Vec::new();
+    for node in nodes {
+        if !node.is_object() {
+            client::fail("parse_error", "Tag must be a JSON object", None, None, None);
+        }
+        // The tag API exposes display_name_zh/en. Project only the public
+        // CLI fields; name/name_en in a response are not API field aliases.
+        items.push(json!({
+            "id": extract_string_id(node, "id"),
+            "name": node.get("display_name_zh").and_then(Value::as_str).unwrap_or(""),
+            "name_en": node.get("display_name_en").and_then(Value::as_str).unwrap_or(""),
+        }));
     }
+    json!({"tags":items})
+}
 
-    let create_body = json!({
-        "id": elem_id,
-        "name": name,
-        "modality": modality,
-        "type": elem_type,
-        "components": components,
-        "creator_id": creator_id,
-        "recaption": recaption
+/// Upload once and use one-step creation. Material owns preprocessing, caption
+/// generation, audit, and persistence; there is no temporary preprocess element.
+pub fn create(args: &CreateArgs) {
+    require_valid(validate_metadata(
+        Some(&args.name),
+        args.description.as_deref(),
+    ));
+    require_valid(validate_tag_id(Some(&args.tag_id)));
+    require_valid(args.media.validate(true));
+
+    let components = args.media.prepare_components();
+    let mut body = json!({
+        "name": args.name, "modality": args.modality,
+        "tag_ids": [&args.tag_id], "components": components
     });
-
+    // The public gateway sets type and creator_id from authentication. They
+    // cannot be selected by an untrusted terminal caller.
+    debug_assert_eq!(args.elem_type, "user");
+    // Style is owned by the service, not a terminal input.
+    if let Some(description) = &args.description {
+        body["recaption"] = json!({"description":description});
+    }
     let data = client::request_json(
         "POST",
-        &format!("{}/vidu/v1/material/elements", base),
-        Some("create"),
-        Some(&create_body),
+        &format!("{}/vidu/v1/material/elements/create", client::base_url()),
+        Some("create_element"),
+        Some(&body),
         None,
     );
-
     let id = extract_string_id(&data, "id");
-    let ver = extract_string_id(&data, "version");
-    client::ok(json!({"id": id, "version": ver}));
+    let version = extract_string_id(&data, "version");
+    if id.parse::<i64>().map_or(true, |id| id <= 0)
+        || version.parse::<i64>().map_or(true, |version| version <= 0)
+    {
+        client::fail("parse_error", "Create response is missing a valid element ID or version; the write may have succeeded. Check element list before retrying.", None, None, Some("create_element"));
+    }
+    client::ok(json!({"id": id, "version": version}));
 }
 
 fn require_pagesz(pagesz: i64, minimum: i64) {
@@ -270,6 +281,15 @@ where
     seen.insert(token.clone());
     for current_page in 0..=page {
         let mut data = fetch(&token);
+        if !data.is_object() {
+            return Err("Server list response must be a JSON object".into());
+        }
+        if data
+            .get("next_page_token")
+            .is_some_and(|value| !value.is_null() && !value.is_string())
+        {
+            return Err("Server pagination cursor must be a string".into());
+        }
         let next = data
             .get("next_page_token")
             .and_then(Value::as_str)
@@ -291,8 +311,28 @@ where
     unreachable!()
 }
 
-pub fn list_elements(keyword: Option<&str>, page: i64, pagesz: i64, page_token: Option<&str>) {
+/// Personal browsing retains list page-size limits; search uses the same query
+/// with its own 1–100 limit. Both exclude presets and filter on the server.
+pub fn list_elements(
+    keyword: Option<&str>,
+    tag: Option<&str>,
+    page: i64,
+    pagesz: i64,
+    page_token: Option<&str>,
+) {
     require_pagesz(pagesz, 10);
+    client::ok(personal_elements(keyword, tag, page, pagesz, page_token));
+}
+
+pub fn personal_elements(
+    keyword: Option<&str>,
+    tag: Option<&str>,
+    page: i64,
+    pagesz: i64,
+    page_token: Option<&str>,
+) -> Value {
+    require_pagesz(pagesz, 1);
+    require_valid(validate_tag_id(tag));
     if page < 0 || (page != 0 && page_token.is_some()) {
         client::fail(
             "client_error",
@@ -305,6 +345,12 @@ pub fn list_elements(keyword: Option<&str>, page: i64, pagesz: i64, page_token: 
     let mut params = HashMap::new();
     params.insert("pager.pagesz".into(), pagesz.to_string());
     params.insert("modalities".into(), "image".into());
+    // Personal discovery excludes preset subjects, including the first page;
+    // official discovery has its own source and endpoint.
+    params.insert("without_preset".into(), "true".into());
+    if let Some(tag) = tag {
+        params.insert("tag_ids".into(), tag.into());
+    }
     if let Some(kw) = keyword {
         params.insert("keyword".into(), kw.to_string());
     }
@@ -320,10 +366,14 @@ pub fn list_elements(keyword: Option<&str>, page: i64, pagesz: i64, page_token: 
         )
     })
     .unwrap_or_else(|err| client::fail("pagination_error", &err, None, None, None));
-    let items: Vec<Value> = data.get("elements").and_then(Value::as_array).into_iter().flatten().map(|e| {
-        json!({"id": extract_string_id(e, "id"), "version": extract_string_id(e, "version"), "name": e.get("name").and_then(Value::as_str).unwrap_or("")})
-    }).collect();
-    client::ok(json!({"elements": items, "next_page_token": data["next_page_token"]}));
+    let items: Vec<Value> = data
+        .get("elements")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|e| list_item(e))
+        .collect();
+    json!({"elements": items, "next_page_token": data["next_page_token"]})
 }
 
 fn feed_params(
@@ -385,15 +435,6 @@ pub fn search(
     topic: Option<&str>,
 ) {
     require_pagesz(pagesz, 1);
-    if keyword.is_empty() {
-        client::fail(
-            "client_error",
-            "--keyword is required for search",
-            None,
-            None,
-            None,
-        );
-    }
     client::ok(fetch_feed(&feed_params(
         pagesz,
         page_token,
@@ -406,7 +447,180 @@ pub fn favorites(page_token: &str, pagesz: i64) -> Value {
     fetch_feed(&feed_params(pagesz, page_token, None))
 }
 
+/// Conditions are explicit: a source or pagination alone is not a search.
+/// Reject empty text instead of silently treating it as an omitted condition.
+pub fn validate_search(
+    keyword: Option<&str>,
+    tag: Option<&str>,
+    category: Option<&str>,
+    topic: Option<&str>,
+    sort_by: Option<&str>,
+) {
+    for (flag, value) in [
+        ("--keyword", keyword),
+        ("--category", category),
+        ("--topic", topic),
+    ] {
+        if value.is_some_and(|value| value.trim().is_empty()) {
+            client::fail(
+                "client_error",
+                &format!("{flag} must not be blank"),
+                None,
+                None,
+                None,
+            );
+        }
+    }
+    if keyword.is_none()
+        && tag.is_none()
+        && category.is_none()
+        && topic.is_none()
+        && sort_by.is_none()
+    {
+        client::fail("client_error", "search requires --keyword, --tag or community --category/--topic/--sort-by; use list to browse without conditions", None, None, None);
+    }
+}
+
+/// Reject filters that cannot be expressed by the selected library. Never drop
+/// a user's filter silently or search a different source as a fallback.
+pub fn reject_official_only_filters(has_official_filter: bool) {
+    if has_official_filter {
+        client::fail(
+            "client_error",
+            "--tag and collection --keyword filters require --source official",
+            None,
+            None,
+            None,
+        );
+    }
+}
+
+/// Reject community discovery filters on the official library.
+pub fn reject_community_only_filters(has_community_filter: bool) {
+    if has_community_filter {
+        client::fail(
+            "client_error",
+            "--category, --topic and --sort-by require --source community; personal/official support --keyword and --tag",
+            None,
+            None,
+            None,
+        );
+    }
+}
+
+/// Official discovery and collections share Vidu's query contract. Filtering
+/// and collection pagination stay on the server, rather than joining pages in
+/// the CLI. Numeric list pages retain the existing cursor-walking behavior.
+pub fn official_elements(
+    keyword: Option<&str>,
+    tag: Option<&str>,
+    page: i64,
+    page_token: &str,
+    pagesz: i64,
+    collected_only: bool,
+) -> Value {
+    require_pagesz(pagesz, 1);
+    require_valid(validate_tag_id(tag));
+    let mut params = HashMap::from([
+        ("query.pager.pagesz".into(), pagesz.to_string()),
+        ("collected_only".into(), collected_only.to_string()),
+    ]);
+    if let Some(keyword) = keyword {
+        params.insert("query.keyword".into(), keyword.into());
+    }
+    if let Some(tag) = tag {
+        params.insert("query.tag_ids".into(), tag.into());
+    }
+    let data = walk_personal_pages(page, page_token, |token| {
+        params.insert("query.pager.page_token".into(), token.into());
+        client::request_json(
+            "GET",
+            &format!("{}/vidu/v1/material/elements/official", client::base_url()),
+            None,
+            None,
+            Some(&params),
+        )
+    })
+    .unwrap_or_else(|err| client::fail("pagination_error", &err, None, None, None));
+    // Match the personal list contract; full media details belong to get.
+    let items = official_list_items(&data)
+        .unwrap_or_else(|err| client::fail("parse_error", &err, None, None, None));
+    json!({"elements":items,"next_page_token":data.get("next_page_token").and_then(Value::as_str).unwrap_or("")})
+}
+
+/// Both personal and official lists expose the same stable summary fields.
+/// Identifiers stay strings so consumers can preserve int64 precision.
+fn list_item(element: &Value) -> Value {
+    json!({"id":extract_string_id(element,"id"),"version":extract_string_id(element,"version"),
+        "name":element.get("name").and_then(Value::as_str).unwrap_or("")})
+}
+
+/// The gateway returns ListElementsReply with flat vidu.v1.Element items.
+/// Missing repeated fields represent an empty list in protobuf JSON; malformed
+/// fields are errors, not empty results or values that can panic on indexing.
+fn official_list_items(data: &Value) -> Result<Vec<Value>, String> {
+    if !data.is_object() {
+        return Err("Official list response must be a JSON object".into());
+    }
+    let elements = match data.get("elements") {
+        None | Some(Value::Null) => return Ok(vec![]),
+        Some(Value::Array(elements)) => elements,
+        _ => return Err("Official list elements must be an array".into()),
+    };
+    elements
+        .iter()
+        .map(|element| {
+            if !element.is_object() {
+                return Err("Official list item must be an element object".into());
+            }
+            Ok(list_item(element))
+        })
+        .collect()
+}
+
+/// Collection identities are different: official collections use Element IDs,
+/// community collections resolve Share IDs through detail. In particular, do
+/// not GET an official element before uncollecting: an offline element may no
+/// longer be readable, but the user must still be able to remove its collection.
+pub fn favorite_from_source(element_id: &str, enabled: bool, source: &str) -> Value {
+    require_id(element_id);
+    if source == "community" {
+        return favorite(element_id, enabled);
+    }
+    if source != "official" {
+        client::fail(
+            "client_error",
+            "Collection source must be community or official",
+            None,
+            None,
+            None,
+        );
+    }
+    let url = format!(
+        "{}/tools/v1/votes/official_element/{element_id}",
+        client::base_url()
+    );
+    if enabled {
+        client::request_json(
+            "PUT",
+            &url,
+            None,
+            Some(&json!({"obj_type":"official_element","obj_id":element_id,"vote":"collect"})),
+            None,
+        )
+    } else {
+        let params = HashMap::from([("vote".into(), "collect".into())]);
+        client::request_json("DELETE", &url, None, None, Some(&params))
+    }
+}
+
 pub fn get(element_id: &str) -> Value {
+    subject_output(get_detail(element_id))
+}
+
+/// Internal decisions need the server-owned edition before public projection.
+/// Keep raw detail private so internal fields never leak through get/update output.
+fn get_detail(element_id: &str) -> Value {
     require_id(element_id);
     client::request_json(
         "GET",
@@ -418,6 +632,21 @@ pub fn get(element_id: &str) -> Value {
         None,
         None,
     )
+}
+
+/// Detail wraps its subject in element; updates return the subject directly.
+/// Hide internal usage/edition fields in V2 output without touching media or
+/// the public version used for identity. Legacy output has its own unchanged path.
+fn subject_output(mut data: Value) -> Value {
+    if let Some(object) = data.as_object_mut() {
+        object.remove("allowed_usages");
+        object.remove("edition");
+        if let Some(element) = object.get_mut("element").and_then(Value::as_object_mut) {
+            element.remove("allowed_usages");
+            element.remove("edition");
+        }
+    }
+    data
 }
 
 fn validate_update_args(
@@ -494,22 +723,17 @@ fn update_body(
     Ok(json!({"mask": mask.join(","), "element": element}))
 }
 
-pub fn update(
+fn update_legacy_labels(
     element_id: &str,
     name: Option<&str>,
     labels: &[String],
     clear_labels: bool,
     recaption: Option<&str>,
+    current: Option<&Value>,
 ) -> Value {
-    require_id(element_id);
-    // Validate arguments before any read or mutation.
-    validate_update_args(name, labels, clear_labels, recaption)
-        .unwrap_or_else(|err| client::fail("client_error", &err, None, None, None));
-    let detail = get(element_id);
-    let current = detail.get("element");
     let body = update_body(element_id, name, labels, clear_labels, recaption, current)
         .unwrap_or_else(|err| client::fail("api_error", &err, None, None, None));
-    client::request_json(
+    subject_output(client::request_json(
         "PUT",
         &format!(
             "{}/vidu/v1/material/elements/{element_id}",
@@ -518,7 +742,134 @@ pub fn update(
         None,
         Some(&body),
         None,
-    )
+    ))
+}
+
+/// Build the V2 field mask without replaying unchanged component URLs. Metadata
+/// edits never register assets or re-upload a subject's existing files.
+fn library_update_body(args: &UpdateArgs, current: Option<&Value>) -> Result<Value, String> {
+    let current = current
+        .filter(|value| value.is_object())
+        .ok_or("Missing current element in detail response; refusing to update")?;
+    let name = args
+        .name
+        .as_deref()
+        .or_else(|| current.get("name").and_then(Value::as_str))
+        .ok_or("Missing current element name in detail response; refusing to update")?;
+    let mut caption = current
+        .get("recaption")
+        .filter(|value| value.is_object())
+        .cloned()
+        .ok_or("Missing valid current recaption in detail response; refusing to update")?;
+    let mut element = json!({"id":args.element_id,"name":name});
+    let mut mask = Vec::new();
+    if args.name.is_some() {
+        mask.push("name");
+    }
+    if let Some(description) = &args.recaption {
+        caption["description"] = json!(description);
+    }
+    if args.recaption.is_some() {
+        mask.push("recaption");
+    }
+    element["recaption"] = caption;
+    if let Some(modality) = current.get("modality") {
+        element["modality"] = modality.clone();
+    }
+    Ok(json!({"mask":mask.join(","),"element":element}))
+}
+
+/// Edition is the API discriminator: 1 is legacy, 2 uses platform assets.
+/// Never infer it from tags, labels or media. Missing/unknown editions must not
+/// silently authorize a legacy write. Accept numeric and protobuf string forms.
+fn legacy_labels_allowed(current: Option<&Value>) -> Result<bool, &'static str> {
+    let edition = current.and_then(|element| element.get("edition"));
+    let edition = edition.and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
+    });
+    match edition {
+        Some(1) => Ok(true),
+        Some(2) => Ok(false),
+        _ => Err("Missing or unsupported element edition; refusing personal label edits"),
+    }
+}
+
+/// New edits use V2; legacy personal labels retain their compatible endpoint.
+/// One command never splits into two writes that could partially succeed.
+pub fn update(args: &UpdateArgs) -> Value {
+    require_id(&args.element_id);
+    require_valid(validate_metadata(
+        args.name.as_deref(),
+        args.recaption.as_deref(),
+    ));
+    require_valid(args.media.validate(false));
+    let edits_labels = !args.labels.is_empty() || args.clear_labels;
+    if edits_labels {
+        require_valid(validate_update_args(
+            args.name.as_deref(),
+            &args.labels,
+            args.clear_labels,
+            args.recaption.as_deref(),
+        ));
+    }
+    // Fetch exactly once before choosing a write branch. Public get() removes
+    // edition, so it cannot be used to decide whether legacy labels are legal.
+    let detail = get_detail(&args.element_id);
+    let current = detail.get("element");
+    if edits_labels {
+        let allowed = legacy_labels_allowed(current)
+            .unwrap_or_else(|error| client::fail("api_error", error, None, None, None));
+        if !allowed {
+            client::fail("client_error", "--label and --clear-labels are only supported for legacy elements; new elements do not allow personal label edits", None, None, None);
+        }
+        return update_legacy_labels(
+            &args.element_id,
+            args.name.as_deref(),
+            &args.labels,
+            args.clear_labels,
+            args.recaption.as_deref(),
+            current,
+        );
+    }
+    let mut body = library_update_body(args, current)
+        .unwrap_or_else(|err| client::fail("api_error", &err, None, None, None));
+    if args.media.has_files() {
+        // This editor replaces images only. Converting an old text/video element
+        // requires a declared modality contract rather than implicit conversion.
+        if current
+            .and_then(|element| element.get("modality"))
+            .and_then(Value::as_str)
+            != Some("image")
+        {
+            client::fail(
+                "client_error",
+                "--image can only replace components of an image element",
+                None,
+                None,
+                None,
+            );
+        }
+        body["element"]["components"] = args.media.prepare_components();
+        let mask = body["mask"].as_str().unwrap_or("");
+        body["mask"] = json!(if mask.is_empty() {
+            "components".into()
+        } else {
+            format!("{mask},components")
+        });
+    }
+    subject_output(client::request_json(
+        "PUT",
+        &format!(
+            "{}/vidu/v2/material/elements/{}",
+            client::base_url(),
+            args.element_id
+        ),
+        None,
+        Some(&body),
+        None,
+    ))
 }
 
 pub fn delete(element_id: &str) -> Value {

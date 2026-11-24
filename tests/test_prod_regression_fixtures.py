@@ -103,6 +103,27 @@ class ProductionFixtureTests(unittest.TestCase):
         self.assertFalse((self.runner.path / 'robot.png').exists())
         self.assertFalse((self.runner.path / 'generic-synthetic-voice.wav').exists())
 
+    def test_new_element_requires_explicit_taxonomy_before_running_cli(self):
+        self.runner.args.image_fixture = self.fixture('input.png', b'image bytes')
+        with self.assertRaisesRegex(ValueError, '--element-tag'):
+            self.runner.element()
+        self.runner.run.assert_not_called()
+
+    def test_taxonomy_selection_reaches_new_creation_without_guessing_ids(self):
+        self.runner.args.image_fixture = self.fixture('input.png', b'image bytes')
+        self.runner.args.element_tag = '9007199254740993'
+        self.runner.element()
+        command = self.runner.run.call_args.args[1]
+        self.assertEqual(command[-2:], ['--tag', '9007199254740993'])
+
+    def test_invalid_taxonomy_does_not_start_creation(self):
+        for ids in [None, '', '0', '-1', 'not-an-id', '9223372036854775808']:
+            with self.subTest(ids=ids):
+                self.runner.args.element_tag = ids
+                with self.assertRaisesRegex(ValueError, '--element-tag'):
+                    self.runner.element_tag_args('new-creation')
+        self.runner.run.assert_not_called()
+
     def test_cli_default_remains_dry_run(self):
         with patch.object(sys, 'argv', ['live_prod_regression.py']), \
                 patch.object(prod, 'ProductionRunner') as constructor, \
