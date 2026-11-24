@@ -290,12 +290,12 @@ def main():
         check('preserve-assets-and-uri:' + name, element['components'][0]['asset_id'] == '91' and element['components'][0]['content'] == 'https://preview.invalid/image.png', element['components'])
     for name in ['get', 'update-assets', 'update-local', 'update-metadata', 'update-legacy-label']:
         data = output(name)
-        check('omit-edition:' + name, 'edition' not in data and 'edition' not in data.get('element', data), data)
+        check('preserve-edition:' + name, data.get('element', data)['edition'] in [1, 2], data)
     for name in ['list-personal', 'search-personal']:
         check('personal-without-preset:' + name, dict(requests(name)[0]['query']).get('without_preset') == 'true', requests(name)[0]['query'])
     for name in ['list-personal', 'list-official', 'search-personal', 'search-official', 'favorites-official']:
         data = output(name)
-        check('uniform-summary:' + name, set(data['elements'][0]) == {'id','version','name'} and 'library_source' not in json.dumps(data), data)
+        check('uniform-summary:' + name, set(data['elements'][0]) == {'id','version','name','edition'} and 'library_source' not in json.dumps(data), data)
     for name in ['search-personal', 'search-official']:
         query = dict(requests(name)[0]['query'])
         check('tag-filter:' + name, query.get('tag_ids', query.get('query.tag_ids')) == '1', query)

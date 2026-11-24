@@ -14,6 +14,11 @@ pub fn set_output_format(table: bool) {
     TABLE_OUTPUT.store(table, Ordering::Relaxed);
 }
 
+/// Subject projections use this to render generation names only in table mode.
+pub fn table_output_enabled() -> bool {
+    TABLE_OUTPUT.load(Ordering::Relaxed)
+}
+
 fn cell(value: &Value) -> String {
     match value {
         Value::String(text) => text.chars().fold(String::new(), |mut out, ch| {
