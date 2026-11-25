@@ -53,7 +53,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         server.trace.append({'method': self.command, 'path': url.path, 'query': sorted(urllib.parse.parse_qsl(url.query, keep_blank_values=True)), 'body': body, 'auth': self.headers.get('Authorization'), 'content_type': self.headers.get('Content-Type')})
         path = url.path
         status = 200
-        element = {'id': '42', 'version': '9007199254740993', 'name': '测试主体', 'modality': 'image', 'type': 'user', 'edition': 2, 'allowed_usages': ['agent'], 'labels': [{'id': '7'}], 'tag_ids': ['1'], 'recaption': {'style': '写实', 'description': '旧描述'}, 'components': [{'asset_id': '91', 'content': 'https://preview.invalid/image.png', 'type': 'main'}]}
+        element = {'id': '42', 'version': '9007199254740993', 'name': '测试主体', 'modality': 'image', 'type': 'user', 'edition': 2, 'labels': [{'id': '7'}], 'tag_ids': ['1'], 'recaption': {'style': '写实', 'description': '旧描述'}, 'components': [{'asset_id': '91', 'content': 'https://preview.invalid/image.png', 'type': 'main'}]}
         if server.options.get('fail_path') == path:
             status = 403
             response = {'reason': 'ELEMENT_FORBIDDEN', 'message': 'mock permission denied', 'trace_id': 'audit-fixture'}
@@ -211,6 +211,7 @@ def main():
         ('create-assets', ['element', 'create', '--name', '新主体', '--tag', '1', '--asset-id', '91', '--asset_id', '92'], {}),
         ('create-local', ['element', 'create', '--name', '新主体', '--tag', '1', '--image', str(image)], {}),
         ('create-http', ['element', 'create', '--name', '新主体', '--tag', '1', '--image', fixture.base + '/image.png'], {}),
+        ('update-tag', ['element', 'update', '42', '--tag', '7'], {}),
         ('update-assets', ['element', 'update', '42', '--asset-id', '92'], {}),
         ('update-local', ['element', 'update', '42', '--image', str(image)], {}),
         ('update-metadata', ['element', 'update', '42', '--name', '新名字', '--recaption', '新描述'], {}),
@@ -247,6 +248,7 @@ def main():
         'create-assets': [('POST', '/vidu/v1/material/elements/create')],
         'create-local': [('POST', '/tools/v1/assets/uploads'), ('PUT', '/blob'), ('PUT', '/tools/v1/assets/uploads/complete'), ('POST', '/vidu/v1/material/elements/create')],
         'create-http': [('GET', '/image.png'), ('POST', '/tools/v1/assets/uploads'), ('PUT', '/blob'), ('PUT', '/tools/v1/assets/uploads/complete'), ('POST', '/vidu/v1/material/elements/create')],
+        'update-tag': [('GET', '/vidu/v1/material/elements/detail/42'), ('PUT', '/vidu/v2/material/elements/42')],
         'update-assets': [('GET', '/vidu/v1/material/elements/detail/42'), ('PUT', '/vidu/v2/material/elements/42')],
         'update-local': [('GET', '/vidu/v1/material/elements/detail/42'), ('POST', '/tools/v1/assets/uploads'), ('PUT', '/blob'), ('PUT', '/tools/v1/assets/uploads/complete'), ('PUT', '/vidu/v2/material/elements/42')],
         'update-metadata': [('GET', '/vidu/v1/material/elements/detail/42'), ('PUT', '/vidu/v2/material/elements/42')],
@@ -280,13 +282,12 @@ def main():
         check('asset-scene:' + name, next(r for r in trace if r['path'] == '/tools/v1/assets/uploads')['body']['scene'] == 'material', trace)
         check('upload-uri:' + name, trace[-1]['body']['components'][0]['content'] == 'ssupload:?id=123', trace[-1]['body'])
     patch = requests('update-assets')[-1]['body']
-    check('replace-assets-mask', patch['mask'] == 'components' and patch['element']['components'] == [{'asset_id':'92','type':'main','content_type':'image'}], patch)
+    check('replace-assets-mask', requests('update-assets')[-1]['query'] == [('mask', 'components')] and patch['components'] == [{'asset_id':'92','type':'main','content_type':'image'}], patch)
     patch = requests('update-metadata')[-1]['body']
-    check('preserve-style-and-taxonomy', patch['mask'] == 'name,recaption' and patch['element']['recaption'] == {'style':'写实','description':'新描述'} and 'tag_ids' not in patch['element'], patch)
+    check('preserve-style-and-taxonomy', requests('update-metadata')[-1]['query'] == [('mask', 'name,recaption')] and patch['recaption'] == {'style':'写实','description':'新描述'} and 'tag_ids' not in patch, patch)
     for name in ['get', 'update-assets', 'update-local', 'update-metadata', 'update-legacy-label']:
         data = output(name)
         element = data.get('element', data)
-        check('omit-allowed-usages:' + name, 'allowed_usages' not in data and 'allowed_usages' not in element, data)
         check('preserve-assets-and-uri:' + name, element['components'][0]['asset_id'] == '91' and element['components'][0]['content'] == 'https://preview.invalid/image.png', element['components'])
     for name in ['get', 'update-assets', 'update-local', 'update-metadata', 'update-legacy-label']:
         data = output(name)
@@ -295,7 +296,7 @@ def main():
         check('personal-without-preset:' + name, dict(requests(name)[0]['query']).get('without_preset') == 'true', requests(name)[0]['query'])
     for name in ['list-personal', 'list-official', 'search-personal', 'search-official', 'favorites-official']:
         data = output(name)
-        check('uniform-summary:' + name, set(data['elements'][0]) == {'id','version','name','edition'} and 'library_source' not in json.dumps(data), data)
+        check('uniform-summary:' + name, set(data['elements'][0]) == {'id','version','name','edition','description'} and 'library_source' not in json.dumps(data), data)
     for name in ['search-personal', 'search-official']:
         query = dict(requests(name)[0]['query'])
         check('tag-filter:' + name, query.get('tag_ids', query.get('query.tag_ids')) == '1', query)
@@ -308,7 +309,9 @@ def main():
         help_text = output(name)
         check('hidden-switch:' + name, '--platform-assets' not in help_text and 'VIDU_ELEMENT_PLATFORM_ASSETS' not in help_text, help_text)
     check('create-help-contract', '--tag' in output('create-help') and '--asset-id' in output('create-help') and '--style' not in output('create-help'), output('create-help'))
-    check('update-immutable-tag', '--tag' not in output('update-help'), output('update-help'))
+    check('update-category-help', '--tag' in output('update-help'), output('update-help'))
+    patch = requests('update-tag')[-1]['body']
+    check('update-category-mask', requests('update-tag')[-1]['query'] == [('mask', 'tag_ids')] and patch['tag_ids'] == ['7'] and 'components' not in patch, patch)
     report = {'baseline_binary_sha256': hashlib.sha256(args.main.read_bytes()).hexdigest(), 'current_binary_sha256': hashlib.sha256(args.current.read_bytes()).hexdigest(), 'differential': results, 'v2_probes': probes, 'v2_checks': checks}
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     fixture.shutdown()

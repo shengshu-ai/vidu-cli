@@ -447,7 +447,7 @@ fn validate_update_args(
     Ok(())
 }
 
-fn update_body(
+pub(super) fn update_body(
     element_id: &str,
     name: Option<&str>,
     labels: &[String],
