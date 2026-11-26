@@ -368,8 +368,8 @@ fn drama_and_wan_preserve_transition_for_backend_policy() {
 }
 
 #[test]
-fn sd_auto_duration_and_upscale_ratios_match_all_generation_entrypoints() {
-    for (resolution, ratio) in [("480p", "21:9"), ("2k", "adaptive"), ("4k", "16:9")] {
+fn sd_auto_duration_and_native_ratios_match_all_generation_entrypoints() {
+    for (resolution, ratio) in [("480p", "21:9"), ("720p", "adaptive"), ("1080p", "16:9")] {
         for action in ["submit", "cost", "rerun"] {
             let server = Mock::new(|_| {
                 if action == "cost" {
@@ -4178,4 +4178,103 @@ fn element_table_displays_generation_names_without_changing_json() {
     assert!(output.status.success());
     assert!(String::from_utf8(output.stdout).unwrap().contains("第二代"));
     server.finish();
+}
+
+/// Phase 19 preserves model IDs and material DTOs through the established task endpoint.
+#[test]
+fn phase19_seedance_and_wan_references_are_forwarded() {
+    for (model, image_count, video_count, duration) in [
+        ("viduq3.1-drama-std", 30, 10, "30"),
+        ("3.2_a", 9, 3, "15"),
+        ("viduq2-drama-std", 1, 1, "1"),
+    ] {
+        let server = Mock::new(|_| {
+            vec![
+                Step::json("POST", "/vidu/v1/tasks", json!({"id":"phase19"})).check(move |req| {
+                    let body = req.json();
+                    assert_eq!(body["settings"]["model_version"], model);
+                    assert_eq!(
+                        body["settings"]["duration"],
+                        duration.parse::<i64>().unwrap()
+                    );
+                    let prompts = body["input"]["prompts"].as_array().unwrap();
+                    assert_eq!(
+                        prompts.iter().filter(|p| p["type"] == "image").count(),
+                        image_count
+                    );
+                    assert_eq!(
+                        prompts.iter().filter(|p| p["type"] == "video").count(),
+                        video_count
+                    );
+                }),
+            ]
+        });
+        let mut args = vec![
+            "task",
+            "submit",
+            "--type",
+            "character2video",
+            "--model-version",
+            model,
+            "--prompt",
+            "scene",
+            "--duration",
+            duration,
+            "--resolution",
+            "720p",
+            "--schedule-mode",
+            "normal",
+        ];
+        for _ in 0..image_count {
+            args.extend(["--image", "ssupload:?id=image"]);
+        }
+        for _ in 0..video_count {
+            args.extend(["--video", "ssupload:?id=video"]);
+        }
+        envelope(&server.run(&args), true);
+        server.finish();
+    }
+    for model in ["3.2_a", "viduq3.1-drama-std", "viduq2-drama-std"] {
+        let server = Mock::new(|_| {
+            vec![
+                Step::json("POST", "/vidu/v1/tasks", json!({"id":"subject"})).check(|req| {
+                    let body = req.json();
+                    let material = body["input"]["prompts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|p| p["type"] == "material")
+                        .unwrap();
+                    assert_eq!(material["material"]["id"], "123");
+                    assert_eq!(material["material"]["version"], "1");
+                    // Classification and component allocation use authenticated server material data.
+                    assert!(material["material"].get("contents").is_none());
+                }),
+            ]
+        });
+        envelope(
+            &server.run(&[
+                "task",
+                "submit",
+                "--type",
+                "character2video",
+                "--model-version",
+                model,
+                "--prompt",
+                "scene",
+                "--image",
+                "ssupload:?id=image",
+                "--material",
+                "hero:123:1",
+                "--duration",
+                "5",
+                "--resolution",
+                "720p",
+                "--schedule-mode",
+                "normal",
+            ]),
+            true,
+        );
+        server.finish();
+    }
 }

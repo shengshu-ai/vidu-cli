@@ -138,21 +138,21 @@ enum TaskAction {
     /// TYPE: text2video
     ///   Models: 3.0, 3.1, 3.2, 3.2_a, viduq3.1-drama-std
     ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s, Drama→4-30s (default 5)
-    ///   Resolution: 1080p; SD: 480p/720p/1080p/2k/4k; Drama→480p/720p/1080p (default 720p)
-    ///   Aspect Ratio: Vidu positive w:h; SD uses 16:9/9:16/1:1/4:3/3:4/21:9/adaptive; Drama uses the five standard ratios
+    ///   Resolution: 1080p; SD: 480p/720p/1080p; Drama→480p/720p/1080p (default 720p)
+    ///   Aspect Ratio: Vidu positive w:h; SD2.0 uses 16:9/9:16/1:1/4:3/3:4/21:9/adaptive; Drama uses the five standard ratios
     ///   Transition: known values are forwarded; pro/speed select 3.2 variants
     ///
     /// TYPE: img2video
     ///   Models: 3.0, 3.1, 3.2, 3.2_a, 3.4 (Q4, normal/nopeak)
     ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s, 3.4→3-16s
-    ///   Resolution: 1080p; SD: 480p/720p/1080p/2k/4k; Q4 also supports 540p, 720p, 2k, 4k
+    ///   Resolution: 1080p; SD: 480p/720p/1080p; Q4 also supports 540p, 720p, 2k, 4k
     ///   Transition: 3.0→creative/stable (default stable); img2video 3.1/3.2 requires a transition; known values are forwarded for backend policy
     ///   Images: 1 required
     ///
     /// TYPE: headtailimg2video
     ///   Models: 3.0, 3.1, 3.2, 3.2_a
     ///   Duration: 3.0→5s, 3.1→2-8s, 3.2→1-16s, 3.2_a→-1/4-15s
-    ///   Resolution: 1080p; SD: 480p/720p/1080p/2k/4k
+    ///   Resolution: 1080p; SD: 480p/720p/1080p
     ///   Transition: optional; 3.0 creative/stable and 3.1/3.2 pro/speed select variants
     ///   Images: 2 required (head + tail)
     ///
@@ -166,12 +166,12 @@ enum TaskAction {
     /// TYPE: character2video
     ///   Models: 3.0, 3.1, 3.1_pro, 3.2, 3.2_a, 3.4 (Q4, normal/nopeak), viduq3.1-drama-std
     ///   Duration: 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→-1/4-15s, 3.4→1-16s, Drama→4-30s (default 5)
-    ///   Resolution: 1080p; SD: 480p/720p/1080p/2k/4k; Q4 also supports 540p, 720p, 2k, 4k; Drama supports 480p/720p/1080p (default 720p)
-    ///   Aspect Ratio: Vidu positive w:h; SD uses 16:9/9:16/1:1/4:3/3:4/21:9/adaptive; Drama uses the five standard ratios
+    ///   Resolution: 1080p; SD: 480p/720p/1080p; Q4 also supports 540p, 720p, 2k, 4k; Drama supports 480p/720p/1080p (default 720p)
+    ///   Aspect Ratio: Vidu positive w:h; SD2.0 uses 16:9/9:16/1:1/4:3/3:4/21:9/adaptive; Drama uses the five standard ratios
     ///   Inputs: direct images Q4 ≤15, 3.2_a ≤9; other legacy models fit the total 20-prompt limit (normally ≤19 images)
-    ///   With materials, ordinary legacy models share a 7-image budget; Q4=15, SD=9, 3.1_pro uses server frame slots
-    ///   Drama: image ≤9, video ≤3, audio ≤10; no material. SD: video/audio ≤3 each; 3.1_pro references share a 48-slot server budget; references that do not fit may be omitted
-    ///   Q4 accepts image/audio references; SD requires an image/material/video reference, even when audio is present
+    ///   With materials, ordinary legacy models share a 7-image budget; Q4=15, SD2.0=9, 3.1_pro uses server frame slots
+    ///   SD2.5: image ≤30, video ≤10, audio ≤10; image/text materials supported. SD2.0: video/audio ≤3 each; 3.1_pro references share a 48-slot server budget; references that do not fit may be omitted
+    ///   Q4 accepts image/audio references; SD2.0/2.5 require an image/image-material/video reference, even when audio is present
     ///   3.2 character2video also accepts pro_ad (duration 3-16s). SD rejects nopeak
     ///
     /// MEMBERSHIP DURATION LIMITS (video tasks):
@@ -188,7 +188,7 @@ enum TaskAction {
     ///
     /// WAN 3: viduq2-drama-std (member feature; requires active membership entitlements)
     ///   Types: text2video, img2video, headtailimg2video, character2video
-    ///   Duration: 2-30s (default 5); resolution: 480p/720p/1080p (default 720p)
+    ///   Duration: 2-30s without video; 1-30s with video, input + output ≤30 (default 5); resolution: 480p/720p/1080p (default 720p)
     ///   Aspect Ratio: 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive
     ///   Credits only; transition is forwarded for backend policy. References: max 10 images, 5 videos, 5 audios, 20 total
     ///   Each video/audio: 1-15s; total 15s per kind; input video + output ≤30s
@@ -216,17 +216,17 @@ enum TaskAction {
         #[arg(
             long = "audio",
             action = clap::ArgAction::Append,
-            help = "Reference audio for character2video + 3.2_a, Q4, Drama, or Wan 3. Local audio or ssupload URI. SD accepts parseable audio, max 3 and ≤20 MiB each; its duration metadata is left to the server. Q4 WAV/MP3: max 3, ≤20 MiB, each 1-16s. Drama WAV/MP3: max 10, local size ≤15 MiB, each 4-30s and total ≤30s after server-style rounding. Wan 3 WAV/MP3: max 5, local size ≤15 MiB, each 1-15s, total ≤15s."
+            help = "Reference audio for character2video + 3.2_a, Q4, Drama, or Wan 3. Local audio or ssupload URI. SD2.0 WAV/MP3: max 3, ≤15 MiB each, each 2-15s and total ≤15s. Q4 WAV/MP3: max 3, ≤20 MiB, each 1-16s. Drama WAV/MP3: max 10, local size ≤15 MiB, each 4-30s and total ≤30s after server-style rounding. Wan 3 WAV/MP3: max 5, local size ≤15 MiB, each 1-15s, total ≤15s."
         )]
         audios: Vec<String>,
         #[command(flatten)]
         audio_output: OutputAudioOptions,
-        #[arg(long = "video", action = clap::ArgAction::Append, help = "Reference video (local path or ssupload URI), repeatable for character2video. SD/Drama: max 3; 3.1_pro references are selected by the server slot budget. Local video uses built-in MP4 parsing with ffprobe fallback. Drama: rounded duration 4-30s each, total ≤30s; no extra FPS/geometry limit. Wan 3: max 5, each 1-15s, total ≤15s, ≤100 MiB; input video + output ≤30s.")]
+        #[arg(long = "video", action = clap::ArgAction::Append, help = "Reference video (local path or ssupload URI), repeatable for character2video. SD2.0: max 3, each 2-15s and total ≤15s, 407696-8847360 pixels; SD2.5: max 10; 3.1_pro references are selected by the server slot budget. SD videos: MP4/MOV, ≤200 MiB. Local video uses built-in MP4 parsing with ffprobe fallback. SD2.5: rounded duration 4-30s each, total ≤30s; no additional local FPS/geometry checks. Wan 3: max 5, each 1-15s, total ≤15s, ≤100 MiB; input video + output ≤30s.")]
         videos: Vec<String>,
         #[arg(
             long,
             allow_negative_numbers = true,
-            help = "Video duration: 3.0(5), 3.1(2-8), 3.1_pro(-1/2-8), 3.2(1-16; pro_ad 3-16), 3.2_a(-1/4-15), Q4 img2video(3-16)/character2video(1-16), Drama(4-30, default 5), Wan 3(2-30, default 5). Ignored for images. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
+            help = "Video duration: 3.0(5), 3.1(2-8), 3.1_pro(-1/2-8), 3.2(1-16; pro_ad 3-16), 3.2_a(-1/4-15), Q4 img2video(3-16)/character2video(1-16), Drama(4-30, default 5), Wan 3(2-30 without video; 1-30 with video, input + output ≤30, default 5). Ignored for images. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
         )]
         duration: Option<i64>,
         #[arg(long,
@@ -472,7 +472,7 @@ enum TaskAction {
         #[arg(
             long,
             allow_negative_numbers = true,
-            help = "Duration in seconds. Required for legacy video models; Drama defaults to 5 (range 4-30); Wan 3 defaults to 5 (range 2-30). Ignored for image tasks. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
+            help = "Duration in seconds. Required for legacy video models; Drama defaults to 5 (range 4-30); Wan 3 defaults to 5 (2-30 without video; 1-30 quotes for character2video, input + output ≤30). Ignored for image tasks. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
         )]
         duration: Option<i64>,
         #[arg(long,

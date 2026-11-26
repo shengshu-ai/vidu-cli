@@ -727,7 +727,7 @@ mod tests {
         let body = rerun_body(
             &raw,
             Some("new"),
-            Some("3.2_a"),
+            Some(validators::SEEDANCE_2_0_MODEL_VERSION),
             Some(6),
             Some("720p"),
             None,
