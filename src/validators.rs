@@ -1098,6 +1098,16 @@ pub fn validate_wan_media_dimensions(width: u32, height: u32, max: u32) -> Resul
     Ok(())
 }
 
+/// Phase 19 limits Wan video side lengths only; the image ratio limit does not apply.
+pub fn validate_wan_video_dimensions(width: u32, height: u32) -> Result<(), String> {
+    if !(240..=4096).contains(&width) || !(240..=4096).contains(&height) {
+        return Err(format!(
+            "Wan 3 video dimensions {width}x{height} require sides 240-4096"
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_wan_image_file(path: &str) -> String {
     let p = Path::new(path);
     let size = match std::fs::metadata(p) {
@@ -2437,10 +2447,15 @@ mod tests {
 
     #[test]
     fn wan_local_media_limits_do_not_use_drama_geometry_or_file_size() {
-        assert!(validate_wan_media_dimensions(240, 1920, 4096).is_ok());
-        for (width, height) in [(239, 240), (4097, 240), (240, 1921)] {
-            assert!(validate_wan_media_dimensions(width, height, 4096).is_err());
+        // Video accepts ratios beyond 8:1 when both sides meet its documented limits.
+        for (width, height) in [(240, 4096), (4096, 240), (240, 1921)] {
+            assert!(validate_wan_video_dimensions(width, height).is_ok());
         }
+        for (width, height) in [(239, 240), (4097, 240), (240, 4097)] {
+            assert!(validate_wan_video_dimensions(width, height).is_err());
+        }
+        // Images retain their separate 8:1 ratio limit.
+        assert!(validate_wan_media_dimensions(240, 1921, 8000).is_err());
         let directory = tempfile::tempdir().unwrap();
         let video = directory.path().join("large.mp4");
         std::fs::File::create(&video)

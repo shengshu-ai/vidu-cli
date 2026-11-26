@@ -423,7 +423,8 @@ fn validate_reference_audio_duration(
         "3.4" => Some((1.0, 16.0)),
         validators::SEEDANCE_2_0_MODEL_VERSION => Some((2.0, 15.0)),
         validators::DRAMA_MODEL_VERSION => Some((4.0, 30.0)),
-        validators::WAN_MODEL_VERSION => Some((1.0, 15.0)),
+        // Wan audio has a total-duration limit, but no documented per-file minimum.
+        validators::WAN_MODEL_VERSION => None,
         _ => None,
     };
     if let Some((min, max)) = range {
@@ -564,7 +565,7 @@ fn inspect_reference_videos(
             if model_version == validators::WAN_MODEL_VERSION {
                 let (w, h) = metadata.dimensions.unwrap_or_else(|| client::fail(
                     "client_error", &format_local_video_dimensions_error(video_input), None, None, None));
-                if let Err(error) = validators::validate_wan_media_dimensions(w, h, 4096) {
+                if let Err(error) = validators::validate_wan_video_dimensions(w, h) {
                     client::fail("client_error", &error, None, None, None);
                 }
             }
@@ -2776,7 +2777,7 @@ mod tests {
             )
             .is_err());
         }
-        for (duration, total) in [(0.49, 0.0), (15.5, 16.0), (8.0, 16.0)] {
+        for (duration, total) in [(15.5, 16.0), (8.0, 16.0)] {
             assert!(validate_reference_audio_duration(
                 validators::WAN_MODEL_VERSION,
                 duration,
@@ -2943,6 +2944,16 @@ mod tests {
             false
         )
         .is_err());
+        // Sub-second Wan audio must not inherit the video's one-second minimum.
+        for duration in [0.1, 0.49, 0.5, 0.99] {
+            assert!(validate_reference_audio_duration(
+                validators::WAN_MODEL_VERSION,
+                duration,
+                duration.round(),
+                false
+            )
+            .is_ok());
+        }
         assert!(validate_reference_audio_duration(
             validators::WAN_MODEL_VERSION,
             15.49,

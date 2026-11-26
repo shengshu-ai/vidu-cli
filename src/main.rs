@@ -191,7 +191,7 @@ enum TaskAction {
     ///   Duration: 2-30s without video; 1-30s with video, input + output ≤30 (default 5); resolution: 480p/720p/1080p (default 720p)
     ///   Aspect Ratio: 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive
     ///   Credits only; transition is forwarded for backend policy. References: max 10 images, 5 videos, 5 audios, 20 total
-    ///   Each video/audio: 1-15s; total 15s per kind; input video + output ≤30s
+    ///   Each video: 1-15s; audio has no specified minimum duration; total 15s per kind; input video + output ≤30s
     Submit {
         #[arg(long = "type", value_name = "TYPE",
             value_parser = validators::parse_task_type,
@@ -216,7 +216,7 @@ enum TaskAction {
         #[arg(
             long = "audio",
             action = clap::ArgAction::Append,
-            help = "Reference audio for character2video + 3.2_a, Q4, Drama, or Wan 3. Local audio or ssupload URI. SD2.0 WAV/MP3: max 3, ≤15 MiB each, each 2-15s and total ≤15s. Q4 WAV/MP3: max 3, ≤20 MiB, each 1-16s. Drama WAV/MP3: max 10, local size ≤15 MiB, each 4-30s and total ≤30s after server-style rounding. Wan 3 WAV/MP3: max 5, local size ≤15 MiB, each 1-15s, total ≤15s."
+            help = "Reference audio for character2video + 3.2_a, Q4, Drama, or Wan 3. Local audio or ssupload URI. SD2.0 WAV/MP3: max 3, ≤15 MiB each, each 2-15s and total ≤15s. Q4 WAV/MP3: max 3, ≤20 MiB, each 1-16s. Drama WAV/MP3: max 10, local size ≤15 MiB, each 4-30s and total ≤30s after server-style rounding. Wan 3 WAV/MP3: max 5, local size ≤15 MiB, total ≤15s; no specified minimum duration."
         )]
         audios: Vec<String>,
         #[command(flatten)]
