@@ -202,6 +202,7 @@ fn wan_invalid_options_fail_before_network_or_file_access() {
     for action in ["submit", "cost"] {
         for (options, expected) in [
             (vec!["--duration", "-1"], "out of range [2, 30]"),
+            (vec!["--duration", "1"], "out of range [2, 30]"),
             (vec!["--resolution", "4k"], "Invalid resolution"),
             (vec!["--sample-count", "5"], "sample_count must be 1-4"),
             (
@@ -265,7 +266,7 @@ fn wan_invalid_options_fail_before_network_or_file_access() {
         ])
         .assert()
         .failure()
-        .stdout(contains("does not support 'material'"));
+        .stdout(contains("material.id"));
 }
 
 #[test]
@@ -305,11 +306,11 @@ fn drama_character2video_requires_at_least_one_reference() {
         ])
         .assert()
         .failure()
-        .stdout(contains("requires at least one image, video or audio"));
+        .stdout(contains("requires at least one image or video"));
 }
 
 #[test]
-fn drama_character2video_allows_audio_only_preflight() {
+fn drama_character2video_rejects_audio_only_before_auth() {
     cli()
         .env_remove("VIDU_TOKEN")
         .args([
@@ -326,7 +327,7 @@ fn drama_character2video_allows_audio_only_preflight() {
         ])
         .assert()
         .failure()
-        .stdout(contains("VIDU_TOKEN not set"));
+        .stdout(contains("requires at least one image or video"));
 }
 
 #[test]
@@ -468,4 +469,32 @@ fn default_element_help_and_validation_preserve_legacy_contract() {
         .assert()
         .code(2)
         .stderr(contains("must be true or false"));
+}
+
+/// Phase 19 requires SD2.0 video pixel counts in addition to valid containers.
+#[test]
+fn seedance_2_0_rejects_reference_video_below_documented_pixel_minimum() {
+    cli()
+        .args([
+            "task",
+            "submit",
+            "--type",
+            "character2video",
+            "--model-version",
+            "3.2_a",
+            "--prompt",
+            "scene",
+            "--duration",
+            "4",
+            "--resolution",
+            "480p",
+            "--video",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/hevc_640x360_rotated.mp4"
+            ),
+        ])
+        .assert()
+        .failure()
+        .stdout(contains("require 407696-8847360 pixels"));
 }

@@ -318,6 +318,19 @@ fn prepare_generation_image_input(
     } else {
         input
     };
+    if [
+        validators::SEEDANCE_2_0_MODEL_VERSION,
+        validators::DRAMA_MODEL_VERSION,
+    ]
+    .contains(&model_version)
+    {
+        validators::validate_seedance_image_file(path)?;
+    } else if model_version == validators::WAN_MODEL_VERSION {
+        let error = validators::validate_wan_image_file(path);
+        if !error.is_empty() {
+            return Err(error);
+        }
+    }
     let image = crate::commands::upload::prepare_image(path)?;
     validate_prepared_generation_image(&image, model_version)?;
     drop(temporary);
@@ -333,10 +346,27 @@ fn validate_prepared_generation_image(
             return Err("Wan 3 reference images must be JPEG, PNG, BMP, or WebP".into());
         }
         validators::validate_wan_media_dimensions(image.width, image.height, 8000)?;
-    } else if model_version == validators::DRAMA_MODEL_VERSION
-        && !["image/jpeg", "image/png", "image/webp"].contains(&image.mime.as_str())
+    } else if [
+        validators::SEEDANCE_2_0_MODEL_VERSION,
+        validators::DRAMA_MODEL_VERSION,
+    ]
+    .contains(&model_version)
     {
-        return Err("Drama reference images must be JPEG, PNG, or WebP".into());
+        if ![
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/bmp",
+            "image/tiff",
+            "image/gif",
+        ]
+        .contains(&image.mime.as_str())
+        {
+            return Err(
+                "Seedance reference images must be JPEG, PNG, WebP, BMP, TIFF or GIF".into(),
+            );
+        }
+        validators::validate_seedance_image_dimensions(image.width, image.height)?;
     }
     Ok(())
 }
@@ -391,8 +421,10 @@ fn validate_reference_audio_duration(
     let duration = duration.round();
     let range = match model_version {
         "3.4" => Some((1.0, 16.0)),
+        validators::SEEDANCE_2_0_MODEL_VERSION => Some((2.0, 15.0)),
         validators::DRAMA_MODEL_VERSION => Some((4.0, 30.0)),
-        validators::WAN_MODEL_VERSION => Some((1.0, 15.0)),
+        // Wan audio has a total-duration limit, but no documented per-file minimum.
+        validators::WAN_MODEL_VERSION => None,
         _ => None,
     };
     if let Some((min, max)) = range {
@@ -403,7 +435,13 @@ fn validate_reference_audio_duration(
             ));
         }
     }
-    if model_version == validators::WAN_MODEL_VERSION && total_duration > 15.0 {
+    if [
+        validators::SEEDANCE_2_0_MODEL_VERSION,
+        validators::WAN_MODEL_VERSION,
+    ]
+    .contains(&model_version)
+        && total_duration > 15.0
+    {
         return Err(format!(
             "Total audio duration {:.1}s exceeds 15s",
             total_duration
@@ -423,6 +461,7 @@ fn validate_local_reference_video_durations(
     durations: &[f64],
 ) -> Result<(), String> {
     if ![
+        validators::SEEDANCE_2_0_MODEL_VERSION,
         validators::DRAMA_MODEL_VERSION,
         validators::WAN_MODEL_VERSION,
     ]
@@ -432,11 +471,21 @@ fn validate_local_reference_video_durations(
     }
     let durations: Vec<f64> = durations.iter().map(|duration| duration.round()).collect();
     let is_drama = model_version == validators::DRAMA_MODEL_VERSION;
-    if model_version == validators::WAN_MODEL_VERSION {
-        if let Some(duration) = durations.iter().find(|d| !(1.0..=15.0).contains(*d)) {
+    if [
+        validators::SEEDANCE_2_0_MODEL_VERSION,
+        validators::WAN_MODEL_VERSION,
+    ]
+    .contains(&model_version)
+    {
+        let min = if model_version == validators::SEEDANCE_2_0_MODEL_VERSION {
+            2.0
+        } else {
+            1.0
+        };
+        if let Some(duration) = durations.iter().find(|d| !(min..=15.0).contains(*d)) {
             return Err(format!(
-                "Wan 3 local video duration {:.3}s out of range [1, 15]s",
-                duration
+                "{} local video duration {:.3}s out of range [{}, 15]s",
+                model_version, duration, min
             ));
         }
     }
@@ -485,6 +534,8 @@ fn inspect_reference_videos(
 
             let err = if model_version == validators::WAN_MODEL_VERSION {
                 validators::validate_wan_video_file(video_input)
+            } else if [validators::SEEDANCE_2_0_MODEL_VERSION, validators::DRAMA_MODEL_VERSION].contains(&model_version) {
+                validators::validate_seedance_video_file(video_input)
             } else {
                 validators::validate_reference_video_file(video_input)
             };
@@ -501,14 +552,24 @@ fn inspect_reference_videos(
                     None,
                 ),
             };
+            // Phase 19 specifies a pixel-count range only for Seedance 2.0 videos.
+            // Existing upload references remain validated by the server.
+            if model_version == validators::SEEDANCE_2_0_MODEL_VERSION {
+                let (w, h) = metadata.dimensions.unwrap_or_else(|| client::fail(
+                    "client_error", &format_local_video_dimensions_error(video_input), None, None, None));
+                let pixels = u64::from(w) * u64::from(h);
+                if !(407_696..=8_847_360).contains(&pixels) {
+                    client::fail("client_error", &format!("Seedance 2.0 video dimensions {w}x{h} require 407696-8847360 pixels"), None, None, None);
+                }
+            }
             if model_version == validators::WAN_MODEL_VERSION {
                 let (w, h) = metadata.dimensions.unwrap_or_else(|| client::fail(
                     "client_error", &format_local_video_dimensions_error(video_input), None, None, None));
-                if let Err(error) = validators::validate_wan_media_dimensions(w, h, 4096) {
+                if let Err(error) = validators::validate_wan_video_dimensions(w, h) {
                     client::fail("client_error", &error, None, None, None);
                 }
             }
-            if metadata.duration.is_none() && [validators::DRAMA_MODEL_VERSION, validators::WAN_MODEL_VERSION].contains(&model_version) {
+            if metadata.duration.is_none() && [validators::SEEDANCE_2_0_MODEL_VERSION, validators::DRAMA_MODEL_VERSION, validators::WAN_MODEL_VERSION].contains(&model_version) {
                 client::fail("client_error", &format_local_video_duration_error(video_input), None, None, None);
             }
             metadata.duration
@@ -521,6 +582,7 @@ fn inspect_reference_videos(
     durations
 }
 
+/// Apply the 30s combined budget to known input durations, using upload metadata rounding.
 fn validate_wan_video_output_duration(
     output_duration: i64,
     durations: &[Option<f64>],
@@ -2488,21 +2550,18 @@ mod tests {
     }
 
     #[test]
-    fn pro_and_sd_accept_low_frame_rate_reference_without_geometry_rules() {
+    fn pro_accepts_low_frame_rate_reference_without_geometry_rules() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/hevc_640x360_rotated.mp4"
         )
         .to_string();
-        for model in ["3.1_pro", "3.2_a"] {
-            // The fixture is 640x360 at 1 FPS: both formerly failed local
-            // geometry/FPS rules absent from these backend routes.
-            assert_eq!(
-                inspect_reference_videos("character2video", model, std::slice::from_ref(&path))
-                    .len(),
-                1
-            );
-        }
+        // The fixture is 640x360 at 1 FPS; the legacy Pro route has no FPS constraint.
+        assert_eq!(
+            inspect_reference_videos("character2video", "3.1_pro", std::slice::from_ref(&path))
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -2521,7 +2580,7 @@ mod tests {
         image.width = 239;
         assert!(validate_prepared_generation_image(&image, validators::WAN_MODEL_VERSION).is_err());
         assert!(
-            validate_prepared_generation_image(&image, validators::DRAMA_MODEL_VERSION).is_ok()
+            validate_prepared_generation_image(&image, validators::DRAMA_MODEL_VERSION).is_err()
         );
         assert!(validate_prepared_generation_image(&image, "3.4").is_ok());
     }
@@ -2719,7 +2778,7 @@ mod tests {
             )
             .is_err());
         }
-        for (duration, total) in [(0.49, 0.0), (15.5, 16.0), (8.0, 16.0)] {
+        for (duration, total) in [(15.5, 16.0), (8.0, 16.0)] {
             assert!(validate_reference_audio_duration(
                 validators::WAN_MODEL_VERSION,
                 duration,
@@ -2733,6 +2792,10 @@ mod tests {
                 .is_ok()
         );
         assert!(validate_wan_video_output_duration(15, &[Some(15.0)]).is_ok());
+        assert!(validate_wan_video_output_duration(2, &[Some(15.0)]).is_ok());
+        assert!(validate_wan_video_output_duration(2, &[Some(2.0)]).is_ok());
+        assert!(validate_wan_video_output_duration(28, &[Some(2.0)]).is_ok());
+        assert!(validate_wan_video_output_duration(29, &[Some(2.0)]).is_err());
         assert!(validate_wan_video_output_duration(16, &[Some(15.0), None]).is_err());
         assert!(validate_wan_video_output_duration(30, &[None]).is_ok());
     }
@@ -2799,7 +2862,7 @@ mod tests {
     }
 
     #[test]
-    fn drama_submit_body_includes_audio_reference_prompt() {
+    fn drama_audio_only_body_is_rejected_without_visual_reference() {
         let prompts = vec![
             json!({"type": "text", "content": "spoken scene"}),
             json!({
@@ -2826,7 +2889,7 @@ mod tests {
         assert_eq!(body["input"]["prompts"].as_array().unwrap().len(), 2);
         assert_eq!(body["input"]["prompts"][1]["type"], "audio");
         assert_eq!(body["input"]["prompts"][1]["content"], "ssupload:?id=voice");
-        assert_eq!(validators::validate_task_body(&body), "");
+        assert!(!validators::validate_task_body(&body).is_empty());
     }
 
     #[test]
@@ -2879,7 +2942,23 @@ mod tests {
         assert!(validate_reference_audio_duration("3.4", 0.49, 0.0, false).is_err());
         assert!(validate_reference_audio_duration("3.4", 16.49, 48.0, false).is_ok());
         assert!(validate_reference_audio_duration("3.4", 16.5, 17.0, false).is_err());
-        assert!(validate_reference_audio_duration("3.2_a", 60.0, 180.0, false).is_ok());
+        assert!(validate_reference_audio_duration(
+            validators::SEEDANCE_2_0_MODEL_VERSION,
+            60.0,
+            180.0,
+            false
+        )
+        .is_err());
+        // Sub-second Wan audio must not inherit the video's one-second minimum.
+        for duration in [0.1, 0.49, 0.5, 0.99] {
+            assert!(validate_reference_audio_duration(
+                validators::WAN_MODEL_VERSION,
+                duration,
+                duration.round(),
+                false
+            )
+            .is_ok());
+        }
         assert!(validate_reference_audio_duration(
             validators::WAN_MODEL_VERSION,
             15.49,
@@ -2951,9 +3030,22 @@ mod tests {
             &[7.5, 7.5]
         )
         .is_err());
-        for model in ["3.2_a", "3.1_pro"] {
-            assert!(validate_local_reference_video_durations(model, &[30.0, 30.0]).is_ok());
-        }
+        assert!(validate_local_reference_video_durations("3.1_pro", &[30.0, 30.0]).is_ok());
+        assert!(validate_local_reference_video_durations(
+            validators::SEEDANCE_2_0_MODEL_VERSION,
+            &[2.0, 13.0]
+        )
+        .is_ok());
+        assert!(validate_local_reference_video_durations(
+            validators::SEEDANCE_2_0_MODEL_VERSION,
+            &[1.49]
+        )
+        .is_err());
+        assert!(validate_local_reference_video_durations(
+            validators::SEEDANCE_2_0_MODEL_VERSION,
+            &[8.0, 8.0]
+        )
+        .is_err());
         assert!(validate_wan_video_output_duration(15, &[Some(15.49)]).is_ok());
         assert!(validate_wan_video_output_duration(15, &[Some(15.5)]).is_err());
     }
