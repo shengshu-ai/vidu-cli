@@ -4186,7 +4186,7 @@ fn phase19_seedance_and_wan_references_are_forwarded() {
     for (model, image_count, video_count, duration) in [
         ("viduq3.1-drama-std", 30, 10, "30"),
         ("3.2_a", 9, 3, "15"),
-        ("viduq2-drama-std", 1, 1, "1"),
+        ("viduq2-drama-std", 1, 1, "2"),
     ] {
         let server = Mock::new(|_| {
             vec![

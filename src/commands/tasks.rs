@@ -582,6 +582,7 @@ fn inspect_reference_videos(
     durations
 }
 
+/// Apply the 30s combined budget to known input durations, using upload metadata rounding.
 fn validate_wan_video_output_duration(
     output_duration: i64,
     durations: &[Option<f64>],
@@ -2791,6 +2792,10 @@ mod tests {
                 .is_ok()
         );
         assert!(validate_wan_video_output_duration(15, &[Some(15.0)]).is_ok());
+        assert!(validate_wan_video_output_duration(2, &[Some(15.0)]).is_ok());
+        assert!(validate_wan_video_output_duration(2, &[Some(2.0)]).is_ok());
+        assert!(validate_wan_video_output_duration(28, &[Some(2.0)]).is_ok());
+        assert!(validate_wan_video_output_duration(29, &[Some(2.0)]).is_err());
         assert!(validate_wan_video_output_duration(16, &[Some(15.0), None]).is_err());
         assert!(validate_wan_video_output_duration(30, &[None]).is_ok());
     }

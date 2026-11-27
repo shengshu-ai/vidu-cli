@@ -80,7 +80,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--duration` | Drama/Wan 3：5；旧视频模型：必填 | 视频时长（秒）。Drama 支持 4–30 秒；Wan 3 无视频时 2–30 秒，有视频时 1–30 秒且输入+输出 ≤30 秒；图片任务忽略此项 |
+| `--duration` | Drama/Wan 3：5；旧视频模型：必填 | 视频时长（秒）。Drama 支持 4–30 秒；Wan 3 无视频时 2–30 秒，有视频时 2–30 秒且输入+输出 ≤30 秒；图片任务忽略此项 |
 | `--resolution` | Drama/Wan 3：720p；旧版 submit 模型：必填 | 输出分辨率。旧模型的 cost 查询仍默认 1080p |
 | `--aspect-ratio` | Drama/Wan：16:9；其他省略交后端 | 图片支持正数 `w:h` 或 `auto`；`3.1` 图片限 1:10–10:1。Image 2.5 含 `3:2`、`2:3`、`21:9`、`9:21`；普通 Vidu 视频允许透传正数 `w:h`；SD2.0/Wan 含 `21:9` / `adaptive`；SD2.5 保留原有五种比例 |
 | `--schedule-mode` | auto | `nopeak` 使用闲时额度，资格、剩余额度及任务/模型限制由服务端校验；`claw_pass` 使用通行证额度；`normal` 使用积分。Q4 默认 `normal`，不支持 `claw_pass`，并可按服务端规则使用 `nopeak`。SD 禁止 `nopeak`；Drama/Wan 3 只支持积分模式 `normal`。其他模型省略时自动检测有效 claw pass，否则使用 `normal` |
@@ -119,7 +119,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 | `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→-1/4-15s | 1080p；SD2.0：480p/720p/1080p | 正数 w:h；SD 按自身枚举 | Seedance 2.0；3.1 / 3.1_pro 超过 5 秒、Q3 超过 10 秒需会员 |
 | `character2video`（Q4） | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | 正数 w:h | 超过 10 秒及 2k/4k 需会员 |
 | `character2video`（Q3.1 Drama） | `viduq3.1-drama-std` | 4–30 秒（默认 5 秒） | 480p、720p（默认）、1080p | 16:9（默认）、9:16、1:1、4:3、3:4 | Seedance 2.5 |
-| `text2video`、`img2video`、`headtailimg2video`、`character2video`（Wan 3） | `viduq2-drama-std` | 无视频 2–30 秒；有视频 1–30 秒且输入+输出 ≤30 秒（默认 5 秒） | 480p、720p（默认）、1080p | 16:9（默认）、9:16、1:1、4:3、3:4、21:9、adaptive | Wan 3 |
+| `text2video`、`img2video`、`headtailimg2video`、`character2video`（Wan 3） | `viduq2-drama-std` | 无视频 2–30 秒；有视频 2–30 秒且输入+输出 ≤30 秒（默认 5 秒） | 480p、720p（默认）、1080p | 16:9（默认）、9:16、1:1、4:3、3:4、21:9、adaptive | Wan 3 |
 | `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0（图片） | 1080p, 2k, 4k | 正数w:h/auto；3.1限1:10–10:1 | 3.2_pro_m、3.2_image_2、Image 2.5 Fast / Pro |
 | `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0（图片） | 1080p, 2k, 4k | 正数w:h/auto；3.1限1:10–10:1 | 3.2_pro_m、3.2_image_2、Image 2.5 Fast / Pro |
 
@@ -153,7 +153,7 @@ Wan 3 默认 5 秒、720p、16:9、`normal` 积分模式。
 `character2video` 至少提供一个参考，最多 10 张图、5 段视频、5 段音频，总计 20 个媒体，保留纯音频参考支持。
 原始图片支持 JPEG/PNG/BMP/WEBP（PNG 不含透明通道）、模型上限 20 MiB，边长 240–8000px，宽高比 1:8–8:1，且仍须满足通用上传限制。
 本地可解析视频最大 100 MiB，边长 240–4096px；不套用图片的宽高比限制。
-视频每段 1–15 秒；音频无单段最小时长限制；视频、音频每类总时长最多 15 秒；输入视频总时长加输出时长最多 30 秒；有视频时输出可选 1 秒，无视频时最少 2 秒。
+视频每段 1–15 秒；音频无单段最小时长限制；视频、音频每类总时长最多 15 秒；输入视频总时长加输出时长最多 30 秒；有无视频输入，输出均为 2–30 秒。例如输入视频总时长为 15 秒时，输出可选 2–15 秒；输入总时长为 2 秒时，输出可选 2–28 秒。
 本地音频支持 WAV/MP3，最大 15 MiB。已有 `ssupload` 素材由服务端校验；混合输入时也由服务端校验完整时长集合。
 报价由后端返回。
 

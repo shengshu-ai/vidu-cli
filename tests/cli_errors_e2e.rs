@@ -201,7 +201,8 @@ fn legacy_submit_still_requires_resolution_before_auth_or_upload() {
 fn wan_invalid_options_fail_before_network_or_file_access() {
     for action in ["submit", "cost"] {
         for (options, expected) in [
-            (vec!["--duration", "-1"], "out of range [1, 30]"),
+            (vec!["--duration", "-1"], "out of range [2, 30]"),
+            (vec!["--duration", "1"], "out of range [2, 30]"),
             (vec!["--resolution", "4k"], "Invalid resolution"),
             (vec!["--sample-count", "5"], "sample_count must be 1-4"),
             (

@@ -80,7 +80,7 @@ vidu-cli task submit --type <TYPE> --prompt <PROMPT> \
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--duration` | Drama/Wan 3: 5; legacy video models: required | Video duration in seconds. Drama accepts 4-30; Wan 3 accepts 2-30 without video or 1-30 with video (input + output ≤30). Image tasks ignore it |
+| `--duration` | Drama/Wan 3: 5; legacy video models: required | Video duration in seconds. Drama accepts 4-30; Wan 3 accepts 2-30 without video or 2-30 with video (input + output ≤30). Image tasks ignore it |
 | `--resolution` | Drama/Wan 3: 720p; legacy submit models: required | Supported output size. Cost queries keep the legacy 1080p default |
 | `--aspect-ratio` | Drama/Wan: 16:9; otherwise backend default | Images accept positive `w:h` or `auto`; model `3.1` is limited to 1:10–10:1. Image 2.5 includes `3:2`, `2:3`, `21:9`, `9:21`. Ordinary Vidu video forwards positive `w:h`; SD2.0/Wan include `21:9` / `adaptive`; SD2.5 retains the five standard ratios |
 | `--schedule-mode` | auto | `nopeak` uses off-peak quota subject to server eligibility, remaining quota, and task/model rules; `claw_pass` uses pass quota; `normal` uses credits. Q4 defaults to `normal`, rejects `claw_pass`, and accepts `nopeak` subject to server rules. SD rejects `nopeak`; Drama/Wan 3 support only `normal` credits. Other models auto-detect an active claw pass, otherwise use `normal` |
@@ -119,7 +119,7 @@ The table lists combinations supported by the current CLI. Limits were checked a
 | `character2video` | 3.0, 3.1, 3.1_pro, 3.2, 3.2_a | 3.0→5s, 3.1→2-8s, 3.1_pro→-1/2-8s, 3.2→1-16s, 3.2_a→-1/4-15s | 1080p; SD: 480p/720p/1080p | Positive w:h; SD uses its own set | Seedance 2.0; membership above 5s for 3.1 / 3.1_pro, above 10s for Q3 |
 | `character2video` (Q4) | 3.4 | 1-16s | 540p, 720p, 1080p, 2k, 4k | Positive w:h | Membership required above 10s and for 2k/4k |
 | `character2video` (Q3.1 Drama) | `viduq3.1-drama-std` | 4-30s (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4 | Seedance 2.5 |
-| `text2video`, `img2video`, `headtailimg2video`, `character2video` (Wan 3) | `viduq2-drama-std` | 2-30s without video; 1-30s with video and input + output ≤30 (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive | Wan 3 |
+| `text2video`, `img2video`, `headtailimg2video`, `character2video` (Wan 3) | `viduq2-drama-std` | 2-30s without video; 2-30s with video and input + output ≤30 (default 5) | 480p, 720p (default), 1080p | 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive | Wan 3 |
 | `text2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | Positive w:h/auto; 3.1 limited to 1:10–10:1 | 3.2_pro_m, 3.2_image_2, Image 2.5 Fast / Pro |
 | `reference2image` | 3.1, 3.2_fast_m, 3.2_pro_m, 3.2_image_2, 3.2_image_2_5_fast, 3.2_image_2_5_pro | 0 (image) | 1080p, 2k, 4k | Positive w:h/auto; 3.1 limited to 1:10–10:1 | 3.2_pro_m, 3.2_image_2, Image 2.5 Fast / Pro |
 
@@ -151,7 +151,7 @@ and allows up to 10 images, 5 videos and 5 audio files (20 media total), includi
 audio-only references. Original images (PNG must not have alpha) must be JPEG/PNG/BMP/WEBP with a 20 MiB model limit, sides
 240-8000 px and ratio 1:8-8:1, and must also fit the general upload limit. Parseable local videos must be ≤100 MiB, sides
 240-4096 px, without the image ratio limit. Each video must be 1-15s; audio has no specified minimum duration,
-with at most 15s total per kind; input video plus output duration must be ≤30s. With video input, output can be 1s; without video, it must be at least 2s.
+with at most 15s total per kind; input video plus output duration must be ≤30s. Output must be 2-30s with or without video input. For example, 15s of input video allows 2-15s output; 2s of input allows 2-28s output.
 Local audio is WAV/MP3, ≤15 MiB. Existing `ssupload` references are checked by the
 server, including the complete duration set when local and uploaded inputs mix.
 Quotes are returned by the backend.
@@ -523,7 +523,7 @@ Use `3.2_a` for Seedance 2.0, `viduq3.1-drama-std` for Seedance 2.5, and `viduq2
 
 All three models support image/text `--material name:id:version` references. The server classifies subjects and fills the remaining image budget in component order after direct images. Image subjects consume one slot, text subjects become prompt descriptions, and video subjects are unsupported. Seedance reference generation requires an image or video rather than audio alone; Wan retains audio-only reference support. Existing upload metadata and material component geometry are validated by the server.
 
-Wan output can be 1 second with video references, and must be at least 2 seconds without them. Input video duration plus output duration must not exceed 30 seconds. Wan PNG inputs must not have an alpha channel; original image sizes and dimensions are checked before compression.
+Wan output must be 2-30 seconds with or without video references. Input video duration plus output duration must not exceed 30 seconds. Wan PNG inputs must not have an alpha channel; original image sizes and dimensions are checked before compression.
 
 ```bash
 vidu-cli task submit --type character2video --model-version viduq3.1-drama-std \

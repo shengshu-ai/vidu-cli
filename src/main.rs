@@ -188,7 +188,7 @@ enum TaskAction {
     ///
     /// WAN 3: viduq2-drama-std (member feature; requires active membership entitlements)
     ///   Types: text2video, img2video, headtailimg2video, character2video
-    ///   Duration: 2-30s without video; 1-30s with video, input + output ≤30 (default 5); resolution: 480p/720p/1080p (default 720p)
+    ///   Duration: 2-30s without video; 2-30s with video, input + output ≤30 (default 5); resolution: 480p/720p/1080p (default 720p)
     ///   Aspect Ratio: 16:9 (default), 9:16, 1:1, 4:3, 3:4, 21:9, adaptive
     ///   Credits only; transition is forwarded for backend policy. References: max 10 images, 5 videos, 5 audios, 20 total
     ///   Each video: 1-15s; audio has no specified minimum duration; total 15s per kind; input video + output ≤30s
@@ -226,7 +226,7 @@ enum TaskAction {
         #[arg(
             long,
             allow_negative_numbers = true,
-            help = "Video duration: 3.0(5), 3.1(2-8), 3.1_pro(-1/2-8), 3.2(1-16; pro_ad 3-16), 3.2_a(-1/4-15), Q4 img2video(3-16)/character2video(1-16), Drama(4-30, default 5), Wan 3(2-30 without video; 1-30 with video, input + output ≤30, default 5). Ignored for images. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
+            help = "Video duration: 3.0(5), 3.1(2-8), 3.1_pro(-1/2-8), 3.2(1-16; pro_ad 3-16), 3.2_a(-1/4-15), Q4 img2video(3-16)/character2video(1-16), Drama(4-30, default 5), Wan 3(2-30 without video; 2-30 with video, input + output ≤30, default 5). Ignored for images. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
         )]
         duration: Option<i64>,
         #[arg(long,
@@ -472,7 +472,7 @@ enum TaskAction {
         #[arg(
             long,
             allow_negative_numbers = true,
-            help = "Duration in seconds. Required for legacy video models; Drama defaults to 5 (range 4-30); Wan 3 defaults to 5 (2-30 without video; 1-30 quotes for character2video, input + output ≤30). Ignored for image tasks. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
+            help = "Duration in seconds. Required for legacy video models; Drama defaults to 5 (range 4-30); Wan 3 defaults to 5 (2-30 without video; 2-30 with video, input + output ≤30). Ignored for image tasks. Video membership limits: 3.1/3.1_pro above 5s; Q3/Q4 above 10s."
         )]
         duration: Option<i64>,
         #[arg(long,

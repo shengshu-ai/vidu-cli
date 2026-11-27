@@ -764,10 +764,10 @@ pub fn validate_wan_cost(
             WAN_MODEL_VERSION, task_type
         );
     }
-    // Quotes lack input metadata; the body validator restricts 1s to video references.
-    if !(1..=30).contains(&duration) || (duration == 1 && task_type != "character2video") {
+    // Wan output uses the same 2-30s range with or without video references.
+    if !(2..=30).contains(&duration) {
         return format!(
-            "Wan 3 duration {} out of range [1, 30]; automatic duration is not supported",
+            "Wan 3 duration {} out of range [2, 30]; automatic duration is not supported",
             duration
         );
     }
@@ -844,9 +844,6 @@ fn validate_wan_task_body(body: &Value) -> String {
         .count();
     if images + image_materials > 10 {
         return "Wan 3 images plus image materials must not exceed 10 slots".into();
-    }
-    if videos == 0 && settings["duration"].as_i64() == Some(1) {
-        return "Wan 3 requires video input for a 1s output; without video use 2-30s".into();
     }
     if text != 1 {
         return "Wan 3 requires exactly one text prompt".into();
@@ -2390,7 +2387,7 @@ mod tests {
                 }
             }
         }
-        for duration in [-1, 0, 31] {
+        for duration in [-1, 0, 1, 31] {
             assert!(
                 validate_wan_cost("text2video", duration, "720p", None, None, 1)
                     .contains("out of range")
@@ -2558,6 +2555,10 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(json!({"type":"video","content":"ssupload:?id=1"}));
+        // Video references do not lower the minimum output duration.
+        assert!(!validate_task_body(&body).is_empty());
+        assert!(!validate_wan_cost("character2video", 1, "720p", None, None, 1).is_empty());
+        body["settings"]["duration"] = json!(2);
         assert_eq!(validate_task_body(&body), "");
     }
 
